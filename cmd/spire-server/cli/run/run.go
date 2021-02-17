@@ -137,11 +137,12 @@ type federatesWithConfig struct {
 }
 
 type federatesWithBundleEndpointConfig struct {
-	Address    string   `hcl:"address"`
-	Port       int      `hcl:"port"`
-	SpiffeID   string   `hcl:"spiffe_id"`
-	UseWebPKI  bool     `hcl:"use_web_pki"`
-	UnusedKeys []string `hcl:",unusedKeys"`
+	Address      string   `hcl:"address"`
+	Port         int      `hcl:"port"`
+	SpiffeID     string   `hcl:"spiffe_id"`
+	UseWebPKI    bool     `hcl:"use_web_pki"`
+	CABundlePath *string  `hcl:"ca_bundle_path"`
+	UnusedKeys   []string `hcl:",unusedKeys"`
 }
 
 type rateLimitConfig struct {
@@ -432,6 +433,7 @@ func NewServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool
 				EndpointAddress:  fmt.Sprintf("%s:%d", config.BundleEndpoint.Address, port),
 				EndpointSpiffeID: spiffeID,
 				UseWebPKI:        config.BundleEndpoint.UseWebPKI,
+				CABundlePath:     config.BundleEndpoint.CABundlePath,
 			}
 		}
 		sc.Federation.FederatesWith = federatesWith

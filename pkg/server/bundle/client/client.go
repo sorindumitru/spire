@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -25,6 +26,12 @@ type SPIFFEAuthConfig struct {
 	RootCAs []*x509.Certificate
 }
 
+type WebPKIAuthConfig struct {
+	// RootCAs is the set of root CA certificates used to authenticate the
+	// endpoint server.
+	RootCAs *x509.CertPool
+}
+
 type ClientConfig struct { //nolint: golint // name stutter is intentional
 	// TrustDomain is the federated trust domain (i.e. domain.test)
 	TrustDomain spiffeid.TrustDomain
@@ -36,6 +43,10 @@ type ClientConfig struct { //nolint: golint // name stutter is intentional
 	// using SPIFFE authentication. If unset, it is assumed that the endpoint
 	// is authenticated via Web PKI.
 	SPIFFEAuth *SPIFFEAuthConfig
+
+	// WebPKIAuth contains required configuration to authenticate
+	// the endpoint using WebPKI authentication.
+	WebPKIAuth *WebPKIAuthConfig
 }
 
 // Client is used to fetch a bundle and metadata from a bundle endpoint
@@ -62,6 +73,12 @@ func NewClient(config ClientConfig) (Client, error) {
 
 		httpClient.Transport = &http.Transport{
 			TLSClientConfig: tlsconfig.TLSClientConfig(bundle, authorizer),
+		}
+	} else if config.WebPKIAuth != nil {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs: config.WebPKIAuth.RootCAs,
+			},
 		}
 	}
 	return &client{

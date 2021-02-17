@@ -6,6 +6,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/bundleutil"
+	"github.com/spiffe/spire/pkg/common/util"
 	"github.com/spiffe/spire/pkg/server/plugin/datastore"
 	"github.com/zeebo/errs"
 )
@@ -81,6 +82,7 @@ func (u *bundleUpdater) newClient(localBundleOrNil *bundleutil.Bundle) (Client, 
 		TrustDomain:     u.c.TrustDomain,
 		EndpointAddress: u.c.EndpointAddress,
 	}
+
 	if !u.c.UseWebPKI {
 		if localBundleOrNil == nil {
 			return nil, errs.New("local bundle not found")
@@ -88,6 +90,14 @@ func (u *bundleUpdater) newClient(localBundleOrNil *bundleutil.Bundle) (Client, 
 		config.SPIFFEAuth = &SPIFFEAuthConfig{
 			EndpointSpiffeID: u.c.EndpointSpiffeID,
 			RootCAs:          localBundleOrNil.RootCAs(),
+		}
+	} else if u.c.CABundlePath != nil {
+		caBundle, err := util.LoadCertPool(*u.c.CABundlePath)
+		if err != nil {
+			return nil, err
+		}
+		config.WebPKIAuth = &WebPKIAuthConfig{
+			RootCAs: caBundle,
 		}
 	}
 	return u.c.newClient(config)

@@ -33,6 +33,11 @@ type TrustDomainConfig struct {
 	// UseWebPKI is true if the endpoint should be authenticated with Web PKI.
 	// Otherwise, SPIFFE authentication is assumed.
 	UseWebPKI bool
+
+	// CABundlePath is an optional path to a file containing CAs
+	// that can be used to authenticate the remote endpoint server.
+	// If missing, the system certificate pool will be used.
+	CABundlePath *string
 }
 
 type ManagerConfig struct {
