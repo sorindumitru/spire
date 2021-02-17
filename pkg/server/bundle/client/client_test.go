@@ -28,6 +28,7 @@ func TestClient(t *testing.T) {
 		status      int
 		body        string
 		errContains string
+		useWebPKI   bool
 	}{
 		{
 			name:   "success",
@@ -36,6 +37,15 @@ func TestClient(t *testing.T) {
 			// makes sure we unmarshal the body. The unmarshal tests will
 			// provide the coverage for unmarshaling code.
 			body: `{"spiffe_refresh_hint": 10}`,
+		},
+		{
+			name:   "success",
+			status: http.StatusOK,
+			// We don't need a really elaborate body here. this test just
+			// makes sure we unmarshal the body. The unmarshal tests will
+			// provide the coverage for unmarshaling code.
+			body:      `{"spiffe_refresh_hint": 10}`,
+			useWebPKI: true,
 		},
 		{
 			name:        "SPIFFE ID override",
@@ -76,14 +86,24 @@ func TestClient(t *testing.T) {
 			server.StartTLS()
 			defer server.Close()
 
-			client, err := NewClient(ClientConfig{
+			clientConfig := ClientConfig{
 				TrustDomain:     trustDomain,
 				EndpointAddress: server.Listener.Addr().String(),
-				SPIFFEAuth: &SPIFFEAuthConfig{
+			}
+
+			if testCase.useWebPKI {
+				serverCertPool := x509.NewCertPool()
+				serverCertPool.AddCert(serverCert)
+				clientConfig.WebPKIAuth = &WebPKIAuthConfig{
+					RootCAs: serverCertPool,
+				}
+			} else {
+				clientConfig.SPIFFEAuth = &SPIFFEAuthConfig{
 					EndpointSpiffeID: testCase.spiffeID,
 					RootCAs:          []*x509.Certificate{serverCert},
-				},
-			})
+				}
+			}
+			client, err := NewClient(clientConfig)
 			require.NoError(t, err)
 
 			bundle, err := client.FetchBundle(context.Background())
