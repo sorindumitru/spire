@@ -136,12 +136,17 @@ message Bundle {
     /** refresh hint is a hint, in seconds, on how often a bundle consumer
      * should poll for bundle updates */
     int64 refresh_hint = 4;
+
+    /** the sequence number of the bundle. Valid values are [1-UINT64_MAX);
+     * A value 0 means no sequence number defined */
+    uint64 sequence_number = 5;
 }
 
 message BundleMask {
     bool root_cas = 1;
     bool jwt_signing_keys = 2;
     bool refresh_hint = 3;
+    bool sequence_number = 4;
 }
 
 message AttestedNodeMask{
