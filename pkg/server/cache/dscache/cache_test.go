@@ -97,14 +97,14 @@ func TestBundleInvalidations(t *testing.T) {
 		{
 			name: "AppendBundle invalidates cache if succeeds",
 			invalidatingFunc: func(cache *DatastoreCache) {
-				_, _ = cache.AppendBundle(context.Background(), bundle1)
+				_, _ = cache.AppendBundle(context.Background(), bundle1, 0)
 			},
 		},
 		{
 			name:      "AppendBundle keeps cache if fails",
 			dsFailure: true,
 			invalidatingFunc: func(cache *DatastoreCache) {
-				_, _ = cache.AppendBundle(context.Background(), bundle1)
+				_, _ = cache.AppendBundle(context.Background(), bundle1, 0)
 			},
 		},
 		{

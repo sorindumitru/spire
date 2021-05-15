@@ -477,7 +477,7 @@ func (m *Manager) appendBundle(ctx context.Context, caChain []*x509.Certificate,
 		TrustDomainId:  m.c.TrustDomain.IDString(),
 		RootCas:        rootCAs,
 		JwtSigningKeys: jwtSigningKeys,
-	})
+	}, datastore.IncrementSequenceNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -872,7 +872,7 @@ func (u *bundleUpdater) LogError(err error, msg string) {
 }
 
 func (u *bundleUpdater) appendBundle(ctx context.Context, bundle *common.Bundle) (*common.Bundle, error) {
-	dsBundle, err := u.ds.AppendBundle(ctx, bundle)
+	dsBundle, err := u.ds.AppendBundle(ctx, bundle, datastore.IncrementSequenceNumber)
 	if err != nil {
 		return nil, err
 	}

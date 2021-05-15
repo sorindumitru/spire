@@ -231,7 +231,7 @@ func (ds *fakeDataStore) SetError(err error) {
 	ds.err = err
 }
 
-func (ds *fakeDataStore) AppendBundle(context.Context, *common.Bundle) (*common.Bundle, error) {
+func (ds *fakeDataStore) AppendBundle(context.Context, *common.Bundle, datastore.AppendFlag) (*common.Bundle, error) {
 	return &common.Bundle{}, ds.err
 }
 

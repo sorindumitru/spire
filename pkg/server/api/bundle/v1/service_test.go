@@ -280,6 +280,8 @@ func TestAppendBundle(t *testing.T) {
 
 	defaultBundle, err := api.BundleToProto(sb)
 	require.NoError(t, err)
+	defaultBundle.SequenceNumber = 1
+
 	expiresAt := time.Now().Add(time.Minute).Unix()
 	jwtKey2 := &types.JWTKey{
 		PublicKey: pkixBytes,
@@ -465,6 +467,7 @@ func TestAppendBundle(t *testing.T) {
 			jwtAuthorities:  []*types.JWTKey{jwtKey2},
 			expectBundle: &types.Bundle{
 				TrustDomain:     serverTrustDomain.String(),
+				SequenceNumber:  1,
 				X509Authorities: []*types.X509Certificate{x509Cert},
 				JwtAuthorities:  []*types.JWTKey{jwtKey2},
 			},
@@ -485,7 +488,7 @@ func TestAppendBundle(t *testing.T) {
 			if tt.invalidEntry {
 				_, err := test.ds.AppendBundle(ctx, &common.Bundle{
 					TrustDomainId: "malformed",
-				})
+				}, 0)
 				require.NoError(t, err)
 			}
 			resp, err := test.client.AppendBundle(context.Background(), &bundlev1.AppendBundleRequest{

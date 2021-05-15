@@ -1021,7 +1021,7 @@ func TestNewDownstreamX509CA(t *testing.T) {
 					RootCas: []*common.Certificate{
 						{DerBytes: []byte("RootCa1")},
 					},
-				})
+				}, 0)
 				require.NoError(t, err)
 			} else {
 				err := test.ds.DeleteBundle(context.Background(), td.IDString(), datastore.Restrict)

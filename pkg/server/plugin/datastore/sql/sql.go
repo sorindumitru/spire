@@ -133,9 +133,9 @@ func (ds *Plugin) SetBundle(ctx context.Context, b *common.Bundle) (bundle *comm
 }
 
 // AppendBundle append bundle contents to the existing bundle (by trust domain). If no existing one is present, create it.
-func (ds *Plugin) AppendBundle(ctx context.Context, b *common.Bundle) (bundle *common.Bundle, err error) {
+func (ds *Plugin) AppendBundle(ctx context.Context, b *common.Bundle, flags datastore.AppendFlag) (bundle *common.Bundle, err error) {
 	if err = ds.withReadModifyWriteTx(ctx, func(tx *gorm.DB) (err error) {
-		bundle, err = appendBundle(tx, b)
+		bundle, err = appendBundle(tx, b, flags)
 		return err
 	}); err != nil {
 		return nil, err
@@ -721,6 +721,10 @@ func applyBundleMask(model *Bundle, newBundle *common.Bundle, inputMask *common.
 		bundle.JwtSigningKeys = newBundle.JwtSigningKeys
 	}
 
+	if inputMask.SequenceNumber {
+		bundle.SequenceNumber = newBundle.SequenceNumber
+	}
+
 	newModel, err := bundleToModel(bundle)
 	if err != nil {
 		return nil, nil, err
@@ -755,7 +759,7 @@ func setBundle(tx *gorm.DB, b *common.Bundle) (*common.Bundle, error) {
 	return bundle, nil
 }
 
-func appendBundle(tx *gorm.DB, b *common.Bundle) (*common.Bundle, error) {
+func appendBundle(tx *gorm.DB, b *common.Bundle, flags datastore.AppendFlag) (*common.Bundle, error) {
 	newModel, err := bundleToModel(b)
 	if err != nil {
 		return nil, err
@@ -765,6 +769,10 @@ func appendBundle(tx *gorm.DB, b *common.Bundle) (*common.Bundle, error) {
 	model := &Bundle{}
 	result := tx.Find(model, "trust_domain = ?", newModel.TrustDomain)
 	if result.RecordNotFound() {
+		if flags&datastore.IncrementSequenceNumber != 0 {
+			b.SequenceNumber = 1
+		}
+
 		bundle, err := createBundle(tx, b)
 		if err != nil {
 			return nil, err
@@ -782,6 +790,10 @@ func appendBundle(tx *gorm.DB, b *common.Bundle) (*common.Bundle, error) {
 
 	bundle, changed := bundleutil.MergeBundles(bundle, b)
 	if changed {
+		if flags&datastore.IncrementSequenceNumber != 0 {
+			bundle.SequenceNumber++
+		}
+
 		newModel, err := bundleToModel(bundle)
 		if err != nil {
 			return nil, err
@@ -943,6 +955,7 @@ func pruneBundle(tx *gorm.DB, trustDomainID string, expiry time.Time, log logrus
 
 	// Update only if bundle was modified
 	if changed {
+		newBundle.SequenceNumber++
 		_, err := updateBundle(tx, newBundle, nil)
 		if err != nil {
 			return false, fmt.Errorf("unable to write new bundle: %w", err)

@@ -96,6 +96,7 @@ func CommonBundleFromProto(b *types.Bundle) (*common.Bundle, error) {
 	return &common.Bundle{
 		TrustDomainId:  td.IDString(),
 		RefreshHint:    b.RefreshHint,
+		SequenceNumber: b.SequenceNumber,
 		RootCas:        rootCAs,
 		JwtSigningKeys: jwtKeys,
 	}, nil
@@ -138,6 +139,10 @@ func (b *Bundle) RefreshHint() time.Duration {
 // rounded up to the nearest second.
 func (b *Bundle) SetRefreshHint(d time.Duration) {
 	b.b.RefreshHint = int64((d + (time.Second - 1)) / time.Second)
+}
+
+func (b *Bundle) SequenceNumber() uint64 {
+	return b.b.SequenceNumber
 }
 
 func (b *Bundle) AppendRootCA(rootCA *x509.Certificate) {
@@ -266,8 +271,10 @@ func PruneBundle(bundle *common.Bundle, expiration time.Time, log logrus.FieldLo
 
 	// Creates new bundle with non expired certs only
 	newBundle := &common.Bundle{
-		TrustDomainId: bundle.TrustDomainId,
+		TrustDomainId:  bundle.TrustDomainId,
+		SequenceNumber: bundle.SequenceNumber,
 	}
+
 	changed := false
 pruneRootCA:
 	for _, rootCA := range bundle.RootCas {

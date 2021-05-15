@@ -10,7 +10,7 @@ import (
 // DataStore defines the data storage interface.
 type DataStore interface {
 	// Bundles
-	AppendBundle(context.Context, *common.Bundle) (*common.Bundle, error)
+	AppendBundle(context.Context, *common.Bundle, AppendFlag) (*common.Bundle, error)
 	CountBundles(context.Context) (int32, error)
 	CreateBundle(context.Context, *common.Bundle) (*common.Bundle, error)
 	DeleteBundle(ctx context.Context, trustDomainID string, mode DeleteMode) error
@@ -73,6 +73,12 @@ const (
 
 	// Dissociate deletes the bundle and dissociates associated entries
 	Dissociate
+)
+
+type AppendFlag uint32
+
+const (
+	IncrementSequenceNumber AppendFlag = 1 << iota
 )
 
 func (mode DeleteMode) String() string {

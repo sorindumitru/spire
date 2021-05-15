@@ -10,6 +10,7 @@ import (
 
 type marshalConfig struct {
 	refreshHint    time.Duration
+	sequenceNumber uint64
 	noX509SVIDKeys bool
 	noJWTSVIDKeys  bool
 	standardJWKS   bool
@@ -59,7 +60,8 @@ func StandardJWKS() MarshalOption {
 
 func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 	c := &marshalConfig{
-		refreshHint: bundle.RefreshHint(),
+		refreshHint:    bundle.RefreshHint(),
+		sequenceNumber: bundle.SequenceNumber(),
 	}
 	for _, opt := range opts {
 		if err := opt.configure(c); err != nil {
@@ -100,6 +102,7 @@ func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 		out = bundleDoc{
 			JSONWebKeySet: jwks,
 			RefreshHint:   int(c.refreshHint / time.Second),
+			Sequence:      c.sequenceNumber,
 		}
 	}
 

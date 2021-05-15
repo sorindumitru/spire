@@ -21,10 +21,10 @@ type metricsWrapper struct {
 	m  telemetry.Metrics
 }
 
-func (w metricsWrapper) AppendBundle(ctx context.Context, bundle *common.Bundle) (_ *common.Bundle, err error) {
+func (w metricsWrapper) AppendBundle(ctx context.Context, bundle *common.Bundle, flags datastore.AppendFlag) (_ *common.Bundle, err error) {
 	callCounter := StartAppendBundleCall(w.m)
 	defer callCounter.Done(&err)
-	return w.ds.AppendBundle(ctx, bundle)
+	return w.ds.AppendBundle(ctx, bundle, flags)
 }
 
 func (w metricsWrapper) CreateAttestedNode(ctx context.Context, node *common.AttestedNode) (_ *common.AttestedNode, err error) {

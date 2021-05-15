@@ -42,6 +42,7 @@ func TestAllTrueMasks(t *testing.T) {
 		RootCas:        true,
 		JwtSigningKeys: true,
 		RefreshHint:    true,
+		SequenceNumber: true,
 	}, protoutil.AllTrueCommonBundleMask)
 
 	assert.Equal(t, &common.AttestedNodeMask{

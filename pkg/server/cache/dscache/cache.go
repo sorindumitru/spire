@@ -75,8 +75,8 @@ func (ds *DatastoreCache) PruneBundle(ctx context.Context, trustDomainID string,
 	return
 }
 
-func (ds *DatastoreCache) AppendBundle(ctx context.Context, b *common.Bundle) (bundle *common.Bundle, err error) {
-	if bundle, err = ds.DataStore.AppendBundle(ctx, b); err == nil {
+func (ds *DatastoreCache) AppendBundle(ctx context.Context, b *common.Bundle, flags datastore.AppendFlag) (bundle *common.Bundle, err error) {
+	if bundle, err = ds.DataStore.AppendBundle(ctx, b, flags); err == nil {
 		ds.invalidateBundleEntry(b.TrustDomainId)
 	}
 	return

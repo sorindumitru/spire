@@ -202,6 +202,48 @@ func (s *PluginSuite) TestInvalidMySQLConfiguration() {
 	s.RequireErrorContains(err, "datastore-sql: connection_string must be set")
 }
 
+func (s *PluginSuite) TestBundleSequenceNumber() {
+	bundle := bundleutil.BundleProtoFromRootCA("spiffe://foo", s.cert)
+	appendedBundle := bundleutil.BundleProtoFromRootCAs(bundle.TrustDomainId,
+		[]*x509.Certificate{s.cert, s.cacert})
+
+	// Add two JWT signing keys (one valid and one expired)
+	expiredKeyTime, err := time.Parse(time.RFC3339, _expiredNotAfterString)
+	s.Require().NoError(err)
+
+	nonExpiredKeyTime, err := time.Parse(time.RFC3339, _validNotAfterString)
+	s.Require().NoError(err)
+
+	// middleTime is a point between the two certs expiration time
+	middleTime, err := time.Parse(time.RFC3339, _middleTimeString)
+	s.Require().NoError(err)
+
+	bundle.JwtSigningKeys = []*common.PublicKey{
+		{NotAfter: expiredKeyTime.Unix()},
+		{NotAfter: nonExpiredKeyTime.Unix()},
+	}
+	appendedBundle.JwtSigningKeys = bundle.GetJwtSigningKeys()
+
+	_, err = s.ds.CreateBundle(ctx, bundle)
+	s.Require().NoError(err)
+
+	ab, err := s.ds.AppendBundle(ctx, appendedBundle, datastore.IncrementSequenceNumber)
+	s.Require().NoError(err)
+	s.Require().NotNil(ab)
+	appendedBundle.SequenceNumber++
+	s.AssertProtoEqual(appendedBundle, ab)
+
+	// prune should remove expired certs
+	changed, err := s.ds.PruneBundle(ctx, bundle.TrustDomainId, middleTime)
+	s.NoError(err)
+	s.True(changed)
+
+	fb, err := s.ds.FetchBundle(ctx, "spiffe://foo")
+	s.Require().NoError(err)
+	s.Require().NotNil(fb)
+	s.Require().Equal(uint64(2), fb.SequenceNumber)
+}
+
 func (s *PluginSuite) TestBundleCRUD() {
 	bundle := bundleutil.BundleProtoFromRootCA("spiffe://foo", s.cert)
 
@@ -247,20 +289,20 @@ func (s *PluginSuite) TestBundleCRUD() {
 		[]*x509.Certificate{s.cert, s.cacert})
 
 	// append
-	ab, err := s.ds.AppendBundle(ctx, bundle2)
+	ab, err := s.ds.AppendBundle(ctx, bundle2, 0)
 	s.Require().NoError(err)
 	s.Require().NotNil(ab)
 	s.AssertProtoEqual(appendedBundle, ab)
 
 	// append identical
-	ab, err = s.ds.AppendBundle(ctx, bundle2)
+	ab, err = s.ds.AppendBundle(ctx, bundle2, 0)
 	s.Require().NoError(err)
 	s.Require().NotNil(ab)
 	s.AssertProtoEqual(appendedBundle, ab)
 
 	// append on a new bundle
 	bundle3 := bundleutil.BundleProtoFromRootCA("spiffe://bar", s.cacert)
-	ab, err = s.ds.AppendBundle(ctx, bundle3)
+	ab, err = s.ds.AppendBundle(ctx, bundle3, 0)
 	s.Require().NoError(err)
 	s.AssertProtoEqual(bundle3, ab)
 
@@ -591,6 +633,7 @@ func (s *PluginSuite) TestBundlePrune() {
 	// Fetch and verify pruned bundle is the expected
 	expectedPrunedBundle := bundleutil.BundleProtoFromRootCAs("spiffe://foo", []*x509.Certificate{s.cert})
 	expectedPrunedBundle.JwtSigningKeys = []*common.PublicKey{{NotAfter: nonExpiredKeyTime.Unix()}}
+	expectedPrunedBundle.SequenceNumber = 1
 	fb, err := s.ds.FetchBundle(ctx, "spiffe://foo")
 	s.Require().NoError(err)
 	s.AssertProtoEqual(expectedPrunedBundle, fb)

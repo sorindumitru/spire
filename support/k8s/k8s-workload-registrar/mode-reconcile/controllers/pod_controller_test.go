@@ -119,7 +119,7 @@ func (s *PodControllerTestSuite) TestAddChangeRemovePod() {
 				},
 			}
 
-			_, err := s.ds.AppendBundle(ctx, &common.Bundle{TrustDomainId: "spiffe://example.io"})
+			_, err := s.ds.AppendBundle(ctx, &common.Bundle{TrustDomainId: "spiffe://example.io"}, 0)
 			s.Assert().NoError(err)
 
 			err = s.k8sClient.Create(ctx, &pod)

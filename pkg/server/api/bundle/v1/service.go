@@ -119,7 +119,7 @@ func (s *Service) AppendBundle(ctx context.Context, req *bundlev1.AppendBundleRe
 		TrustDomainId:  s.td.IDString(),
 		JwtSigningKeys: jwtAuth,
 		RootCas:        x509Auth,
-	})
+	}, datastore.IncrementSequenceNumber)
 	if err != nil {
 		return nil, api.MakeErr(log, codes.Internal, "failed to append bundle", err)
 	}

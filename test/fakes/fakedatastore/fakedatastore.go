@@ -65,11 +65,11 @@ func (s *DataStore) SetBundle(ctx context.Context, bundle *common.Bundle) (*comm
 	return s.ds.SetBundle(ctx, bundle)
 }
 
-func (s *DataStore) AppendBundle(ctx context.Context, bundle *common.Bundle) (*common.Bundle, error) {
+func (s *DataStore) AppendBundle(ctx context.Context, bundle *common.Bundle, flags datastore.AppendFlag) (*common.Bundle, error) {
 	if err := s.getNextError(); err != nil {
 		return nil, err
 	}
-	return s.ds.AppendBundle(ctx, bundle)
+	return s.ds.AppendBundle(ctx, bundle, flags)
 }
 
 func (s *DataStore) CountBundles(ctx context.Context) (int32, error) {
