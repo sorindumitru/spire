@@ -3,13 +3,10 @@ package manager
 import (
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/spiffe/spire/pkg/common/diskutil"
-	"github.com/spiffe/spire/pkg/server/ca"
 	"github.com/spiffe/spire/proto/private/server/journal"
 	"github.com/zeebo/errs"
 	"google.golang.org/protobuf/proto"
@@ -69,136 +66,6 @@ func (j *Journal) Entries() *JournalEntries {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	return proto.Clone(j.entries).(*JournalEntries)
-}
-
-func (j *Journal) AppendX509CA(slotID string, issuedAt time.Time, x509CA *ca.X509CA) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	backup := j.entries.X509CAs
-	j.entries.X509CAs = append(j.entries.X509CAs, &X509CAEntry{
-		SlotId:        slotID,
-		IssuedAt:      issuedAt.Unix(),
-		Certificate:   x509CA.Certificate.Raw,
-		UpstreamChain: chainDER(x509CA.UpstreamChain),
-		Status:        journal.Status_PREPARED,
-	})
-
-	exceeded := len(j.entries.X509CAs) - journalCap
-	if exceeded > 0 {
-		// make a new slice so we keep growing the backing array to drop the first
-		x509CAs := make([]*X509CAEntry, journalCap)
-		copy(x509CAs, j.entries.X509CAs[exceeded:])
-		j.entries.X509CAs = x509CAs
-	}
-
-	if err := j.save(); err != nil {
-		j.entries.X509CAs = backup
-		return err
-	}
-
-	return nil
-}
-
-// UpdateX509CAStatus updates a stored X509CA entry to have the given status, updating the journal file.
-func (j *Journal) UpdateX509CAStatus(issuedAt time.Time, status journal.Status) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	backup := j.entries.X509CAs
-
-	// Once we have the authorityID, we can use it to search for an entry,
-	// but for now, we depend on issuedAt.
-	issuedAtUnix := issuedAt.Unix()
-
-	var found bool
-	for i := len(j.entries.X509CAs) - 1; i >= 0; i-- {
-		entry := j.entries.X509CAs[i]
-		if issuedAtUnix == entry.IssuedAt {
-			found = true
-			entry.Status = status
-			break
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("no journal entry found issued at: %v", issuedAtUnix)
-	}
-
-	if err := j.save(); err != nil {
-		j.entries.X509CAs = backup
-		return err
-	}
-
-	return nil
-}
-
-func (j *Journal) AppendJWTKey(slotID string, issuedAt time.Time, jwtKey *ca.JWTKey) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	pkixBytes, err := x509.MarshalPKIXPublicKey(jwtKey.Signer.Public())
-	if err != nil {
-		return errs.Wrap(err)
-	}
-
-	backup := j.entries.JwtKeys
-	j.entries.JwtKeys = append(j.entries.JwtKeys, &JWTKeyEntry{
-		SlotId:    slotID,
-		IssuedAt:  issuedAt.Unix(),
-		Kid:       jwtKey.Kid,
-		PublicKey: pkixBytes,
-		NotAfter:  jwtKey.NotAfter.Unix(),
-		Status:    journal.Status_PREPARED,
-	})
-
-	exceeded := len(j.entries.JwtKeys) - journalCap
-	if exceeded > 0 {
-		// make a new slice so we keep growing the backing array to drop the first
-		jwtKeys := make([]*JWTKeyEntry, journalCap)
-		copy(jwtKeys, j.entries.JwtKeys[exceeded:])
-		j.entries.JwtKeys = jwtKeys
-	}
-
-	if err := j.save(); err != nil {
-		j.entries.JwtKeys = backup
-		return err
-	}
-
-	return nil
-}
-
-// UpdateJWTKeyStatus updates a stored JWTKey entry to have the given status, updating the journal file.
-func (j *Journal) UpdateJWTKeyStatus(issuedAt time.Time, status journal.Status) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	backup := j.entries.JwtKeys
-
-	// Once we have the authorityID, we can use it to search for an entry,
-	// but for now we depend on issuedAt.
-	issuedAtUnix := issuedAt.Unix()
-
-	var found bool
-	for i := len(j.entries.JwtKeys) - 1; i >= 0; i-- {
-		entry := j.entries.JwtKeys[i]
-		if issuedAtUnix == entry.IssuedAt {
-			found = true
-			entry.Status = status
-			break
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("no journal entry found issued at: %v", issuedAtUnix)
-	}
-
-	if err := j.save(); err != nil {
-		j.entries.JwtKeys = backup
-		return err
-	}
-
-	return nil
 }
 
 func (j *Journal) save() error {

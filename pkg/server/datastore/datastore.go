@@ -25,6 +25,9 @@ type DataStore interface {
 	UpdateBundle(context.Context, *common.Bundle, *common.BundleMask) (*common.Bundle, error)
 
 	// Keys
+	AppendPublicKey(ctx context.Context, publicKey PublicKey) error
+	GetPublicKey(ctx context.Context, fingerprint string) (PublicKey, error)
+	UpdatePublicKeyStatus(ctx context.Context, fingerprint string, status int) error
 	TaintX509CA(ctx context.Context, trustDomainID string, publicKey crypto.PublicKey) error
 	RevokeX509CA(ctx context.Context, trustDomainID string, publicKey crypto.PublicKey) error
 	TaintJWTKey(ctx context.Context, trustDomainID string, keyID string) (*common.PublicKey, error)
@@ -207,4 +210,20 @@ type FederationRelationship struct {
 
 	// Fields only used for 'https_spiffe' bundle endpoint profile
 	EndpointSPIFFEID spiffeid.ID
+}
+
+const (
+	UNKNOWN_KEY_STATUS  = 0
+	PREPARED_KEY_STATUS = 1
+	ACTIVE_KEY_STATUS   = 2
+	OLD_KEY_STATUS      = 3
+)
+
+type PublicKey struct {
+	Fingerprint string
+	SlotID      string
+	PublicKey   []byte
+	IssuedAt    time.Time
+	NotAfter    time.Time
+	Status      int
 }

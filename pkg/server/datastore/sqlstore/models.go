@@ -22,6 +22,22 @@ type Bundle struct {
 	FederatedEntries []RegisteredEntry `gorm:"many2many:federated_registration_entries;"`
 }
 
+type PublicKey struct {
+	Model
+
+	Fingerprint string `gorm:"primarykey"`
+	SlotID      string
+	Status      int
+	IssuedAt    time.Time
+	NotAfter    time.Time
+	PublicKey   []byte
+}
+
+// TableName gets table name of AttestedNode
+func (PublicKey) TableName() string {
+	return "public_keys"
+}
+
 // AttestedNode holds an attested node (agent)
 type AttestedNode struct {
 	Model

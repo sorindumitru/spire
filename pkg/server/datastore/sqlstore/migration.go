@@ -342,6 +342,7 @@ func initDB(db *gorm.DB, dbType string, log logrus.FieldLogger) (err error) {
 
 	tables := []interface{}{
 		&Bundle{},
+		&PublicKey{},
 		&AttestedNode{},
 		&NodeSelector{},
 		&RegisteredEntry{},

@@ -200,6 +200,61 @@ func (ds *Plugin) PruneBundle(ctx context.Context, trustDomainID string, expires
 	return changed, nil
 }
 
+func (ds *Plugin) AppendPublicKey(ctx context.Context, publicKey datastore.PublicKey) error {
+	return ds.withWriteTx(ctx, func(tx *gorm.DB) (err error) {
+		model := &PublicKey{
+			SlotID:      publicKey.SlotID,
+			Status:      publicKey.Status,
+			Fingerprint: publicKey.Fingerprint,
+			IssuedAt:    publicKey.IssuedAt,
+			NotAfter:    publicKey.NotAfter,
+			PublicKey:   publicKey.PublicKey,
+		}
+		if err := tx.Save(model).Error; err != nil {
+			return sqlError.Wrap(err)
+		}
+		return nil
+	})
+}
+
+func (ds *Plugin) GetPublicKey(ctx context.Context, fingerprint string) (datastore.PublicKey, error) {
+	var publicKey datastore.PublicKey
+	err := ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
+		var model PublicKey
+		if err := tx.First(&model, "fingerprint = ?", fingerprint).Error; err != nil {
+			return sqlError.Wrap(err)
+		}
+		publicKey.Fingerprint = fingerprint
+		publicKey.SlotID = model.SlotID
+		publicKey.Status = model.Status
+		publicKey.IssuedAt = model.IssuedAt
+		publicKey.NotAfter = model.NotAfter
+		publicKey.PublicKey = model.PublicKey
+
+		return nil
+	})
+	return publicKey, err
+}
+
+func (ds *Plugin) UpdatePublicKeyStatus(ctx context.Context, fingerprint string, status int) error {
+	err := ds.withReadModifyWriteTx(ctx, func(tx *gorm.DB) (err error) {
+		var model PublicKey
+		if err := tx.First(&model, "fingerprint = ?", fingerprint).Error; err != nil {
+			return sqlError.Wrap(err)
+		}
+
+		model.Status = status
+
+		if err := tx.Save(&model).Error; err != nil {
+			return sqlError.Wrap(err)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
 // TaintX509CAByKey taints an X.509 CA signed using the provided public key
 func (ds *Plugin) TaintX509CA(ctx context.Context, trustDoaminID string, publicKey crypto.PublicKey) error {
 	return ds.withReadModifyWriteTx(ctx, func(tx *gorm.DB) (err error) {

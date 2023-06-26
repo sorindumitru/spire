@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"sync"
 	"time"
@@ -224,8 +227,8 @@ func (m *Manager) PrepareX509CA(ctx context.Context) (err error) {
 	slot.x509CA = x509CA
 	slot.status = journal.Status_PREPARED
 
-	if err := m.journal.AppendX509CA(slot.id, slot.issuedAt, slot.x509CA); err != nil {
-		log.WithError(err).Error("Unable to append X509 CA to journal")
+	if err := m.appendX509CA(ctx, slot.id, slot.x509CA); err != nil {
+		log.WithError(err).Error("Unable to store X509 CA in database")
 	}
 
 	m.c.Log.WithFields(logrus.Fields{
@@ -248,11 +251,13 @@ func (m *Manager) RotateX509CA() {
 	m.x509CAMutex.Lock()
 	defer m.x509CAMutex.Unlock()
 
-	m.currentX509CA, m.nextX509CA = m.nextX509CA, m.currentX509CA
-	m.nextX509CA.Reset()
-	if err := m.journal.UpdateX509CAStatus(m.nextX509CA.issuedAt, journal.Status_OLD); err != nil {
+	ds := m.c.Catalog.GetDataStore()
+	if err := ds.UpdatePublicKeyStatus(context.Background(), fingerprint(m.currentX509CA.x509CA.Certificate), datastore.OLD_KEY_STATUS); err != nil {
 		m.c.Log.WithError(err).Error("Failed to update status on X509CA journal entry")
 	}
+
+	m.currentX509CA, m.nextX509CA = m.nextX509CA, m.currentX509CA
+	m.nextX509CA.Reset()
 
 	m.activateX509CA()
 }
@@ -316,8 +321,8 @@ func (m *Manager) PrepareJWTKey(ctx context.Context) (err error) {
 	slot.jwtKey = jwtKey
 	slot.status = journal.Status_PREPARED
 
-	if err := m.journal.AppendJWTKey(slot.id, slot.issuedAt, slot.jwtKey); err != nil {
-		log.WithError(err).Error("Unable to append JWT key to journal")
+	if err := m.appendJWTKey(ctx, slot.id, now, notAfter, publicKey); err != nil {
+		log.WithError(err).Error("Unable to insert JWT key in database")
 	}
 
 	m.c.Log.WithFields(logrus.Fields{
@@ -339,12 +344,13 @@ func (m *Manager) RotateJWTKey() {
 	m.jwtKeyMutex.Lock()
 	defer m.jwtKeyMutex.Unlock()
 
-	m.currentJWTKey, m.nextJWTKey = m.nextJWTKey, m.currentJWTKey
-	m.nextJWTKey.Reset()
-
-	if err := m.journal.UpdateJWTKeyStatus(m.nextJWTKey.issuedAt, journal.Status_OLD); err != nil {
+	ds := m.c.Catalog.GetDataStore()
+	if err := ds.UpdatePublicKeyStatus(context.Background(), m.currentJWTKey.jwtKey.Kid, datastore.OLD_KEY_STATUS); err != nil {
 		m.c.Log.WithError(err).Error("Failed to update status on JWTKey journal entry")
 	}
+
+	m.currentJWTKey, m.nextJWTKey = m.nextJWTKey, m.currentJWTKey
+	m.nextJWTKey.Reset()
 
 	m.activateJWTKey()
 }
@@ -458,7 +464,9 @@ func (m *Manager) activateJWTKey() {
 	telemetry_server.IncrActivateJWTKeyManagerCounter(m.c.Metrics)
 
 	m.currentJWTKey.status = journal.Status_ACTIVE
-	if err := m.journal.UpdateJWTKeyStatus(m.currentJWTKey.issuedAt, journal.Status_ACTIVE); err != nil {
+
+	ds := m.c.Catalog.GetDataStore()
+	if err := ds.UpdatePublicKeyStatus(context.Background(), m.currentJWTKey.jwtKey.Kid, datastore.ACTIVE_KEY_STATUS); err != nil {
 		log.WithError(err).Error("Failed to update to activated status on JWTKey journal entry")
 	}
 
@@ -475,7 +483,9 @@ func (m *Manager) activateX509CA() {
 	telemetry_server.IncrActivateX509CAManagerCounter(m.c.Metrics)
 
 	m.currentX509CA.status = journal.Status_ACTIVE
-	if err := m.journal.UpdateX509CAStatus(m.currentX509CA.issuedAt, journal.Status_ACTIVE); err != nil {
+
+	ds := m.c.Catalog.GetDataStore()
+	if err := ds.UpdatePublicKeyStatus(context.Background(), fingerprint(m.currentX509CA.x509CA.Certificate), datastore.ACTIVE_KEY_STATUS); err != nil {
 		log.WithError(err).Error("Failed to update to activated status on X509CA journal entry")
 	}
 
@@ -737,6 +747,77 @@ func (u *bundleUpdater) appendBundle(ctx context.Context, bundle *common.Bundle)
 	}
 	u.updated()
 	return dsBundle, nil
+}
+
+func fingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw) //nolint: gosec // SHA1 use is according to specification
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) appendX509CA(ctx context.Context, slotID string, x509CA *ca.X509CA) error {
+	bytesWriter := new(bytes.Buffer)
+	err := pem.Encode(bytesWriter, &pem.Block{
+		Type:  "X509-CA",
+		Bytes: x509CA.Certificate.Raw,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, intermediate := range x509CA.UpstreamChain {
+		err := pem.Encode(bytesWriter, &pem.Block{
+			Type:  "X509-CA",
+			Bytes: intermediate.Raw,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	ds := m.c.Catalog.GetDataStore()
+	publicKey := datastore.PublicKey{
+		SlotID:      slotID,
+		Status:      datastore.PREPARED_KEY_STATUS,
+		NotAfter:    x509CA.Certificate.NotAfter,
+		IssuedAt:    x509CA.Certificate.NotBefore,
+		Fingerprint: fingerprint(x509CA.Certificate),
+		PublicKey:   bytesWriter.Bytes(),
+	}
+
+	err = ds.AppendPublicKey(ctx, publicKey)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) appendJWTKey(ctx context.Context, slotID string, issuedAt time.Time, notAfter time.Time, jwtKey *common.PublicKey) error {
+	bytesWriter := new(bytes.Buffer)
+	err := pem.Encode(bytesWriter, &pem.Block{
+		Type:  "JWT-Signer",
+		Bytes: jwtKey.PkixBytes,
+	})
+	if err != nil {
+		return err
+	}
+
+	ds := m.c.Catalog.GetDataStore()
+	publicKey := datastore.PublicKey{
+		SlotID:      slotID,
+		Status:      datastore.PREPARED_KEY_STATUS,
+		NotAfter:    notAfter,
+		IssuedAt:    issuedAt,
+		Fingerprint: jwtKey.Kid,
+		PublicKey:   bytesWriter.Bytes(),
+	}
+
+	err = ds.AppendPublicKey(ctx, publicKey)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func newJWTKey(signer crypto.Signer, expiresAt time.Time) (*ca.JWTKey, error) {

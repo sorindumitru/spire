@@ -257,3 +257,15 @@ func (w metricsWrapper) UpdateFederationRelationship(ctx context.Context, fr *da
 	defer callCounter.Done(&err)
 	return w.ds.UpdateFederationRelationship(ctx, fr, mask)
 }
+
+func (w metricsWrapper) AppendPublicKey(ctx context.Context, publicKey datastore.PublicKey) (err error) {
+	return w.ds.AppendPublicKey(ctx, publicKey)
+}
+
+func (w metricsWrapper) GetPublicKey(ctx context.Context, fingerprint string) (key datastore.PublicKey, err error) {
+	return w.ds.GetPublicKey(ctx, fingerprint)
+}
+
+func (w metricsWrapper) UpdatePublicKeyStatus(ctx context.Context, fingerprint string, status int) error {
+	return w.ds.UpdatePublicKeyStatus(ctx, fingerprint, status)
+}
