@@ -2056,13 +2056,16 @@ func buildListNodeSelectorsQuery(req *datastore.ListNodeSelectorsRequest) (query
 }
 
 func createRegistrationEntry(tx *gorm.DB, entry *common.RegistrationEntry) (*common.RegistrationEntry, error) {
-	entryID, err := newRegistrationEntryID()
-	if err != nil {
-		return nil, err
+	if len(entry.EntryId) == 0 {
+		entryID, err := newRegistrationEntryID()
+		if err != nil {
+			return nil, err
+		}
+		entry.EntryId = entryID
 	}
 
 	newRegisteredEntry := RegisteredEntry{
-		EntryID:    entryID,
+		EntryID:    entry.EntryId,
 		SpiffeID:   entry.SpiffeId,
 		ParentID:   entry.ParentId,
 		TTL:        entry.X509SvidTtl,
