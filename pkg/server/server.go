@@ -399,7 +399,8 @@ func (s *Server) newEndpointsServer(ctx context.Context, catalog catalog.Catalog
 	if s.config.Federation.BundleEndpoint != nil {
 		config.BundleEndpoint.Address = s.config.Federation.BundleEndpoint.Address
 		config.BundleEndpoint.RefreshHint = s.config.Federation.BundleEndpoint.RefreshHint
-		config.BundleEndpoint.ACME = s.config.Federation.BundleEndpoint.ACME
+		config.BundleEndpoint.Web = s.config.Federation.BundleEndpoint.Web
+		config.BundleEndpoint.SPIFFE = s.config.Federation.BundleEndpoint.SPIFFE
 	}
 	return endpoints.New(ctx, config)
 }
