@@ -6,6 +6,7 @@ import (
 
 	"github.com/mitchellh/cli"
 	"github.com/spiffe/spire/cmd/spire-agent/cli/api"
+	"github.com/spiffe/spire/cmd/spire-agent/cli/debug"
 	"github.com/spiffe/spire/cmd/spire-agent/cli/healthcheck"
 	"github.com/spiffe/spire/cmd/spire-agent/cli/run"
 	"github.com/spiffe/spire/cmd/spire-agent/cli/validate"
@@ -45,6 +46,9 @@ func (cc *CLI) Run(ctx context.Context, args []string) int {
 		},
 		"validate": func() (cli.Command, error) {
 			return validate.NewValidateCommand(), nil
+		},
+		"debug": func() (cli.Command, error) {
+			return debug.NewDebugCommand(), nil
 		},
 	}
 
