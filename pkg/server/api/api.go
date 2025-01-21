@@ -13,6 +13,7 @@ import (
 
 // AuthorizedEntryFetcher is the interface to fetch authorized entries
 type AuthorizedEntryFetcher interface {
+	IsAuthorizedForEntryID(ctx context.Context, id spiffeid.ID, entryID string) *types.Entry
 	// FetchAuthorizedEntries fetches the entries that the specified
 	// SPIFFE ID is authorized for
 	FetchAuthorizedEntries(ctx context.Context, id spiffeid.ID) ([]*types.Entry, error)

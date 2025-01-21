@@ -206,6 +206,18 @@ func (s *Service) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 }
 
 // fetchEntries fetches authorized entries using caller ID from context
+func (s *Service) isAuthorizedForSPIFFEID(ctx context.Context, entryID string, log logrus.FieldLogger) (*types.Entry, error) {
+	callerID, ok := rpccontext.CallerID(ctx)
+	if !ok {
+		return nil, api.MakeErr(log, codes.Internal, "caller ID missing from request context", nil)
+	}
+
+	entry := s.ef.IsAuthorizedForEntryID(ctx, callerID, entryID)
+	return entry, nil
+
+}
+
+// fetchEntries fetches authorized entries using caller ID from context
 func (s *Service) fetchEntries(ctx context.Context, log logrus.FieldLogger) (map[string]*types.Entry, error) {
 	callerID, ok := rpccontext.CallerID(ctx)
 	if !ok {
@@ -350,14 +362,12 @@ func (s *Service) NewJWTSVID(ctx context.Context, req *svidv1.NewJWTSVIDRequest)
 		return nil, api.MakeErr(log, status.Code(err), "rejecting request due to JWT signing request rate limiting", err)
 	}
 
-	// Fetch authorized entries
-	entriesMap, err := s.fetchEntries(ctx, log)
+	entry, err := s.isAuthorizedForSPIFFEID(ctx, req.EntryId, log)
 	if err != nil {
 		return nil, err
 	}
 
-	entry, ok := entriesMap[req.EntryId]
-	if !ok {
+	if entry == nil {
 		return nil, api.MakeErr(log, codes.NotFound, "entry not found or not authorized", nil)
 	}
 

@@ -28,6 +28,7 @@ var _ Cache = (*FullEntryCache)(nil)
 // Cache contains a snapshot of all registration entries and Agent selectors from the data source
 // at a particular moment in time.
 type Cache interface {
+	IsAuthorizedForEntryID(agentID spiffeid.ID, entryID string) *types.Entry
 	GetAuthorizedEntries(agentID spiffeid.ID) []*types.Entry
 }
 
@@ -171,6 +172,34 @@ func Build(ctx context.Context, entryIter EntryIterator, agentIter AgentIterator
 		aliases: aliases,
 		entries: entries,
 	}, nil
+}
+
+func (c *FullEntryCache) IsAuthorizedForEntryID(agentID spiffeid.ID, entryID string) *types.Entry {
+	seen := allocSeenSet()
+	defer freeSeenSet(seen)
+
+	return c.isAuthorizedForEntryID(spiffeIDFromID(agentID), entryID, seen)
+}
+
+func (c *FullEntryCache) isAuthorizedForEntryID(id spiffeID, entryID string, seen map[spiffeID]struct{}) *types.Entry {
+	entries := c.crawl(id, seen)
+
+	for _, descendant := range entries {
+		if descendant.GetId() == entryID {
+			return descendant
+		}
+		if entry := c.isAuthorizedForEntryID(id, entryID, seen); entry != nil {
+			return entry
+		}
+	}
+
+	for _, alias := range c.aliases[id] {
+		if entry := c.isAuthorizedForEntryID(alias.id, entryID, seen); entry != nil {
+			return entry
+		}
+	}
+
+	return nil
 }
 
 // GetAuthorizedEntries gets all authorized registration entries for a given Agent SPIFFE ID.

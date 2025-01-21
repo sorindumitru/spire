@@ -49,6 +49,12 @@ func NewAuthorizedEntryFetcherWithFullCache(ctx context.Context, buildCache entr
 	}, nil
 }
 
+func (a *AuthorizedEntryFetcherWithFullCache) IsAuthorizedForEntryID(_ context.Context, agentID spiffeid.ID, entryID string) *types.Entry {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cache.IsAuthorizedForEntryID(agentID, entryID)
+}
+
 func (a *AuthorizedEntryFetcherWithFullCache) FetchAuthorizedEntries(_ context.Context, agentID spiffeid.ID) ([]*types.Entry, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
