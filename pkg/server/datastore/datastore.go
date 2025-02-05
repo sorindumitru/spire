@@ -226,6 +226,7 @@ type ListRegistrationEntriesResponse struct {
 type ListRegistrationEntryEventsRequest struct {
 	GreaterThanEventID uint
 	LessThanEventID    uint
+	Since              time.Time
 }
 
 type RegistrationEntryEvent struct {

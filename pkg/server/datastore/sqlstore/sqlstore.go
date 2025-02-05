@@ -4103,6 +4103,10 @@ func listRegistrationEntryEvents(tx *gorm.DB, req *datastore.ListRegistrationEnt
 		if err := tx.Find(&events, query.String(), id).Order("id asc").Error; err != nil {
 			return nil, newWrappedSQLError(err)
 		}
+	} else if !req.Since.IsZero() {
+		if err := tx.Where("created_at > ?", req.Since).Find(&events).Error; err != nil {
+			return nil, newWrappedSQLError(err)
+		}
 	} else {
 		if err := tx.Find(&events).Order("id asc").Error; err != nil {
 			return nil, newWrappedSQLError(err)

@@ -16,6 +16,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type event struct {
+	id   uint
+	when time.Time
+}
+
 type registrationEntries struct {
 	cache   *authorizedentries.Cache
 	clk     clock.Clock
@@ -37,6 +42,8 @@ type registrationEntries struct {
 	// metrics change detection
 	skippedEntryEvents int
 	lastCacheStats     authorizedentries.CacheStats
+
+	processedEvents map[uint]time.Time
 }
 
 func (a *registrationEntries) captureChangedEntries(ctx context.Context) error {
@@ -183,6 +190,7 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 
 		eventsBeforeFirst: make(map[uint]struct{}),
 		fetchEntries:      make(map[string]struct{}),
+		processedEvents:   make(map[uint]time.Time),
 
 		eventTracker: NewEventTracker(pollPeriods),
 
@@ -193,10 +201,6 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 			EntriesByEntryID:  -1,
 			EntriesByParentID: -1,
 		},
-	}
-
-	if err := registrationEntries.captureChangedEntries(ctx); err != nil {
-		return nil, err
 	}
 
 	if err := registrationEntries.loadCache(ctx, pageSize); err != nil {
@@ -211,12 +215,48 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 // updateCache Fetches all the events since the last time this function was running and updates
 // the cache with all the changes.
 func (a *registrationEntries) updateCache(ctx context.Context) error {
-	if err := a.captureChangedEntries(ctx); err != nil {
+	resp, err := a.ds.ListRegistrationEntryEvents(ctx, &datastore.ListRegistrationEntryEventsRequest{
+		Since: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
 		return err
 	}
-	if err := a.updateCachedEntries(ctx); err != nil {
-		return err
+
+	for _, event := range resp.Events {
+		if _, ok := a.processedEvents[event.EventID]; ok {
+			continue
+		}
+
+		entryId := event.EntryID
+		commonEntry, err := a.ds.FetchRegistrationEntry(ctx, entryId)
+		if err != nil {
+			continue
+		}
+
+		if commonEntry == nil {
+			a.cache.RemoveEntry(entryId)
+			a.processedEvents[event.EventID] = time.Now()
+			continue
+		}
+
+		entry, err := api.RegistrationEntryToProto(commonEntry)
+		if err != nil {
+			a.cache.RemoveEntry(entryId)
+			a.processedEvents[event.EventID] = time.Now()
+			a.log.WithField(telemetry.RegistrationID, entryId).Warn("Removed malformed registration entry from cache")
+			continue
+		}
+
+		a.cache.UpdateEntry(entry)
+		a.processedEvents[event.EventID] = time.Now()
 	}
+
+	for id, when := range a.processedEvents {
+		if time.Now().Sub(when) >= time.Hour {
+			delete(a.processedEvents, id)
+		}
+	}
+
 	a.emitMetrics()
 
 	return nil
