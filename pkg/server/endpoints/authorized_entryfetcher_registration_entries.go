@@ -16,6 +16,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type event struct {
+	id   uint
+	when time.Time
+}
+
 type registrationEntries struct {
 	cache   *authorizedentries.Cache
 	clk     clock.Clock
@@ -37,6 +42,8 @@ type registrationEntries struct {
 	// metrics change detection
 	skippedEntryEvents int
 	lastCacheStats     authorizedentries.CacheStats
+
+	processedEvents map[uint]struct{}
 }
 
 func (a *registrationEntries) captureChangedEntries(ctx context.Context) error {
@@ -138,6 +145,17 @@ func (a *registrationEntries) scanForNewEvents(ctx context.Context) error {
 }
 
 func (a *registrationEntries) loadCache(ctx context.Context, pageSize int32) error {
+	resp, err := a.ds.ListRegistrationEntryEvents(ctx, &datastore.ListRegistrationEntryEventsRequest{
+		Since: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, event := range resp.Events {
+		a.processedEvents[event.EventID] = struct{}{}
+	}
+
 	// Build the cache
 	var token string
 	for {
@@ -183,6 +201,7 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 
 		eventsBeforeFirst: make(map[uint]struct{}),
 		fetchEntries:      make(map[string]struct{}),
+		processedEvents:   make(map[uint]struct{}),
 
 		eventTracker: NewEventTracker(pollPeriods),
 
@@ -193,10 +212,6 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 			EntriesByEntryID:  -1,
 			EntriesByParentID: -1,
 		},
-	}
-
-	if err := registrationEntries.captureChangedEntries(ctx); err != nil {
-		return nil, err
 	}
 
 	if err := registrationEntries.loadCache(ctx, pageSize); err != nil {
@@ -211,12 +226,63 @@ func buildRegistrationEntriesCache(ctx context.Context, log logrus.FieldLogger, 
 // updateCache Fetches all the events since the last time this function was running and updates
 // the cache with all the changes.
 func (a *registrationEntries) updateCache(ctx context.Context) error {
-	if err := a.captureChangedEntries(ctx); err != nil {
+	resp, err := a.ds.ListRegistrationEntryEvents(ctx, &datastore.ListRegistrationEntryEventsRequest{
+		Since: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
 		return err
 	}
-	if err := a.updateCachedEntries(ctx); err != nil {
-		return err
+
+	skipped := 0
+	lastEventID := uint(0)
+	currentEvents := make(map[uint]struct{})
+	for _, event := range resp.Events {
+		if lastEventID != 0 && event.EventID != (lastEventID+1) {
+			skipped++
+		}
+		lastEventID = event.EventID
+		currentEvents[event.EventID] = struct{}{}
+
+		if _, ok := a.processedEvents[event.EventID]; ok {
+			continue
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		entryId := event.EntryID
+		commonEntry, err := a.ds.FetchRegistrationEntry(ctx, entryId)
+		if err != nil {
+			continue
+		}
+
+		if commonEntry == nil {
+			a.cache.RemoveEntry(entryId)
+			a.processedEvents[event.EventID] = struct{}{}
+			continue
+		}
+
+		entry, err := api.RegistrationEntryToProto(commonEntry)
+		if err != nil {
+			a.cache.RemoveEntry(entryId)
+			a.processedEvents[event.EventID] = struct{}{}
+			a.log.WithField(telemetry.RegistrationID, entryId).Warn("Removed malformed registration entry from cache")
+			continue
+		}
+
+		a.cache.UpdateEntry(entry)
+		a.processedEvents[event.EventID] = struct{}{}
 	}
+
+	a.log.WithField("events", len(resp.Events)).WithField("skipped", skipped).Info("Refreshed entry cache")
+
+	for id, _ := range currentEvents {
+		if _, ok := currentEvents[id]; !ok {
+			delete(a.processedEvents, id)
+		}
+	}
+
 	a.emitMetrics()
 
 	return nil
@@ -224,7 +290,7 @@ func (a *registrationEntries) updateCache(ctx context.Context) error {
 
 // updateCacheEntry update/deletes/creates an individual registration entry in the cache.
 func (a *registrationEntries) updateCachedEntries(ctx context.Context) error {
-	for entryId := range a.fetchEntries {
+	for entryId, _ := range a.fetchEntries {
 		commonEntry, err := a.ds.FetchRegistrationEntry(ctx, entryId)
 		if err != nil {
 			continue

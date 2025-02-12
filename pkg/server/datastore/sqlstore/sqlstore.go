@@ -374,10 +374,8 @@ func (ds *Plugin) DeleteAttestedNode(ctx context.Context, spiffeID string) (atte
 
 // ListAttestedNodeEvents lists all attested node events
 func (ds *Plugin) ListAttestedNodeEvents(ctx context.Context, req *datastore.ListAttestedNodeEventsRequest) (resp *datastore.ListAttestedNodeEventsResponse, err error) {
-	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
-		resp, err = listAttestedNodeEvents(tx, req)
-		return err
-	}); err != nil {
+	resp, err = listAttestedNodeEvents(ds.roDb.DB, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -571,10 +569,8 @@ func (ds *Plugin) PruneRegistrationEntries(ctx context.Context, expiresBefore ti
 
 // ListRegistrationEntryEvents lists all registration entry events
 func (ds *Plugin) ListRegistrationEntryEvents(ctx context.Context, req *datastore.ListRegistrationEntryEventsRequest) (resp *datastore.ListRegistrationEntryEventsResponse, err error) {
-	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
-		resp, err = listRegistrationEntryEvents(tx, req)
-		return err
-	}); err != nil {
+	resp, err = listRegistrationEntryEvents(ds.roDb.DB, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -1706,7 +1702,7 @@ func createAttestedNodeEvent(tx *gorm.DB, event *datastore.AttestedNodeEvent) er
 	return nil
 }
 
-func listAttestedNodeEvents(tx *gorm.DB, req *datastore.ListAttestedNodeEventsRequest) (*datastore.ListAttestedNodeEventsResponse, error) {
+func listAttestedNodeEvents(db *gorm.DB, req *datastore.ListAttestedNodeEventsRequest) (*datastore.ListAttestedNodeEventsResponse, error) {
 	var events []AttestedNodeEvent
 
 	if req.GreaterThanEventID != 0 || req.LessThanEventID != 0 {
@@ -1715,11 +1711,15 @@ func listAttestedNodeEvents(tx *gorm.DB, req *datastore.ListAttestedNodeEventsRe
 			return nil, newWrappedSQLError(err)
 		}
 
-		if err := tx.Find(&events, query.String(), id).Order("id asc").Error; err != nil {
+		if err := db.Find(&events, query.String(), id).Order("id asc").Error; err != nil {
+			return nil, newWrappedSQLError(err)
+		}
+	} else if !req.Since.IsZero() {
+		if err := db.Where("created_at > ?", req.Since).Find(&events).Error; err != nil {
 			return nil, newWrappedSQLError(err)
 		}
 	} else {
-		if err := tx.Find(&events).Order("id asc").Error; err != nil {
+		if err := db.Find(&events).Order("id asc").Error; err != nil {
 			return nil, newWrappedSQLError(err)
 		}
 	}
@@ -4091,7 +4091,7 @@ func deleteRegistrationEntryEvent(tx *gorm.DB, eventID uint) error {
 	return nil
 }
 
-func listRegistrationEntryEvents(tx *gorm.DB, req *datastore.ListRegistrationEntryEventsRequest) (*datastore.ListRegistrationEntryEventsResponse, error) {
+func listRegistrationEntryEvents(db *gorm.DB, req *datastore.ListRegistrationEntryEventsRequest) (*datastore.ListRegistrationEntryEventsResponse, error) {
 	var events []RegisteredEntryEvent
 
 	if req.GreaterThanEventID != 0 || req.LessThanEventID != 0 {
@@ -4100,11 +4100,15 @@ func listRegistrationEntryEvents(tx *gorm.DB, req *datastore.ListRegistrationEnt
 			return nil, newWrappedSQLError(err)
 		}
 
-		if err := tx.Find(&events, query.String(), id).Order("id asc").Error; err != nil {
+		if err := db.Find(&events, query.String(), id).Order("id asc").Error; err != nil {
+			return nil, newWrappedSQLError(err)
+		}
+	} else if !req.Since.IsZero() {
+		if err := db.Where("created_at > ?", req.Since).Find(&events).Error; err != nil {
 			return nil, newWrappedSQLError(err)
 		}
 	} else {
-		if err := tx.Find(&events).Order("id asc").Error; err != nil {
+		if err := db.Find(&events).Order("id asc").Error; err != nil {
 			return nil, newWrappedSQLError(err)
 		}
 	}

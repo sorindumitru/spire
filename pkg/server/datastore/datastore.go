@@ -172,6 +172,7 @@ type ListAttestedNodesResponse struct {
 type ListAttestedNodeEventsRequest struct {
 	GreaterThanEventID uint
 	LessThanEventID    uint
+	Since              time.Time
 }
 
 type AttestedNodeEvent struct {
@@ -226,6 +227,7 @@ type ListRegistrationEntriesResponse struct {
 type ListRegistrationEntryEventsRequest struct {
 	GreaterThanEventID uint
 	LessThanEventID    uint
+	Since              time.Time
 }
 
 type RegistrationEntryEvent struct {

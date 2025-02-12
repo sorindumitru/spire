@@ -248,8 +248,6 @@ import (
 // | v1.10.4 |        |                                                                           |
 // |*********|********|***************************************************************************|
 // | v1.11.0 |        |                                                                           |
-// |---------|        |                                                                           |
-// | v1.11.1 |        |                                                                           |
 // ================================================================================================
 
 const (
@@ -506,6 +504,16 @@ func addFederatedRegistrationEntriesRegisteredEntryIDIndex(tx *gorm.DB) error {
 	// to introduce the index since there is no explicit struct to add tags to
 	// so we have to manually create it.
 	if err := tx.Table("federated_registration_entries").AddIndex("idx_federated_registration_entries_registered_entry_id", "registered_entry_id").Error; err != nil {
+		return newWrappedSQLError(err)
+	}
+	return nil
+}
+
+func addEventsTimestampIndex(tx *gorm.DB) error {
+	if err := tx.Table("registered_entries_events").AddIndex("idx_registered_entry_events_created_at", "created_at").Error; err != nil {
+		return newWrappedSQLError(err)
+	}
+	if err := tx.Table("attested_node_entries_events").AddIndex("idx_attested_node_entries_events_created_at", "created_at").Error; err != nil {
 		return newWrappedSQLError(err)
 	}
 	return nil

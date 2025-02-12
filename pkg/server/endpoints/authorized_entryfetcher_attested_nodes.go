@@ -25,6 +25,7 @@ type attestedNodes struct {
 	metrics telemetry.Metrics
 
 	eventsBeforeFirst map[uint]struct{}
+	processedEvents   map[uint]struct{}
 
 	firstEvent     uint
 	firstEventTime time.Time
@@ -139,6 +140,17 @@ func (a *attestedNodes) scanForNewEvents(ctx context.Context) error {
 }
 
 func (a *attestedNodes) loadCache(ctx context.Context) error {
+	resp, err := a.ds.ListAttestedNodeEvents(ctx, &datastore.ListAttestedNodeEventsRequest{
+		Since: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, event := range resp.Events {
+		a.processedEvents[event.EventID] = struct{}{}
+	}
+
 	// TODO: determine if this needs paging
 	nodesResp, err := a.ds.ListAttestedNodes(ctx, &datastore.ListAttestedNodesRequest{
 		FetchSelectors: true,
@@ -173,6 +185,7 @@ func buildAttestedNodesCache(ctx context.Context, log logrus.FieldLogger, metric
 
 		eventsBeforeFirst: make(map[uint]struct{}),
 		fetchNodes:        make(map[string]struct{}),
+		processedEvents:   make(map[uint]struct{}),
 
 		eventTracker: NewEventTracker(pollPeriods),
 
@@ -182,10 +195,6 @@ func buildAttestedNodesCache(ctx context.Context, log logrus.FieldLogger, metric
 			AgentsByID:        -1,
 			AgentsByExpiresAt: -1,
 		},
-	}
-
-	if err := attestedNodes.captureChangedNodes(ctx); err != nil {
-		return nil, err
 	}
 
 	if err := attestedNodes.loadCache(ctx); err != nil {
@@ -200,19 +209,71 @@ func buildAttestedNodesCache(ctx context.Context, log logrus.FieldLogger, metric
 // updateCache Fetches all the events since the last time this function was running and updates
 // the cache with all the changes.
 func (a *attestedNodes) updateCache(ctx context.Context) error {
-	if err := a.captureChangedNodes(ctx); err != nil {
+	resp, err := a.ds.ListAttestedNodeEvents(ctx, &datastore.ListAttestedNodeEventsRequest{
+		Since: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
 		return err
 	}
-	if err := a.updateCachedNodes(ctx); err != nil {
-		return err
+
+	skipped := 0
+	lastEventID := uint(0)
+	currentEvents := make(map[uint]struct{})
+	for _, event := range resp.Events {
+		if lastEventID != 0 && event.EventID != (lastEventID+1) {
+			skipped++
+		}
+		lastEventID = event.EventID
+		currentEvents[event.EventID] = struct{}{}
+
+		if _, ok := a.processedEvents[event.EventID]; ok {
+			continue
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		spiffeId := event.SpiffeID
+		node, err := a.ds.FetchAttestedNode(ctx, spiffeId)
+		if err != nil {
+			continue
+		}
+
+		// Node was deleted
+		if node == nil {
+			a.cache.RemoveAgent(spiffeId)
+			a.processedEvents[event.EventID] = struct{}{}
+			continue
+		}
+
+		selectors, err := a.ds.GetNodeSelectors(ctx, spiffeId, datastore.RequireCurrent)
+		if err != nil {
+			a.processedEvents[event.EventID] = struct{}{}
+			continue
+		}
+		node.Selectors = selectors
+
+		agentExpiresAt := time.Unix(node.CertNotAfter, 0)
+		a.cache.UpdateAgent(node.SpiffeId, agentExpiresAt, api.ProtoFromSelectors(node.Selectors))
+		a.processedEvents[event.EventID] = struct{}{}
 	}
+
+	a.log.WithField("events", len(resp.Events)).WithField("skipped", skipped).Info("Refreshed node cache")
+
+	for id, _ := range currentEvents {
+		if _, ok := currentEvents[id]; !ok {
+			delete(a.processedEvents, id)
+		}
+	}
+
 	a.emitMetrics()
 
 	return nil
 }
 
 func (a *attestedNodes) updateCachedNodes(ctx context.Context) error {
-	for spiffeId := range a.fetchNodes {
+	for spiffeId, _ := range a.fetchNodes {
 		node, err := a.ds.FetchAttestedNode(ctx, spiffeId)
 		if err != nil {
 			continue
