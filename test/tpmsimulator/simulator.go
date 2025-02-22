@@ -418,7 +418,7 @@ func createCertificate(key any, tmpl *x509.Certificate, parentKey *rsa.PrivateKe
 }
 
 func generateRSAKey() (*rsa.PrivateKey, error) {
-	return rsa.GenerateKey(rand.Reader, 768) //nolint: gosec // small key is to keep test fast... not a security feature
+	return rsa.GenerateKey(rand.Reader, 2048) //nolint: gosec // small key is to keep test fast... not a security feature
 }
 
 func defaultDevIDTemplateRSA() tpm2.Public {
