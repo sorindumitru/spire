@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/idutil"
 	"github.com/spiffe/spire/pkg/common/tlspolicy"
+	"github.com/spiffe/spire/pkg/common/witsvid"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/plugin/credentialcomposer"
@@ -33,6 +35,10 @@ const (
 	// DefaultJWTSVIDTTL is the TTL given to JWT SVIDs if a different TTL is
 	// not provided in the signing request.
 	DefaultJWTSVIDTTL = time.Minute * 5
+
+	// DefaultWITSVIDTTL is the TTL given to WIT-SVIDs if a different TTL is
+	// not provided in the signing request.
+	DefaultWITSVIDTTL = time.Hour
 
 	// NotBeforeCushion is how much of a cushion to subtract from the current
 	// time when determining the notBefore field of certificates to account
@@ -99,6 +105,13 @@ type WorkloadJWTSVIDParams struct {
 	ExpirationCap time.Time
 }
 
+type WorkloadWITSVIDParams struct {
+	SPIFFEID      spiffeid.ID
+	PublicKey     jose.JSONWebKey
+	TTL           time.Duration
+	ExpirationCap time.Time
+}
+
 type Config struct {
 	TrustDomain                  spiffeid.TrustDomain
 	Clock                        clock.Clock
@@ -107,6 +120,7 @@ type Config struct {
 	X509SVIDSubject              pkix.Name
 	X509SVIDTTL                  time.Duration
 	JWTSVIDTTL                   time.Duration
+	WITSVIDTTL                   time.Duration
 	JWTIssuer                    string
 	AgentSVIDTTL                 time.Duration
 	CredentialComposers          []credentialcomposer.CredentialComposer
@@ -143,6 +157,9 @@ func NewBuilder(config Config) (*Builder, error) {
 	}
 	if config.JWTSVIDTTL == 0 {
 		config.JWTSVIDTTL = DefaultJWTSVIDTTL
+	}
+	if config.WITSVIDTTL == 0 {
+		config.WITSVIDTTL = DefaultWITSVIDTTL
 	}
 	if config.AgentSVIDTTL == 0 {
 		// config.X509SVIDTTL should be initialized by the code above and
@@ -362,6 +379,33 @@ func (b *Builder) BuildWorkloadJWTSVIDClaims(ctx context.Context, params Workloa
 	}
 
 	return attributes.Claims, nil
+}
+
+func (b *Builder) BuildWorkloadWITSVIDClaims(ctx context.Context, params WorkloadWITSVIDParams) (map[string]any, error) {
+	if params.SPIFFEID.IsZero() {
+		return nil, errors.New("invalid WIT-SVID ID: cannot be empty")
+	}
+	if err := api.VerifyTrustDomainMemberID(b.config.TrustDomain, params.SPIFFEID); err != nil {
+		return nil, fmt.Errorf("invalid WIT-SVID ID: %w", err)
+	}
+
+	ttl := params.TTL
+	if ttl <= 0 {
+		ttl = b.config.WITSVIDTTL
+	}
+	_, expiresAt := computeCappedLifetime(b.config.Clock, ttl, params.ExpirationCap)
+
+	jti, err := witsvid.GenerateJTI()
+	if err != nil {
+		return nil, errors.New("internal error")
+	}
+
+	return map[string]any{
+		"sub": params.SPIFFEID.String(),
+		"exp": jwt.NewNumericDate(expiresAt),
+		"jti": jti,
+		"cnf": params.PublicKey,
+	}, nil
 }
 
 func (b *Builder) buildX509CATemplate(publicKey crypto.PublicKey, parentChain []*x509.Certificate, ttl time.Duration) (*x509.Certificate, error) {
