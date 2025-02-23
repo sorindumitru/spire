@@ -11,11 +11,20 @@
 			"allow_local": true
 		},
 		{
+			"full_method": "/spire.api.server.svid.v1.SVID/MintWITSVID",
+			"allow_admin": true,
+			"allow_local": true
+		},
+		{
 			"full_method": "/spire.api.server.svid.v1.SVID/BatchNewX509SVID",
 			"allow_agent": true
 		},
 		{
 			"full_method": "/spire.api.server.svid.v1.SVID/NewJWTSVID",
+			"allow_agent": true
+		},
+		{
+			"full_method": "/spire.api.server.svid.v1.SVID/BatchNewWITSVID",
 			"allow_agent": true
 		},
 		{

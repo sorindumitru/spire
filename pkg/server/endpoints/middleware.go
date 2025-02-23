@@ -126,13 +126,20 @@ func RateLimits(config RateLimitConfig) map[string]api.RateLimiter {
 		jsrLimit = middleware.PerIPLimit(limits.SignLimitPerIP)
 	}
 
+	wsrLimit := middleware.DisabledLimit()
+	if config.Signing {
+		wsrLimit = middleware.PerIPLimit(limits.SignLimitPerIP)
+	}
+
 	pushJWTKeyLimit := middleware.PerIPLimit(limits.PushJWTKeyLimitPerIP)
 
 	return map[string]api.RateLimiter{
 		"/spire.api.server.svid.v1.SVID/MintX509SVID":                                    noLimit,
 		"/spire.api.server.svid.v1.SVID/MintJWTSVID":                                     noLimit,
+		"/spire.api.server.svid.v1.SVID/MintWITSVID":                                     noLimit,
 		"/spire.api.server.svid.v1.SVID/BatchNewX509SVID":                                csrLimit,
 		"/spire.api.server.svid.v1.SVID/NewJWTSVID":                                      jsrLimit,
+		"/spire.api.server.svid.v1.SVID/BatchNewWITSVID":                                 wsrLimit,
 		"/spire.api.server.svid.v1.SVID/NewDownstreamX509CA":                             csrLimit,
 		"/spire.api.server.bundle.v1.Bundle/GetBundle":                                   noLimit,
 		"/spire.api.server.bundle.v1.Bundle/AppendBundle":                                noLimit,
