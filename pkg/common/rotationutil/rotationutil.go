@@ -37,6 +37,12 @@ func (rs *RotationStrategy) ShouldRotateX509(now time.Time, cert *x509.Certifica
 	return shouldRotateX509(now, cert.NotBefore, cert.NotAfter, rs.x509AvailabilityTarget)
 }
 
+// ShouldRotateX509 determines if a given SVID should be rotated, based
+// on presented current time, and the certificate's expiration.
+func (rs *RotationStrategy) ShouldRotateWIT(now time.Time, expiry time.Time) bool {
+	return shouldRotateX509(now, time.Now(), expiry, rs.x509AvailabilityTarget)
+}
+
 // X509Expired returns true if the given X509 cert has expired
 func X509Expired(now time.Time, cert *x509.Certificate) bool {
 	return now.After(cert.NotAfter)

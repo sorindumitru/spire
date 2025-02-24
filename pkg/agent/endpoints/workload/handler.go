@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
@@ -30,7 +31,8 @@ import (
 )
 
 type Manager interface {
-	SubscribeToCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
+	SubscribeToX509SVIDCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
+	SubscribeToWITSVIDCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
 	MatchingRegistrationEntries(selectors []*common.Selector) []*common.RegistrationEntry
 	FetchJWTSVID(ctx context.Context, entry *common.RegistrationEntry, audience []string) (*client.JWTSVID, error)
 	FetchWorkloadUpdate([]*common.Selector) *cache.WorkloadUpdate
@@ -121,7 +123,7 @@ func (h *Handler) FetchJWTBundles(_ *workload.JWTBundlesRequest, stream workload
 		return err
 	}
 
-	subscriber, err := h.c.Manager.SubscribeToCacheChanges(ctx, selectors)
+	subscriber, err := h.c.Manager.SubscribeToX509SVIDCacheChanges(ctx, selectors)
 	if err != nil {
 		log.WithError(err).Error("Subscribe to cache changes failed")
 		return err
@@ -218,7 +220,7 @@ func (h *Handler) FetchX509SVID(_ *workload.X509SVIDRequest, stream workload.Spi
 		return err
 	}
 
-	subscriber, err := h.c.Manager.SubscribeToCacheChanges(ctx, selectors)
+	subscriber, err := h.c.Manager.SubscribeToX509SVIDCacheChanges(ctx, selectors)
 	if err != nil {
 		log.WithError(err).Error("Subscribe to cache changes failed")
 		return err
@@ -252,7 +254,7 @@ func (h *Handler) FetchX509Bundles(_ *workload.X509BundlesRequest, stream worklo
 		return err
 	}
 
-	subscriber, err := h.c.Manager.SubscribeToCacheChanges(ctx, selectors)
+	subscriber, err := h.c.Manager.SubscribeToX509SVIDCacheChanges(ctx, selectors)
 	if err != nil {
 		log.WithError(err).Error("Subscribe to cache changes failed")
 		return err
@@ -274,6 +276,42 @@ func (h *Handler) FetchX509Bundles(_ *workload.X509BundlesRequest, stream worklo
 			return nil
 		}
 	}
+}
+
+func (h *Handler) FetchWITSVID(_ *workload.WITSVIDRequest, stream workload.SpiffeWorkloadAPI_FetchWITSVIDServer) error {
+	ctx := stream.Context()
+	log := rpccontext.Logger(ctx)
+
+	selectors, err := h.c.Attestor.Attest(ctx)
+	if err != nil {
+		log.WithError(err).Error("Workload attestation failed")
+		return err
+	}
+
+	subscriber, err := h.c.Manager.SubscribeToWITSVIDCacheChanges(ctx, selectors)
+	if err != nil {
+		log.WithError(err).Error("Subscribe to cache changes failed")
+		return err
+	}
+	defer subscriber.Finish()
+	// The agent health check currently exercises the Workload API.
+	// Only log if it is not the agent itself.
+	quietLogging := isAgent(ctx)
+	for {
+		select {
+		case update := <-subscriber.Updates():
+			update.Identities = filterIdentities(update.Identities, log)
+			if err := sendWITSVIDResponse(update, stream, log, quietLogging); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (h *Handler) FetchWITBundles(_ *workload.WITBundlesRequest, stream workload.SpiffeWorkloadAPI_FetchWITBundlesServer) error {
+	return errors.New("not implemented yet")
 }
 
 func (h *Handler) fetchJWTSVID(ctx context.Context, log logrus.FieldLogger, entry *common.RegistrationEntry, audience []string) (*workload.JWTSVID, error) {
@@ -409,6 +447,73 @@ func composeX509SVIDResponse(update *cache.WorkloadUpdate) (*workload.X509SVIDRe
 			X509SvidKey: keyData,
 			Bundle:      bundle,
 			Hint:        identity.Entry.Hint,
+		}
+
+		resp.Svids = append(resp.Svids, svid)
+	}
+
+	return resp, nil
+}
+
+func sendWITSVIDResponse(update *cache.WorkloadUpdate, stream workload.SpiffeWorkloadAPI_FetchWITSVIDServer, log logrus.FieldLogger, quietLogging bool) (err error) {
+	if len(update.Identities) == 0 {
+		if !quietLogging {
+			log.WithField(telemetry.Registered, false).Error("No identity issued")
+		}
+		return status.Error(codes.PermissionDenied, "no identity issued")
+	}
+
+	log = log.WithField(telemetry.Registered, true)
+
+	resp, err := composeWITSVIDResponse(update)
+	if err != nil {
+		log.WithError(err).Error("Could not serialize WIT-SVID response")
+		return status.Errorf(codes.Unavailable, "could not serialize response: %v", err)
+	}
+
+	if err := stream.Send(resp); err != nil {
+		log.WithError(err).Error("Failed to send WIT-SVID response")
+		return err
+	}
+
+	log = log.WithField(telemetry.Count, len(resp.Svids))
+
+	// log and emit telemetry on each SVID
+	// a response has already been sent so nothing is
+	// blocked on this logic
+	if !quietLogging {
+		for _, svid := range resp.Svids {
+			log.WithFields(logrus.Fields{
+				telemetry.SPIFFEID: svid.SpiffeId,
+				// telemetry.TTL:      ttl.Seconds(),
+			}).Debug("Fetched WIT-SVID")
+		}
+	}
+
+	return nil
+}
+
+func composeWITSVIDResponse(update *cache.WorkloadUpdate) (*workload.WITSVIDResponse, error) {
+	resp := new(workload.WITSVIDResponse)
+	resp.Svids = []*workload.WITSVID{}
+
+	for _, identity := range update.Identities {
+		id := identity.Entry.SpiffeId
+
+		jwk := jose.JSONWebKey{
+			Key: identity.PrivateKey,
+		}
+
+		jwkJSON, err := jwk.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+
+		svid := &workload.WITSVID{
+			SpiffeId:   id,
+			WitSvid:    identity.WITSVID,
+			WitSvidKey: string(jwkJSON),
+			Hint:       identity.Entry.Hint,
 		}
 
 		resp.Svids = append(resp.Svids, svid)

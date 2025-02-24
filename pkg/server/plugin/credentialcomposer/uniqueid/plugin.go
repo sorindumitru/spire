@@ -86,6 +86,11 @@ func (p *Plugin) ComposeWorkloadJWTSVID(context.Context, *credentialcomposerv1.C
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
+func (p *Plugin) ComposeWorkloadWITSVID(context.Context, *credentialcomposerv1.ComposeWorkloadWITSVIDRequest) (*credentialcomposerv1.ComposeWorkloadWITSVIDResponse, error) {
+	// Intentionally not implemented.
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
 func uniqueIDAttributeTypeAndValue(id string) (*credentialcomposerv1.AttributeTypeAndValue, error) {
 	spiffeID, err := spiffeid.FromString(id)
 	if err != nil {

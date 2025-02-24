@@ -507,6 +507,7 @@ func (s *Service) newWITSVID(ctx context.Context, param *svidv1.NewWITSVIDParams
 			ExpiresAt: expiresAt.Unix(),
 			IssuedAt:  issuedAt.Unix(),
 		},
+		Status: api.OK(),
 	}
 }
 
