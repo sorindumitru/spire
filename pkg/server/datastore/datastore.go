@@ -197,8 +197,14 @@ type ListNodeSelectorsRequest struct {
 	ValidAt         time.Time
 }
 
+type NodeInformation struct {
+	SerialNumber    string
+	NewSerialNumber string
+	Selectors       []*common.Selector
+}
+
 type ListNodeSelectorsResponse struct {
-	Selectors map[string][]*common.Selector
+	Nodes map[string]NodeInformation
 }
 
 type ListRegistrationEntriesRequest struct {

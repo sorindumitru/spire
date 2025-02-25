@@ -2362,18 +2362,21 @@ func listNodeSelectors(ctx context.Context, db *sqlDB, req *datastore.ListNodeSe
 	defer rows.Close()
 
 	resp := &datastore.ListNodeSelectorsResponse{
-		Selectors: make(map[string][]*common.Selector),
+		Nodes: make(map[string]datastore.NodeInformation),
 	}
 
 	var currentID string
 	selectors := make([]*common.Selector, 0, 64)
 
-	push := func(spiffeID string, selector *common.Selector) {
+	push := func(spiffeID string, currentSerialNumber, newSerialNumber string, selector *common.Selector) {
 		switch {
 		case currentID == "":
 			currentID = spiffeID
 		case spiffeID != currentID:
-			resp.Selectors[currentID] = append(resp.Selectors[currentID], selectors...)
+			currentNode := resp.Nodes[currentID]
+			currentNode.Selectors = append(currentNode.Selectors, selectors...)
+			currentNode.SerialNumber = currentSerialNumber
+			currentNode.NewSerialNumber = newSerialNumber
 			currentID = spiffeID
 			selectors = selectors[:0]
 		}
@@ -2382,7 +2385,7 @@ func listNodeSelectors(ctx context.Context, db *sqlDB, req *datastore.ListNodeSe
 
 	for rows.Next() {
 		var nsRow nodeSelectorRow
-		if err := scanNodeSelectorRow(rows, &nsRow); err != nil {
+		if err := scanNodeSelectorRow(rows, &nsRow, !req.ValidAt.IsZero()); err != nil {
 			return nil, err
 		}
 
@@ -2392,8 +2395,9 @@ func listNodeSelectors(ctx context.Context, db *sqlDB, req *datastore.ListNodeSe
 		}
 
 		selector := new(common.Selector)
-		fillNodeSelectorFromRow(selector, &nsRow)
-		push(spiffeID, selector)
+		var currentSerialNumber, nextSerialNumber string
+		fillNodeSelectorFromRow(selector, &currentSerialNumber, &nextSerialNumber, &nsRow)
+		push(spiffeID, currentSerialNumber, nextSerialNumber, selector)
 	}
 
 	push("", nil)
@@ -2407,10 +2411,12 @@ func listNodeSelectors(ctx context.Context, db *sqlDB, req *datastore.ListNodeSe
 
 func buildListNodeSelectorsQuery(req *datastore.ListNodeSelectorsRequest) (query string, args []any) {
 	var sb strings.Builder
-	sb.WriteString("SELECT nre.spiffe_id, nre.type, nre.value FROM node_resolver_map_entries nre")
 	if !req.ValidAt.IsZero() {
+		sb.WriteString("SELECT nre.spiffe_id, nre.type, nre.value, ane.serial_number, ane.new_serial_number FROM node_resolver_map_entries nre")
 		sb.WriteString(" INNER JOIN attested_node_entries ane ON nre.spiffe_id=ane.spiffe_id WHERE ane.expires_at > ?")
 		args = append(args, req.ValidAt)
+	} else {
+		sb.WriteString("SELECT nre.spiffe_id, nre.type, nre.value FROM node_resolver_map_entries nre")
 	}
 
 	// This ordering is required to make listNodeSelectors efficient but not
@@ -3742,26 +3748,46 @@ func fillNodeFromRow(node *common.AttestedNode, r *nodeRow) error {
 }
 
 type nodeSelectorRow struct {
-	SpiffeID sql.NullString
-	Type     sql.NullString
-	Value    sql.NullString
+	SpiffeID            sql.NullString
+	Type                sql.NullString
+	Value               sql.NullString
+	CertSerialNumber    sql.NullString
+	NewCertSerialNumber sql.NullString
 }
 
-func scanNodeSelectorRow(rs *sql.Rows, r *nodeSelectorRow) error {
-	return newWrappedSQLError(rs.Scan(
-		&r.SpiffeID,
-		&r.Type,
-		&r.Value,
-	))
+func scanNodeSelectorRow(rs *sql.Rows, r *nodeSelectorRow, includeSerialNumbers bool) error {
+	if includeSerialNumbers {
+		return newWrappedSQLError(rs.Scan(
+			&r.SpiffeID,
+			&r.Type,
+			&r.Value,
+			&r.CertSerialNumber,
+			&r.NewCertSerialNumber,
+		))
+	} else {
+		return newWrappedSQLError(rs.Scan(
+			&r.SpiffeID,
+			&r.Type,
+			&r.Value,
+		))
+	}
 }
 
-func fillNodeSelectorFromRow(nodeSelector *common.Selector, r *nodeSelectorRow) {
+func fillNodeSelectorFromRow(nodeSelector *common.Selector, currentSerialNumber, nextSerialNumber *string, r *nodeSelectorRow) {
 	if r.Type.Valid {
 		nodeSelector.Type = r.Type.String
 	}
 
 	if r.Value.Valid {
 		nodeSelector.Value = r.Value.String
+	}
+
+	if r.CertSerialNumber.Valid {
+		*currentSerialNumber = r.CertSerialNumber.String
+	}
+
+	if r.NewCertSerialNumber.Valid {
+		*nextSerialNumber = r.NewCertSerialNumber.String
 	}
 }
 

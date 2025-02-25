@@ -86,6 +86,10 @@ type Agent struct {
 	ID spiffeid.ID
 	// Selectors is the Agent's selectors.
 	Selectors []*types.Selector
+	// Current serial numberg
+	CurrentSerialNumber string
+	// Next serial number
+	NextSerialNumber string
 }
 
 type FullEntryCache struct {
