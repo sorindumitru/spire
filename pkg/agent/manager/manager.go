@@ -191,7 +191,7 @@ func (m *manager) Initialize(ctx context.Context) error {
 
 	m.synchronizeBackoff = backoff.NewBackoff(m.clk, m.c.SyncInterval, backoff.WithMaxInterval(synchronizeBackoffMaxInterval))
 	m.svidSyncBackoff = backoff.NewBackoff(m.clk, cache.SVIDSyncInterval, backoff.WithMaxInterval(maxSVIDSyncInterval))
-	m.csrSizeLimitedBackoff = backoff.NewSizeLimitedBackOff(limits.SignLimitPerIP)
+	m.csrSizeLimitedBackoff = backoff.NewSizeLimitedBackOff(limits.SignLimitPerCaller)
 	m.syncedEntries = make(map[string]*common.RegistrationEntry)
 	m.syncedBundles = make(map[string]*common.Bundle)
 

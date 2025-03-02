@@ -73,6 +73,13 @@ func PerIPLimit(limit int) api.RateLimiter {
 	return newPerIPLimiter(limit)
 }
 
+// PerCallerLimit returns a rate limiter that imposes a per-caller limit on calls
+// to a method. It can be shared across methods to enforce per-ip limits for
+// a group of methods.
+func PerCallerLimit(limit int) api.RateLimiter {
+	return newPerCallerLimiter(limit)
+}
+
 // WithRateLimits returns a middleware that performs rate limiting for the
 // group of methods described by the rateLimits map. It provides the
 // configured rate limiter to the method handlers via the request context. If
@@ -123,7 +130,7 @@ func (lim *perCallLimiter) RateLimit(ctx context.Context, count int) error {
 	return waitN(ctx, lim.limiter, count)
 }
 
-type perIPLimiter struct {
+type garbageCollectedLimiter struct {
 	limit int
 
 	mtx sync.RWMutex
@@ -139,24 +146,20 @@ type perIPLimiter struct {
 	lastGC time.Time
 }
 
-func newPerIPLimiter(limit int) *perIPLimiter {
-	return &perIPLimiter{limit: limit,
+func newGarbageCollectedLimiter(limit int) *garbageCollectedLimiter {
+	return &garbageCollectedLimiter{
+		limit:   limit,
 		current: make(map[string]rawRateLimiter),
 		lastGC:  clk.Now(),
 	}
 }
 
-func (lim *perIPLimiter) RateLimit(ctx context.Context, count int) error {
-	tcpAddr, ok := rpccontext.CallerAddr(ctx).(*net.TCPAddr)
-	if !ok {
-		// Calls not via TCP/IP aren't limited
-		return nil
-	}
-	limiter := lim.getLimiter(tcpAddr.IP.String())
+func (lim *garbageCollectedLimiter) RateLimit(ctx context.Context, count int, caller string) error {
+	limiter := lim.getLimiter(caller)
 	return waitN(ctx, limiter, count)
 }
 
-func (lim *perIPLimiter) getLimiter(ip string) rawRateLimiter {
+func (lim *garbageCollectedLimiter) getLimiter(ip string) rawRateLimiter {
 	lim.mtx.RLock()
 	limiter, ok := lim.current[ip]
 	if ok {
@@ -194,6 +197,44 @@ func (lim *perIPLimiter) getLimiter(ip string) rawRateLimiter {
 	limiter = newRawRateLimiter(rate.Limit(lim.limit), lim.limit)
 	lim.current[ip] = limiter
 	return limiter
+}
+
+type perIPLimiter struct {
+	limiter *garbageCollectedLimiter
+}
+
+func newPerIPLimiter(limit int) *perIPLimiter {
+	return &perIPLimiter{
+		limiter: newGarbageCollectedLimiter(limit),
+	}
+}
+
+func (lim *perIPLimiter) RateLimit(ctx context.Context, count int) error {
+	tcpAddr, ok := rpccontext.CallerAddr(ctx).(*net.TCPAddr)
+	if !ok {
+		// Calls not via TCP/IP aren't limited
+		return nil
+	}
+	return lim.limiter.RateLimit(ctx, count, tcpAddr.IP.String())
+}
+
+type perCallerLimiter struct {
+	limiter *garbageCollectedLimiter
+}
+
+func newPerCallerLimiter(limit int) *perCallerLimiter {
+	return &perCallerLimiter{
+		limiter: newGarbageCollectedLimiter(limit),
+	}
+}
+
+func (lim *perCallerLimiter) RateLimit(ctx context.Context, count int) error {
+	callerID, ok := rpccontext.CallerID(ctx)
+	if !ok {
+		return errors.New("Unknown caller id")
+	}
+
+	return lim.limiter.RateLimit(ctx, count, callerID.String())
 }
 
 type rateLimitsMiddleware struct {
