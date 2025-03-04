@@ -289,6 +289,91 @@ func TestAgentAuthorizer(t *testing.T) {
 	}
 }
 
+func TestAgentAuthorizerCache(t *testing.T) {
+	ca := testca.New(t, testTD)
+	initialAgentSVID := ca.CreateX509SVID(agentID).Certificates[0]
+	renewedAgentSVID := ca.CreateX509SVID(agentID).Certificates[0]
+
+	ds := fakedatastore.New(t)
+
+	log, _ := test.NewNullLogger()
+	ctx := rpccontext.WithLogger(t.Context(), log.WithFields(logrus.Fields{
+		telemetry.CallerAddr: "127.0.0.1",
+		telemetry.CallerID:   agentID,
+	}))
+
+	_, err := ds.CreateAttestedNode(ctx, &common.AttestedNode{
+		SpiffeId:         agentID.String(),
+		CertSerialNumber: initialAgentSVID.SerialNumber.String(),
+	})
+	require.NoError(t, err)
+
+	clk := clock.NewMock(t)
+	authorizer := AgentAuthorizer(ds, clk)
+
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.NoError(t, err)
+
+	// Append an error, which should only be consumed once the cached attested node
+	// information expires.
+	ds.AppendNextError(func() error {
+		return errors.New("fetch failed")
+	}())
+
+	// We can still attest the agent with the cached node information.
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.NoError(t, err)
+
+	// After the cached attested node information expires, the agent is no longer
+	// considered authorized.
+	clk.Add(cacheExpiry + time.Second)
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.Error(t, err)
+
+	// When the entry can be fetched from the datastore again, the agent can
+	// authorized again
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.NoError(t, err)
+
+	// Update the attested node in the datastore to validate switching to
+	// a new certificate scenario.
+	ds.UpdateAttestedNode(ctx, &common.AttestedNode{
+		SpiffeId:            agentID.String(),
+		CertSerialNumber:    initialAgentSVID.SerialNumber.String(),
+		NewCertSerialNumber: renewedAgentSVID.SerialNumber.String(),
+	}, nil)
+
+	ds.AppendNextError(func() error {
+		return errors.New("fetch failed")
+	}())
+
+	// Can still authorize the agent using the old SVID via the cached SVID
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.NoError(t, err)
+
+	// The agent is not able to login with the new SVID due to the datastore
+	// returning an error.
+	err = authorizer.AuthorizeAgent(ctx, agentID, renewedAgentSVID)
+	require.Error(t, err)
+
+	// But should now be able to do it.
+	err = authorizer.AuthorizeAgent(ctx, agentID, renewedAgentSVID)
+	require.NoError(t, err)
+
+	// Should no longer be able to login with the old SVID
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.Error(t, err)
+
+	clk.Add(cacheExpiry + time.Second)
+	// But should now be able to do it.
+	err = authorizer.AuthorizeAgent(ctx, agentID, renewedAgentSVID)
+	require.NoError(t, err)
+
+	// Should no longer be able to login with the old SVID
+	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
+	require.Error(t, err)
+}
+
 func createEntry(t testing.TB, ds datastore.DataStore, entryIn *common.RegistrationEntry) *types.Entry {
 	registrationEntry, err := ds.CreateRegistrationEntry(context.Background(), entryIn)
 	require.NoError(t, err)
