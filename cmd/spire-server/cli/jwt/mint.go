@@ -7,34 +7,40 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/mitchellh/cli"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	svidv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/svid/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
-	"github.com/spiffe/spire/cmd/spire-server/util"
-	common_cli "github.com/spiffe/spire/pkg/common/cli"
+	serverutil "github.com/spiffe/spire/cmd/spire-server/util"
+	commoncli "github.com/spiffe/spire/pkg/common/cli"
+	"github.com/spiffe/spire/pkg/common/cliprinter"
 	"github.com/spiffe/spire/pkg/common/diskutil"
-	"gopkg.in/square/go-jose.v2/jwt"
+	"github.com/spiffe/spire/pkg/common/jwtsvid"
+	"github.com/spiffe/spire/pkg/common/util"
 )
 
 func NewMintCommand() cli.Command {
-	return newMintCommand(common_cli.DefaultEnv)
+	return newMintCommand(commoncli.DefaultEnv)
 }
 
-func newMintCommand(env *common_cli.Env) cli.Command {
-	return util.AdaptCommand(env, new(mintCommand))
+func newMintCommand(env *commoncli.Env) cli.Command {
+	return serverutil.AdaptCommand(env, &mintCommand{env: env})
 }
 
 type mintCommand struct {
 	spiffeID string
 	ttl      time.Duration
-	audience common_cli.StringsFlag
+	audience commoncli.StringsFlag
 	write    string
+	env      *commoncli.Env
+	printer  cliprinter.Printer
 }
 
 func (c *mintCommand) Name() string {
 	return "jwt mint"
 }
+
 func (c *mintCommand) Synopsis() string {
 	return "Mints a JWT-SVID"
 }
@@ -44,9 +50,10 @@ func (c *mintCommand) AppendFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&c.ttl, "ttl", 0, "TTL of the JWT-SVID")
 	fs.Var(&c.audience, "audience", "Audience claim that will be included in the SVID. Can be used more than once.")
 	fs.StringVar(&c.write, "write", "", "File to write token to instead of stdout")
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintMint)
 }
 
-func (c *mintCommand) Run(ctx context.Context, env *common_cli.Env, serverClient util.ServerClient) error {
+func (c *mintCommand) Run(ctx context.Context, env *commoncli.Env, serverClient serverutil.ServerClient) error {
 	if c.spiffeID == "" {
 		return errors.New("spiffeID must be specified")
 	}
@@ -57,13 +64,18 @@ func (c *mintCommand) Run(ctx context.Context, env *common_cli.Env, serverClient
 	if err != nil {
 		return err
 	}
+	ttl, err := ttlToSeconds(c.ttl)
+	if err != nil {
+		return fmt.Errorf("invalid value for TTL: %w", err)
+	}
 
 	client := serverClient.NewSVIDClient()
-	resp, err := client.MintJWTSVID(ctx, &svidv1.MintJWTSVIDRequest{Id: &types.SPIFFEID{
-		TrustDomain: spiffeID.TrustDomain().String(),
-		Path:        spiffeID.Path(),
-	},
-		Ttl:      ttlToSeconds(c.ttl),
+	resp, err := client.MintJWTSVID(ctx, &svidv1.MintJWTSVIDRequest{
+		Id: &types.SPIFFEID{
+			TrustDomain: spiffeID.TrustDomain().Name(),
+			Path:        spiffeID.Path(),
+		},
+		Ttl:      ttl,
 		Audience: c.audience,
 	})
 	if err != nil {
@@ -76,7 +88,7 @@ func (c *mintCommand) Run(ctx context.Context, env *common_cli.Env, serverClient
 
 	// Print in stdout
 	if c.write == "" {
-		return env.Println(token)
+		return c.printer.PrintProto(resp)
 	}
 
 	// Save in file
@@ -87,7 +99,7 @@ func (c *mintCommand) Run(ctx context.Context, env *common_cli.Env, serverClient
 	return env.Printf("JWT-SVID written to %s\n", tokenPath)
 }
 
-func (c *mintCommand) validateToken(token string, env *common_cli.Env) error {
+func (c *mintCommand) validateToken(token string, env *commoncli.Env) error {
 	if token == "" {
 		return errors.New("server response missing token")
 	}
@@ -104,8 +116,9 @@ func (c *mintCommand) validateToken(token string, env *common_cli.Env) error {
 
 	return nil
 }
+
 func getJWTSVIDEndOfLife(token string) (time.Time, error) {
-	t, err := jwt.ParseSigned(token)
+	t, err := jwt.ParseSigned(token, jwtsvid.AllowedSignatureAlgorithms)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -124,6 +137,13 @@ func getJWTSVIDEndOfLife(token string) (time.Time, error) {
 
 // ttlToSeconds returns the number of seconds in a duration, rounded up to
 // the nearest second
-func ttlToSeconds(ttl time.Duration) int32 {
-	return int32((ttl + time.Second - 1) / time.Second)
+func ttlToSeconds(ttl time.Duration) (int32, error) {
+	return util.CheckedCast[int32]((ttl + time.Second - 1) / time.Second)
+}
+
+func prettyPrintMint(env *commoncli.Env, results ...any) error {
+	if resp, ok := results[0].(*svidv1.MintJWTSVIDResponse); ok {
+		return env.Println(resp.Svid.Token)
+	}
+	return cliprinter.ErrInternalCustomPrettyFunc
 }

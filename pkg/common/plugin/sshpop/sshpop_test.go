@@ -54,9 +54,8 @@ func TestNewClient(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.desc, func(t *testing.T) {
-			c, err := NewClient(tt.configString)
+			c, err := NewClient("example.org", tt.configString)
 			if tt.expectErr != "" {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), tt.expectErr)
@@ -78,7 +77,7 @@ func TestNewServer(t *testing.T) {
 	}{
 		{
 			desc:      "missing trust domain",
-			expectErr: "trust_domain global configuration is invalid",
+			expectErr: "server core configuration must contain trust_domain",
 		},
 		{
 			desc:         "bad config",
@@ -106,14 +105,13 @@ func TestNewServer(t *testing.T) {
 		{
 			desc: "success",
 			configString: fmt.Sprintf(`cert_authorities = [%q]
-									   canonical_domain = "local"
-									   agent_path_template = "/{{ .PluginName}}/{{ .Fingerprint }}"`, testCertAuthority),
+									   canonical_domain = "local"`, testCertAuthority),
 			trustDomain: "foo.test",
 			requireServer: func(t *testing.T, s *Server) {
 				require.NotNil(t, s)
-				require.Equal(t, "foo.test", s.trustDomain.String())
+				require.Equal(t, "foo.test", s.trustDomain.Name())
 				require.Equal(t, "local", s.canonicalDomain)
-				require.Equal(t, DefaultAgentPathTemplate, s.agentPathTemplate)
+				require.Same(t, DefaultAgentPathTemplate, s.agentPathTemplate)
 				pubkey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(testCertAuthority))
 				require.NoError(t, err)
 				require.True(t, s.certChecker.IsHostAuthority(pubkey, ""))
@@ -127,8 +125,8 @@ func TestNewServer(t *testing.T) {
 			trustDomain: "foo.test",
 			requireServer: func(t *testing.T, s *Server) {
 				require.NotNil(t, s)
-				require.Equal(t, "foo.test", s.trustDomain.String())
-				require.Equal(t, DefaultAgentPathTemplate, s.agentPathTemplate)
+				require.Equal(t, "foo.test", s.trustDomain.Name())
+				require.NotSame(t, DefaultAgentPathTemplate, s.agentPathTemplate)
 				pubkey := requireParsePubkey(t, testCertAuthority)
 				pubkey2 := requireParsePubkey(t, testCertAuthority2)
 				pubkey3 := requireParsePubkey(t, testCertAuthority3)
@@ -140,7 +138,6 @@ func TestNewServer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.desc, func(t *testing.T) {
 			s, err := NewServer(tt.trustDomain, tt.configString)
 			if tt.expectErr != "" {
@@ -193,7 +190,6 @@ func TestPubkeysFromPath(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.desc, func(t *testing.T) {
 			pubkeys, err := pubkeysFromPath(tt.pubkeyPath)
 			if tt.expectErr != "" {

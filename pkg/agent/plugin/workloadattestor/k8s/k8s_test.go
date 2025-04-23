@@ -8,17 +8,21 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/pkg/agent/common/sigstore"
 	"github.com/spiffe/spire/pkg/agent/plugin/workloadattestor"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"github.com/spiffe/spire/pkg/common/util"
 	"github.com/spiffe/spire/proto/spire/common"
@@ -32,6 +36,8 @@ import (
 
 const (
 	pid = 123
+
+	testPollRetryInterval = time.Second
 
 	podListFilePath           = "testdata/pod_list.json"
 	podListNotRunningFilePath = "testdata/pod_list_not_running.json"
@@ -54,7 +60,7 @@ AyIlgLJ/QQypapKXYPr4kLuFWFShRANCAARFfHk9kz/bGtZfcIhJpzvnSnKbSvuK
 FwOGLt+I3+9beT0vo+pn9Rq0squewFYe3aJbwpkyfP2xOovQCdm4PC8y
 -----END PRIVATE KEY-----
 `))
-
+	imageID          = "docker-pullable://localhost/spiffe/blog@sha256:0cfdaced91cb46dd7af48309799a3c351e4ca2d5e1ee9737ca0cbd932cb79898"
 	testPodSelectors = []*common.Selector{
 		{Type: "k8s", Value: "node-name:k8s-node-1"},
 		{Type: "k8s", Value: "ns:default"},
@@ -78,6 +84,10 @@ FwOGLt+I3+9beT0vo+pn9Rq0squewFYe3aJbwpkyfP2xOovQCdm4PC8y
 		{Type: "k8s", Value: "container-name:blog"},
 	}
 	testPodAndContainerSelectors = append(testPodSelectors, testContainerSelectors...)
+
+	sigstoreSelectors = []*common.Selector{
+		{Type: "k8s", Value: "sigstore:selector"},
+	}
 )
 
 type attestResult struct {
@@ -95,8 +105,10 @@ type Suite struct {
 	dir   string
 	clock *clock.Mock
 
-	podList [][]byte
-	env     map[string]string
+	podListMu sync.RWMutex
+	podList   [][]byte
+
+	env map[string]string
 
 	// kubelet stuff
 	server      *httptest.Server
@@ -118,6 +130,7 @@ func (s *Suite) SetupTest() {
 }
 
 func (s *Suite) TearDownTest() {
+	s.clock.Add(time.Minute)
 	s.setServer(nil)
 	os.RemoveAll(s.dir)
 }
@@ -141,9 +154,9 @@ func (s *Suite) TestAttestWithPidInPodAfterRetry() {
 	resultCh := s.goAttest(p)
 
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 
 	select {
 	case result := <-resultCh:
@@ -168,6 +181,30 @@ func (s *Suite) TestAttestWithPidNotInPodCancelsEarly() {
 	s.Require().Nil(selectors)
 }
 
+func (s *Suite) TestAttestPodListCache() {
+	s.startInsecureKubelet()
+	p := s.loadInsecurePlugin()
+	s.addGetContainerResponsePidInPod()
+
+	// Add two pod listings.
+	s.addPodListResponse(podListFilePath)
+	s.addPodListResponse(podListFilePath)
+	s.Require().Equal(2, s.podListResponseCount())
+
+	// Attest and assert one pod listing was consumed (one remaining)
+	s.requireAttestSuccess(p, testPodAndContainerSelectors)
+	s.Require().Equal(1, s.podListResponseCount())
+
+	// Attest again and assert no pod listing was consumed (still at one)
+	s.requireAttestSuccess(p, testPodAndContainerSelectors)
+	s.Require().Equal(1, s.podListResponseCount())
+
+	// Now expire the cache, attest, and observe the last listing was consumed.
+	s.clock.Add(testPollRetryInterval / 2)
+	s.requireAttestSuccess(p, testPodAndContainerSelectors)
+	s.Require().Equal(0, s.podListResponseCount())
+}
+
 func (s *Suite) TestAttestWithPidNotInPodAfterRetry() {
 	s.startInsecureKubelet()
 	p := s.loadInsecurePlugin()
@@ -181,13 +218,13 @@ func (s *Suite) TestAttestWithPidNotInPodAfterRetry() {
 	resultCh := s.goAttest(p)
 
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 	s.clock.WaitForAfter(time.Minute, "waiting for retry timer")
-	s.clock.Add(time.Second)
+	s.clock.Add(testPollRetryInterval)
 
 	select {
 	case result := <-resultCh:
@@ -230,7 +267,7 @@ func (s *Suite) TestAttestOverSecurePortViaClientAuth() {
 	s.writeCert(certPath, clientCert)
 
 	s.clock.Add(defaultReloadInterval)
-	s.requireAttestFailure(p, codes.Internal, "tls: bad certificate")
+	s.requireAttestFailure(p, codes.Internal, "remote error: tls")
 }
 
 func (s *Suite) TestAttestOverSecurePortViaAnonymousAuth() {
@@ -272,6 +309,19 @@ func (s *Suite) TestAttestWhenContainerReadyButContainerSelectorsDisabled() {
 	s.requireAttestSuccess(p, testPodSelectors)
 }
 
+func (s *Suite) TestAttestWithSigstoreSelectors() {
+	s.startInsecureKubelet()
+	p := s.loadInsecurePluginWithSigstore()
+
+	// Add the expected selectors from the Sigstore verifier
+	testPodAndContainerSelectors = append(testPodAndContainerSelectors, sigstoreSelectors...)
+
+	s.addPodListResponse(podListFilePath)
+	s.addGetContainerResponsePidInPod()
+
+	s.requireAttestSuccess(p, testPodAndContainerSelectors)
+}
+
 func (s *Suite) TestConfigure() {
 	s.generateCerts("")
 
@@ -292,18 +342,21 @@ func (s *Suite) TestConfigure() {
 		MaxPollAttempts   int
 		PollRetryInterval time.Duration
 		ReloadInterval    time.Duration
+		SigstoreConfig    *sigstore.Config
 	}
 
 	testCases := []struct {
-		name    string
-		raw     string
-		hcl     string
-		config  *config
-		errCode codes.Code
-		errMsg  string
+		name        string
+		trustDomain string
+		raw         string
+		hcl         string
+		config      *config
+		errCode     codes.Code
+		errMsg      string
 	}{
 		{
-			name: "insecure defaults",
+			name:        "insecure defaults",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_read_only_port = 12345
 			`,
@@ -316,8 +369,9 @@ func (s *Suite) TestConfigure() {
 			},
 		},
 		{
-			name: "secure defaults",
-			hcl:  ``,
+			name:        "secure defaults",
+			trustDomain: "example.org",
+			hcl:         ``,
 			config: &config{
 				VerifyKubelet:     true,
 				Token:             "default-token",
@@ -328,7 +382,8 @@ func (s *Suite) TestConfigure() {
 			},
 		},
 		{
-			name: "skip kubelet verification",
+			name:        "skip kubelet verification",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 			`,
@@ -342,7 +397,8 @@ func (s *Suite) TestConfigure() {
 			},
 		},
 		{
-			name: "secure overrides",
+			name:        "secure overrides",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_secure_port = 12345
 				kubelet_ca_path = "some-other-ca"
@@ -361,7 +417,8 @@ func (s *Suite) TestConfigure() {
 			},
 		},
 		{
-			name: "secure with keypair",
+			name:        "secure with keypair",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "cert.pem"
@@ -375,7 +432,8 @@ func (s *Suite) TestConfigure() {
 			},
 		},
 		{
-			name: "secure with node name",
+			name:        "secure with node name",
+			trustDomain: "example.org",
 			hcl: `
 				node_name = "boo"
 			`,
@@ -391,13 +449,15 @@ func (s *Suite) TestConfigure() {
 		},
 
 		{
-			name:    "invalid hcl",
-			hcl:     "bad",
-			errCode: codes.InvalidArgument,
-			errMsg:  "unable to decode configuration",
+			name:        "invalid hcl",
+			trustDomain: "example.org",
+			hcl:         "bad",
+			errCode:     codes.InvalidArgument,
+			errMsg:      "unable to decode configuration",
 		},
 		{
-			name: "both insecure and secure ports specified",
+			name:        "both insecure and secure ports specified",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_read_only_port = 10255
 				kubelet_secure_port = 10250
@@ -406,7 +466,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "cannot use both the read-only and secure port",
 		},
 		{
-			name: "non-existent kubelet ca",
+			name:        "non-existent kubelet ca",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_ca_path = "no-such-file"
 			`,
@@ -414,7 +475,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to load kubelet CA",
 		},
 		{
-			name: "bad kubelet ca",
+			name:        "bad kubelet ca",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_ca_path =  "bad-pem"
 			`,
@@ -422,7 +484,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to parse kubelet CA",
 		},
 		{
-			name: "non-existent token",
+			name:        "non-existent token",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				token_path = "no-such-file"
@@ -431,7 +494,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to load token",
 		},
 		{
-			name: "invalid poll retry interval",
+			name:        "invalid poll retry interval",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_read_only_port = 10255
 				poll_retry_interval = "blah"
@@ -440,7 +504,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to parse poll retry interval",
 		},
 		{
-			name: "invalid reload interval",
+			name:        "invalid reload interval",
+			trustDomain: "example.org",
 			hcl: `
 				kubelet_read_only_port = 10255
 				reload_interval = "blah"
@@ -449,7 +514,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to parse reload interval",
 		},
 		{
-			name: "cert but no key",
+			name:        "cert but no key",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "cert"
@@ -458,7 +524,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "the private key path is required with the certificate path",
 		},
 		{
-			name: "key but no cert",
+			name:        "key but no cert",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				private_key_path = "key"
@@ -467,7 +534,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "the certificate path is required with the private key path",
 		},
 		{
-			name: "bad cert",
+			name:        "bad cert",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "bad-pem"
@@ -477,7 +545,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to load keypair",
 		},
 		{
-			name: "non-existent cert",
+			name:        "non-existent cert",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "no-such-file"
@@ -487,7 +556,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to load certificate",
 		},
 		{
-			name: "bad key",
+			name:        "bad key",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "cert.pem"
@@ -497,7 +567,8 @@ func (s *Suite) TestConfigure() {
 			errMsg:  "unable to load keypair",
 		},
 		{
-			name: "non-existent key",
+			name:        "non-existent key",
+			trustDomain: "example.org",
 			hcl: `
 				skip_kubelet_verification = true
 				certificate_path = "cert.pem"
@@ -509,12 +580,14 @@ func (s *Suite) TestConfigure() {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase // alias loop variable as it is used in the closure
 		s.T().Run(testCase.name, func(t *testing.T) {
 			p := s.newPlugin()
 
 			var err error
 			plugintest.Load(s.T(), builtin(p), nil,
+				plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString(testCase.trustDomain),
+				}),
 				plugintest.Configure(testCase.hcl),
 				plugintest.CaptureConfigureError(&err))
 
@@ -525,7 +598,7 @@ func (s *Suite) TestConfigure() {
 			require.NotNil(t, testCase.config, "test case missing expected config")
 			assert.NoError(t, err)
 
-			c, err := p.getConfig()
+			c, _, _, err := p.getConfig()
 			require.NoError(t, err)
 
 			switch {
@@ -555,9 +628,86 @@ func (s *Suite) TestConfigure() {
 	}
 }
 
+func (s *Suite) TestConfigureWithSigstore() {
+	cases := []struct {
+		name          string
+		trustDomain   string
+		hcl           string
+		expectedError string
+		want          *sigstore.Config
+	}{
+		{
+			name:        "complete sigstore configuration",
+			trustDomain: "example.org",
+			hcl: `
+				    skip_kubelet_verification = true
+					experimental {
+    					sigstore {
+        					allowed_identities = {
+            					"test-issuer-1" = ["*@example.com", "subject@otherdomain.com"]
+            					"test-issuer-2" = ["domain/ci.yaml@refs/tags/*"]
+        					}
+        					skipped_images = ["registry/image@sha256:examplehash"]
+        					rekor_url = "https://test.dev"
+        					ignore_sct = true
+        					ignore_tlog = true
+                            ignore_attestations = true
+                            registry_credentials = {
+                                "registry-1" = { username = "user1", password = "pass1" }
+                                "registry-2" = { username = "user2", password = "pass2" }
+                            }
+    					}
+			}`,
+			expectedError: "",
+		},
+		{
+			name:        "empty sigstore configuration",
+			trustDomain: "example.org",
+			hcl: `
+				    skip_kubelet_verification = true
+					experimental { sigstore {} }
+			`,
+			expectedError: "",
+		},
+		{
+			name:        "invalid HCL",
+			trustDomain: "example.org",
+			hcl: `
+				    skip_kubelet_verification = true
+					experimental { sigstore = "invalid" }
+			`,
+			expectedError: "unable to decode configuration",
+		},
+	}
+
+	for _, tc := range cases {
+		s.T().Run(tc.name, func(t *testing.T) {
+			p := s.newPlugin()
+
+			var err error
+			plugintest.Load(s.T(), builtin(p), nil,
+				plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString(tc.trustDomain),
+				}),
+				plugintest.Configure(tc.hcl),
+				plugintest.CaptureConfigureError(&err))
+
+			if tc.expectedError != "" {
+				s.RequireGRPCStatusContains(err, codes.InvalidArgument, tc.expectedError)
+				return
+			}
+			require.NoError(t, err)
+
+			_, _, sigstoreVerifier, err := p.getConfig()
+			require.NoError(t, err)
+			assert.NotNil(t, sigstoreVerifier)
+		})
+	}
+}
+
 func (s *Suite) newPlugin() *Plugin {
 	p := New()
-	p.fs = testFS(s.dir)
+	p.rootDir = s.dir
 	p.clock = s.clock
 	p.getenv = func(key string) string {
 		return s.env[key]
@@ -579,14 +729,12 @@ func (s *Suite) writeFile(path, data string) {
 	s.Require().NoError(os.WriteFile(realPath, []byte(data), 0600))
 }
 
-func (s *Suite) serveHTTP(w http.ResponseWriter, req *http.Request) {
-	// TODO:
-	if len(s.podList) == 0 {
-		http.Error(w, "not configured to return a pod list", http.StatusOK)
+func (s *Suite) serveHTTP(w http.ResponseWriter, _ *http.Request) {
+	podList := s.consumePodListResponse()
+	if podList == nil {
+		http.Error(w, "not configured to return a pod list", http.StatusInternalServerError)
 		return
 	}
-	podList := s.podList[0]
-	s.podList = s.podList[1:]
 	_, _ = w.Write(podList)
 }
 
@@ -600,12 +748,21 @@ func (s *Suite) kubeletPort() int {
 func (s *Suite) loadPlugin(configuration string) workloadattestor.WorkloadAttestor {
 	v1 := new(workloadattestor.V1)
 	p := s.newPlugin()
+
 	plugintest.Load(s.T(), builtin(p), v1,
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
 		plugintest.Configure(configuration),
 	)
 
 	if cHelper := s.oc.getContainerHelper(p); cHelper != nil {
 		p.setContainerHelper(cHelper)
+	}
+
+	// if sigstore is configured, override with fake
+	if p.sigstoreVerifier != nil {
+		p.sigstoreVerifier = newFakeSigstoreVerifier(map[string][]string{imageID: {"sigstore:selector"}})
 	}
 	return v1
 }
@@ -625,6 +782,18 @@ func (s *Suite) loadInsecurePluginWithExtra(extraConfig string) workloadattestor
 		poll_retry_interval = "1s"
 		%s
 `, s.kubeletPort(), extraConfig))
+}
+
+func (s *Suite) loadInsecurePluginWithSigstore() workloadattestor.WorkloadAttestor {
+	return s.loadPlugin(fmt.Sprintf(`
+		kubelet_read_only_port = %d
+		max_poll_attempts = 5
+		poll_retry_interval = "1s"
+		experimental {
+			sigstore {
+			}
+		}
+	`, s.kubeletPort()))
 }
 
 func (s *Suite) startInsecureKubelet() {
@@ -783,8 +952,8 @@ func (s *Suite) requireAttestFailure(p workloadattestor.WorkloadAttestor, code c
 
 func (s *Suite) requireSelectorsEqual(expected, actual []*common.Selector) {
 	// assert the selectors (non-destructively sorting for consistency)
-	actual = append([]*common.Selector(nil), actual...)
-	expected = append([]*common.Selector(nil), expected...)
+	actual = slices.Clone(actual)
+	expected = slices.Clone(expected)
 	util.SortSelectors(actual)
 	util.SortSelectors(expected)
 	s.RequireProtoListEqual(expected, actual)
@@ -806,11 +975,47 @@ func (s *Suite) addPodListResponse(fixturePath string) {
 	podList, err := os.ReadFile(fixturePath)
 	s.Require().NoError(err)
 
+	s.podListMu.Lock()
+	defer s.podListMu.Unlock()
 	s.podList = append(s.podList, podList)
 }
 
-type testFS string
+func (s *Suite) consumePodListResponse() []byte {
+	s.podListMu.Lock()
+	defer s.podListMu.Unlock()
+	if len(s.podList) > 0 {
+		podList := s.podList[0]
+		s.podList = s.podList[1:]
+		return podList
+	}
+	return nil
+}
 
-func (fs testFS) Open(path string) (io.ReadCloser, error) {
-	return os.Open(filepath.Join(string(fs), path))
+func (s *Suite) podListResponseCount() int {
+	s.podListMu.RLock()
+	defer s.podListMu.RUnlock()
+	return len(s.podList)
+}
+
+type fakeSigstoreVerifier struct {
+	mu sync.Mutex
+
+	SigDetailsSets map[string][]string
+}
+
+func newFakeSigstoreVerifier(selectors map[string][]string) *fakeSigstoreVerifier {
+	return &fakeSigstoreVerifier{
+		SigDetailsSets: selectors,
+	}
+}
+
+func (v *fakeSigstoreVerifier) Verify(_ context.Context, imageID string) ([]string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if selectors, found := v.SigDetailsSets[imageID]; found {
+		return selectors, nil
+	}
+
+	return nil, fmt.Errorf("failed to verify signature for image %s", imageID)
 }

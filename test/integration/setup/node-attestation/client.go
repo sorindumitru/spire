@@ -22,7 +22,6 @@ import (
 	"github.com/spiffe/spire/test/integration/setup/itclient"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -35,7 +34,7 @@ F21JuznwCuYKNV5LnzhUA3nt2+6e18ZIXUDxl+CpkvCYc10MO6SYg6AE
 	testStep    = flag.String("testStep", "", "jointoken, attest, ban, renew")
 	tokenName   = flag.String("tokenName", "tokenName", "token for attestation")
 	certificate = flag.String("certificate", "", "certificate for api connection")
-	popCert     = flag.String("popCertficate", "/opt/spire/conf/agent/test.crt.pem", "certificate for x509pop attestation")
+	popCert     = flag.String("popCertificate", "/opt/spire/conf/agent/test.crt.pem", "certificate for x509pop attestation")
 	popKey      = flag.String("popKey", "/opt/spire/conf/agent/test.key.pem", "key for x509pop attestation")
 )
 
@@ -70,7 +69,7 @@ func run() error {
 }
 
 func doJoinTokenStep(ctx context.Context) error {
-	c := itclient.NewLocalServerClient(ctx)
+	c := itclient.NewLocalServerClient()
 	defer c.Release()
 
 	tokenID, err := rand.Int(rand.Reader, big.NewInt(1000000))
@@ -92,7 +91,7 @@ func doJoinTokenStep(ctx context.Context) error {
 
 func doJoinTokenAttestStep(ctx context.Context, tokenName string) error {
 	// Now do agent attestation using the join token and save the resulting SVID to a file. This will give us an SVID
-	agentRemoteConn := itclient.NewInsecure(ctx)
+	agentRemoteConn := itclient.NewInsecure()
 	defer agentRemoteConn.Release()
 	agentRemoteClient := agentRemoteConn.AgentClient()
 
@@ -147,7 +146,7 @@ func doRenewStep(ctx context.Context) error {
 		return fmt.Errorf("failed to parse cert: %w", err)
 	}
 
-	agentRemoteConn := itclient.NewWithCert(ctx, cert, key)
+	agentRemoteConn := itclient.NewWithCert(cert, key)
 	defer agentRemoteConn.Release()
 	agentRemoteClient := agentRemoteConn.AgentClient()
 
@@ -179,7 +178,7 @@ func doRenewStep(ctx context.Context) error {
 }
 
 func doBanStep(ctx context.Context) error {
-	c := itclient.NewLocalServerClient(ctx)
+	c := itclient.NewLocalServerClient()
 	defer c.Release()
 
 	agentClient := c.AgentClient()
@@ -208,14 +207,14 @@ func doX509popStep(ctx context.Context) error {
 	client := c.AgentClient()
 
 	// Attest agent
-	svidResp, err := x509popAttest(ctx)
-	if err != nil {
+	if _, err := x509popAttest(ctx); err != nil {
 		return fmt.Errorf("failed to attest: %w", err)
 	}
 
-	// Renew agent
-	if err := x509popRenew(ctx, svidResp); err != nil {
-		return fmt.Errorf("failed to renew agent: %w", err)
+	// Reattest agent to "renew"
+	svidResp, err := x509popAttest(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to re-attest agent for renewal: %w", err)
 	}
 
 	// Delete agent
@@ -231,7 +230,7 @@ func doX509popStep(ctx context.Context) error {
 
 	// Ban agent
 	if err := banAgent(ctx, client, svidResp.Id); err != nil {
-		return errors.New("failed to ban agent")
+		return fmt.Errorf("failed to ban agent: %w", err)
 	}
 
 	// Reattest banned agent, it MUST fail
@@ -265,7 +264,7 @@ func x509popAttest(ctx context.Context) (*types.X509SVID, error) {
 	log.Println("Attesting agent...")
 
 	// Create insecure connection
-	conn := itclient.NewInsecure(ctx)
+	conn := itclient.NewInsecure()
 	defer conn.Release()
 	client := conn.AgentClient()
 
@@ -345,40 +344,6 @@ func x509popAttest(ctx context.Context) (*types.X509SVID, error) {
 	}
 
 	return resp.GetResult().Svid, nil
-}
-
-// x509popRenew creates a connection using provided svid and renew it
-func x509popRenew(ctx context.Context, x509Svid *types.X509SVID) error {
-	log.Println("Renewing agent...")
-
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
-	if err != nil {
-		return fmt.Errorf("failed to create CSR: %w", err)
-	}
-
-	cert, err := x509.ParseCertificate(x509Svid.CertChain[0])
-	if err != nil {
-		return fmt.Errorf("failed to parse cert: %w", err)
-	}
-
-	conn := itclient.NewWithCert(ctx, cert, key)
-	defer conn.Release()
-	client := conn.AgentClient()
-
-	resp, err := client.RenewAgent(ctx, &agent.RenewAgentRequest{
-		Params: &agent.AgentX509SVIDParams{
-			Csr: csr,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to renew agent: %w", err)
-	}
-
-	if !proto.Equal(resp.Svid.Id, x509Svid.Id) {
-		return fmt.Errorf("uxexpected ID: %q, expected: %q", resp.Svid.Id.String(), x509Svid.Id.String())
-	}
-
-	return nil
 }
 
 // deleteAgent delete agent using "admin" connection

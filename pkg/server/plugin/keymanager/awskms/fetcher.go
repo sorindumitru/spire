@@ -53,7 +53,7 @@ func (kf *keyFetcher) fetchKeyEntries(ctx context.Context) ([]*keyEntry, error) 
 				continue
 			}
 
-			// The following checks are purely defensive but we want to ensure
+			// The following checks are purely defensive, but we want to ensure
 			// we don't try and handle an alias with a malformed shape.
 			switch {
 			case alias.AliasArn == nil:
@@ -108,9 +108,9 @@ func (kf *keyFetcher) fetchKeyEntryDetails(ctx context.Context, alias types.Alia
 		return nil, status.Errorf(codes.FailedPrecondition, "found disabled SPIRE key: %q, alias: %q", *describeResp.KeyMetadata.Arn, *alias.AliasArn)
 	}
 
-	keyType, ok := keyTypeFromKeySpec(describeResp.KeyMetadata.CustomerMasterKeySpec) //nolint:staticcheck // not deprecated in a relased version yet
+	keyType, ok := keyTypeFromKeySpec(describeResp.KeyMetadata.KeySpec)
 	if !ok {
-		return nil, status.Errorf(codes.Internal, "unsupported key spec: %v", describeResp.KeyMetadata.CustomerMasterKeySpec) //nolint:staticcheck // not deprecated in a relased version yet
+		return nil, status.Errorf(codes.Internal, "unsupported key spec: %v", describeResp.KeyMetadata.KeySpec)
 	}
 
 	publicKeyResp, err := kf.kmsClient.GetPublicKey(ctx, &kms.GetPublicKeyInput{KeyId: alias.AliasArn})

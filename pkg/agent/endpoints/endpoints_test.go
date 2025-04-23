@@ -7,31 +7,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/armon/go-metrics"
-	api_v2 "github.com/envoyproxy/go-control-plane/envoy/api/v2"
-	discovery_v2 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
 	discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	secret_v3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
+	"github.com/hashicorp/go-metrics"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	workload_pb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
-	healthv1 "github.com/spiffe/spire/pkg/agent/api/health/v1"
-	"github.com/spiffe/spire/pkg/agent/api/rpccontext"
-	"github.com/spiffe/spire/pkg/agent/endpoints/sdsv2"
-	"github.com/spiffe/spire/pkg/agent/endpoints/sdsv3"
-	"github.com/spiffe/spire/pkg/agent/endpoints/workload"
-	"github.com/spiffe/spire/pkg/agent/manager"
-	"github.com/spiffe/spire/pkg/common/telemetry"
-	"github.com/spiffe/spire/pkg/common/util"
-	"github.com/spiffe/spire/test/fakes/fakemetrics"
-	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
+
+	healthv1 "github.com/spiffe/spire/pkg/agent/api/health/v1"
+	"github.com/spiffe/spire/pkg/agent/api/rpccontext"
+	"github.com/spiffe/spire/pkg/agent/endpoints/sdsv3"
+	"github.com/spiffe/spire/pkg/agent/endpoints/workload"
+	"github.com/spiffe/spire/pkg/agent/manager"
+	"github.com/spiffe/spire/pkg/common/api/middleware"
+	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/test/fakes/fakemetrics"
+	"github.com/spiffe/spire/test/spiretest"
 )
 
 func TestEndpoints(t *testing.T) {
@@ -99,33 +99,6 @@ func TestEndpoints(t *testing.T) {
 			},
 		},
 		{
-			name: "sds v2 api has peertracker attestor plumbed",
-			do: func(t *testing.T, conn *grpc.ClientConn) {
-				sdsClient := discovery_v2.NewSecretDiscoveryServiceClient(conn)
-				_, err := sdsClient.FetchSecrets(ctx, &api_v2.DiscoveryRequest{})
-				require.NoError(t, err)
-			},
-			expectedLogs: []spiretest.LogEntry{
-				logEntryWithPID(logrus.InfoLevel, "Success",
-					"method", "FetchSecrets",
-					"service", "SDS.v2",
-				),
-			},
-			expectedMetrics: []fakemetrics.MetricItem{
-				// Global connection counter and then the increment/decrement of the connection gauge
-				{Type: fakemetrics.IncrCounterType, Key: []string{"sds_api", "connection"}, Val: 1},
-				{Type: fakemetrics.SetGaugeType, Key: []string{"sds_api", "connections"}, Val: 1},
-				{Type: fakemetrics.SetGaugeType, Key: []string{"sds_api", "connections"}, Val: 0},
-				// Call counter
-				{Type: fakemetrics.IncrCounterWithLabelsType, Key: []string{"rpc", "sds", "v2", "fetch_secrets"}, Val: 1, Labels: []metrics.Label{
-					{Name: "status", Value: "OK"},
-				}},
-				{Type: fakemetrics.MeasureSinceWithLabelsType, Key: []string{"rpc", "sds", "v2", "fetch_secrets", "elapsed_time"}, Val: 0, Labels: []metrics.Label{
-					{Name: "status", Value: "OK"},
-				}},
-			},
-		},
-		{
 			name: "sds v3 api has peertracker attestor plumbed",
 			do: func(t *testing.T, conn *grpc.ClientConn) {
 				sdsClient := secret_v3.NewSecretDiscoveryServiceClient(conn)
@@ -156,8 +129,40 @@ func TestEndpoints(t *testing.T) {
 			name:       "access denied to remote caller",
 			fromRemote: true,
 		},
+		{
+			name: "reflection enabled",
+			do: func(t *testing.T, conn *grpc.ClientConn) {
+				exposedServices := []string{
+					middleware.WorkloadAPIServiceName,
+					middleware.EnvoySDSv3ServiceName,
+					middleware.HealthServiceName,
+					middleware.ServerReflectionServiceName,
+					middleware.ServerReflectionV1AlphaServiceName,
+				}
+				client := grpc_reflection_v1.NewServerReflectionClient(conn)
+
+				clientStream, err := client.ServerReflectionInfo(ctx)
+				require.NoError(t, err)
+
+				err = clientStream.Send(&grpc_reflection_v1.ServerReflectionRequest{
+					MessageRequest: &grpc_reflection_v1.ServerReflectionRequest_ListServices{},
+				})
+				require.NoError(t, err)
+
+				resp, err := clientStream.Recv()
+				require.NoError(t, err)
+
+				listResp := resp.GetListServicesResponse()
+				require.NotNil(t, listResp)
+
+				var serviceNames []string
+				for _, service := range listResp.Service {
+					serviceNames = append(serviceNames, service.Name)
+				}
+				assert.ElementsMatch(t, exposedServices, serviceNames)
+			},
+		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			log, hook := test.NewNullLogger()
 			metrics := fakemetrics.New()
@@ -185,16 +190,6 @@ func TestEndpoints(t *testing.T) {
 						assert.Empty(t, c.AllowedForeignJWTClaims)
 					}
 					return FakeWorkloadAPIServer{Attestor: attestor}
-				},
-
-				// Assert the provided config and return a fake SDS server
-				newSDSv2Server: func(c sdsv2.Config) discovery_v2.SecretDiscoveryServiceServer {
-					attestor, ok := c.Attestor.(PeerTrackerAttestor)
-					require.True(t, ok, "attestor was not a PeerTrackerAttestor wrapper")
-					assert.Equal(t, FakeManager{}, c.Manager)
-					assert.Equal(t, "DefaultSVIDName", c.DefaultSVIDName)
-					assert.Equal(t, "DefaultBundleName", c.DefaultBundleName)
-					return FakeSDSv2Server{Attestor: attestor}
 				},
 
 				// Assert the provided config and return a fake SDS server
@@ -233,11 +228,11 @@ func TestEndpoints(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.fromRemote {
-				testRemoteCaller(ctx, t, target)
+				testRemoteCaller(t, target)
 				return
 			}
 
-			conn, err := util.GRPCDialContext(ctx, target, grpc.WithBlock())
+			conn, err := util.NewGRPCClient(target)
 			require.NoError(t, err)
 			defer conn.Close()
 
@@ -267,23 +262,11 @@ type FakeWorkloadAPIServer struct {
 	*workload_pb.UnimplementedSpiffeWorkloadAPIServer
 }
 
-func (s FakeWorkloadAPIServer) FetchJWTSVID(ctx context.Context, in *workload_pb.JWTSVIDRequest) (*workload_pb.JWTSVIDResponse, error) {
+func (s FakeWorkloadAPIServer) FetchJWTSVID(ctx context.Context, _ *workload_pb.JWTSVIDRequest) (*workload_pb.JWTSVIDResponse, error) {
 	if err := attest(ctx, s.Attestor); err != nil {
 		return nil, err
 	}
 	return &workload_pb.JWTSVIDResponse{}, nil
-}
-
-type FakeSDSv2Server struct {
-	Attestor PeerTrackerAttestor
-	*discovery_v2.UnimplementedSecretDiscoveryServiceServer
-}
-
-func (s FakeSDSv2Server) FetchSecrets(ctx context.Context, in *api_v2.DiscoveryRequest) (*api_v2.DiscoveryResponse, error) {
-	if err := attest(ctx, s.Attestor); err != nil {
-		return nil, err
-	}
-	return &api_v2.DiscoveryResponse{}, nil
 }
 
 type FakeSDSv3Server struct {
@@ -291,7 +274,7 @@ type FakeSDSv3Server struct {
 	*secret_v3.UnimplementedSecretDiscoveryServiceServer
 }
 
-func (s FakeSDSv3Server) FetchSecrets(ctx context.Context, in *discovery_v3.DiscoveryRequest) (*discovery_v3.DiscoveryResponse, error) {
+func (s FakeSDSv3Server) FetchSecrets(ctx context.Context, _ *discovery_v3.DiscoveryRequest) (*discovery_v3.DiscoveryResponse, error) {
 	if err := attest(ctx, s.Attestor); err != nil {
 		return nil, err
 	}
@@ -299,7 +282,7 @@ func (s FakeSDSv3Server) FetchSecrets(ctx context.Context, in *discovery_v3.Disc
 }
 
 type FakeHealthServer struct {
-	*grpc_health_v1.UnimplementedHealthServer
+	grpc_health_v1.UnimplementedHealthServer
 }
 
 func attest(ctx context.Context, attestor PeerTrackerAttestor) error {
@@ -317,13 +300,13 @@ func attest(ctx context.Context, attestor PeerTrackerAttestor) error {
 	return nil
 }
 
-func logEntryWithPID(level logrus.Level, msg string, keyvalues ...interface{}) spiretest.LogEntry {
+func logEntryWithPID(level logrus.Level, msg string, keyvalues ...any) spiretest.LogEntry {
 	data := logrus.Fields{
 		telemetry.PID: fmt.Sprint(os.Getpid()),
 	}
 	for i := 0; i < len(keyvalues); i += 2 {
 		key := keyvalues[i]
-		var value interface{}
+		var value any
 		if (i + 1) < len(keyvalues) {
 			value = keyvalues[i+1]
 		}

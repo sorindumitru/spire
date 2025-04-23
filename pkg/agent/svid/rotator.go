@@ -9,24 +9,29 @@ import (
 	"sync"
 
 	"github.com/andres-erbsen/clock"
-	observer "github.com/imkira/go-observer"
+	"github.com/imkira/go-observer"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	agentv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/agent/v1"
 	node_attestor "github.com/spiffe/spire/pkg/agent/attestor/node"
 	"github.com/spiffe/spire/pkg/agent/client"
-	"github.com/spiffe/spire/pkg/agent/common/backoff"
 	"github.com/spiffe/spire/pkg/agent/plugin/keymanager"
-	"github.com/spiffe/spire/pkg/common/bundleutil"
-	"github.com/spiffe/spire/pkg/common/fflag"
+	"github.com/spiffe/spire/pkg/common/backoff"
 	"github.com/spiffe/spire/pkg/common/nodeutil"
 	"github.com/spiffe/spire/pkg/common/rotationutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	telemetry_agent "github.com/spiffe/spire/pkg/common/telemetry/agent"
 	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/pkg/common/x509util"
 	"google.golang.org/grpc"
 )
 
 type Rotator interface {
 	Run(ctx context.Context) error
+	Reattest(ctx context.Context) error
+	// NotifyTaintedAuthorities processes new tainted authorities. If the current SVID is compromised,
+	// it is marked to force rotation.
+	NotifyTaintedAuthorities([]*x509.Certificate) error
+	IsTainted() bool
 
 	State() State
 	Subscribe() observer.Stream
@@ -56,8 +61,14 @@ type rotator struct {
 	// Mutex used to prevent rotations when a new connection is being created
 	rotMtx *sync.RWMutex
 
-	// Hook that will be called when the SVID rotation finishes
-	rotationFinishedHook func()
+	hooks struct {
+		// Hook that will be called when the SVID rotation finishes
+		rotationFinishedHook func()
+
+		// Hook that is called when the rotator starts running
+		runRotatorSignal chan struct{}
+	}
+	tainted bool
 }
 
 type State struct {
@@ -76,6 +87,10 @@ func (r *rotator) Run(ctx context.Context) error {
 }
 
 func (r *rotator) runRotation(ctx context.Context) error {
+	if r.hooks.runRotatorSignal != nil {
+		r.hooks.runRotatorSignal <- struct{}{}
+	}
+
 	for {
 		err := r.rotateSVIDIfNeeded(ctx)
 		state, ok := r.state.Value().(State)
@@ -130,12 +145,67 @@ func (r *rotator) Subscribe() observer.Stream {
 	return r.state.Observe()
 }
 
+func (r *rotator) IsTainted() bool {
+	r.rotMtx.RLock()
+	defer r.rotMtx.RUnlock()
+
+	return r.tainted
+}
+
+func (r *rotator) setTainted(tainted bool) {
+	r.rotMtx.Lock()
+	defer r.rotMtx.Unlock()
+
+	r.tainted = tainted
+}
+
+func (r *rotator) NotifyTaintedAuthorities(taintedAuthorities []*x509.Certificate) error {
+	state, ok := r.state.Value().(State)
+	if !ok {
+		return fmt.Errorf("unexpected state value type: %T", r.state.Value())
+	}
+
+	if r.IsTainted() {
+		r.c.Log.Debug("Agent SVID already tainted")
+		return nil
+	}
+
+	tainted, err := x509util.IsSignedByRoot(state.SVID, taintedAuthorities)
+	if err != nil {
+		return fmt.Errorf("failed to check if SVID is tainted: %w", err)
+	}
+
+	if tainted {
+		r.c.Log.Info("Agent SVID is tainted by a root authority, forcing rotation")
+		r.setTainted(tainted)
+	}
+	return nil
+}
+
 func (r *rotator) GetRotationMtx() *sync.RWMutex {
 	return r.rotMtx
 }
 
 func (r *rotator) SetRotationFinishedHook(f func()) {
-	r.rotationFinishedHook = f
+	r.hooks.rotationFinishedHook = f
+}
+
+func (r *rotator) Reattest(ctx context.Context) error {
+	state, ok := r.state.Value().(State)
+	if !ok {
+		return fmt.Errorf("unexpected value type: %T", r.state.Value())
+	}
+
+	if !state.Reattestable {
+		return errors.New("attestation method is not re-attestable")
+	}
+
+	err := r.reattest(ctx)
+	if err == nil && r.hooks.rotationFinishedHook != nil {
+		r.hooks.rotationFinishedHook()
+	}
+
+	return err
 }
 
 func (r *rotator) rotateSVIDIfNeeded(ctx context.Context) (err error) {
@@ -144,15 +214,15 @@ func (r *rotator) rotateSVIDIfNeeded(ctx context.Context) (err error) {
 		return fmt.Errorf("unexpected value type: %T", r.state.Value())
 	}
 
-	if rotationutil.ShouldRotateX509(r.clk.Now(), state.SVID[0]) {
-		if state.Reattestable && fflag.IsSet(fflag.FlagReattestToRenew) {
+	if r.c.RotationStrategy.ShouldRotateX509(r.clk.Now(), state.SVID[0]) || r.IsTainted() {
+		if state.Reattestable {
 			err = r.reattest(ctx)
 		} else {
 			err = r.rotateSVID(ctx)
 		}
 
-		if err == nil && r.rotationFinishedHook != nil {
-			r.rotationFinishedHook()
+		if err == nil && r.hooks.rotationFinishedHook != nil {
+			r.hooks.rotationFinishedHook()
 		}
 	}
 
@@ -185,7 +255,7 @@ func (r *rotator) reattest(ctx context.Context) (err error) {
 		return err
 	}
 
-	conn, err := r.serverConn(ctx, bundle)
+	conn, err := r.serverConn(bundle)
 	if err != nil {
 		return err
 	}
@@ -204,8 +274,9 @@ func (r *rotator) reattest(ctx context.Context) (err error) {
 	}
 
 	r.state.Update(s)
+	r.tainted = false
 
-	// We must release the client because its underlaying connection is tied to an
+	// We must release the client because its underlying connection is tied to an
 	// expired SVID, so next time the client is used, it will get a new connection with
 	// the most up-to-date SVID.
 	r.client.Release()
@@ -251,8 +322,9 @@ func (r *rotator) rotateSVID(ctx context.Context) (err error) {
 	}
 
 	r.state.Update(s)
+	r.tainted = false
 
-	// We must release the client because its underlaying connection is tied to an
+	// We must release the client because its underlying connection is tied to an
 	// expired SVID, so next time the client is used, it will get a new connection with
 	// the most up-to-date SVID.
 	r.client.Release()
@@ -260,7 +332,7 @@ func (r *rotator) rotateSVID(ctx context.Context) (err error) {
 	return nil
 }
 
-func (r *rotator) getBundle() (*bundleutil.Bundle, error) {
+func (r *rotator) getBundle() (*spiffebundle.Bundle, error) {
 	r.bsm.RLock()
 	bundles := r.c.BundleStream.Value()
 	r.bsm.RUnlock()
@@ -290,11 +362,12 @@ func (r *rotator) generateKey(ctx context.Context) (keymanager.Key, error) {
 	return r.c.SVIDKeyManager.GenerateKey(ctx, existingKey)
 }
 
-func (r *rotator) serverConn(ctx context.Context, bundle *bundleutil.Bundle) (*grpc.ClientConn, error) {
-	return client.DialServer(ctx, client.DialServerConfig{
+func (r *rotator) serverConn(bundle *spiffebundle.Bundle) (*grpc.ClientConn, error) {
+	return client.NewServerGRPCClient(client.ServerClientConfig{
 		Address:     r.c.ServerAddr,
 		TrustDomain: r.c.TrustDomain,
-		GetBundle:   bundle.RootCAs,
+		GetBundle:   bundle.X509Authorities,
+		TLSPolicy:   r.c.TLSPolicy,
 	})
 }
 

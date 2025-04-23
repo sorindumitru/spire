@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net/url"
 	"os"
 	"time"
 )
@@ -25,7 +26,7 @@ func main() {
 	rootKey := generateRSAKey()
 
 	rootCert := createRootCertificate(rootKey, &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
+		SerialNumber:          big.NewInt(0x1a2b3c),
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		NotAfter:              neverExpires,
@@ -34,7 +35,7 @@ func main() {
 	intermediateKey := generateRSAKey()
 
 	intermediateCert := createCertificate(intermediateKey, &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
+		SerialNumber:          big.NewInt(0x4d5e6f),
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		NotAfter:              neverExpires,
@@ -43,10 +44,38 @@ func main() {
 	leafKey := generateRSAKey()
 
 	leafCert := createCertificate(leafKey, &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: big.NewInt(0x0a1b2c3d4e5f),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		NotAfter:     neverExpires,
 		Subject:      pkix.Name{CommonName: "COMMONNAME"},
+		URIs: []*url.URL{
+			{Scheme: "x509pop", Host: "example.org", Path: "/datacenter/us-east-1"},
+			{Scheme: "x509pop", Host: "example.org", Path: "/environment/production"},
+			{Scheme: "x509pop", Host: "example.org", Path: "/key/path/to/value"},
+		},
+	}, intermediateKey, intermediateCert)
+
+	svid, _ := url.Parse("spiffe://example.org/somesvid")
+	spiffeLeafCertReg := createCertificate(leafKey, &x509.Certificate{
+		SerialNumber: big.NewInt(0x0a1b2c3d4e6f),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		NotAfter:     neverExpires,
+		Subject:      pkix.Name{CommonName: "COMMONNAME"},
+		URIs:         []*url.URL{svid},
+	}, intermediateKey, intermediateCert)
+
+	svidExchange, _ := url.Parse("spiffe://example.org/spire-exchange/testhost")
+	spiffeLeafCertExchange := createCertificate(leafKey, &x509.Certificate{
+		SerialNumber: big.NewInt(0x0a1b2c3d4e7f),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		NotAfter:     neverExpires,
+		Subject:      pkix.Name{CommonName: "COMMONNAME"},
+		URIs: []*url.URL{
+			svidExchange,
+			{Scheme: "x509pop", Host: "example.org", Path: "/datacenter/us-east-1"},
+			{Scheme: "x509pop", Host: "example.org", Path: "/environment/production"},
+			{Scheme: "x509pop", Host: "example.org", Path: "/key/path/to/value"},
+		},
 	}, intermediateKey, intermediateCert)
 
 	writeKey("leaf-key.pem", leafKey)
@@ -54,6 +83,8 @@ func main() {
 	writeCerts("leaf.pem", leafCert)
 	writeCerts("intermediate.pem", intermediateCert)
 	writeCerts("root-crt.pem", rootCert)
+	writeCerts("svidreg.pem", spiffeLeafCertReg, intermediateCert)
+	writeCerts("svidexchange.pem", spiffeLeafCertExchange, intermediateCert)
 }
 
 func createRootCertificate(key *rsa.PrivateKey, tmpl *x509.Certificate) *x509.Certificate {
@@ -69,19 +100,19 @@ func createCertificate(key *rsa.PrivateKey, tmpl *x509.Certificate, parentKey *r
 }
 
 func generateRSAKey() *rsa.PrivateKey {
-	key, err := rsa.GenerateKey(rand.Reader, 768) //nolint: gosec // small key is to keep test fast... not a security feature
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	panice(err)
 	return key
 }
 
-func writeKey(path string, key interface{}) {
+func writeKey(path string, key any) {
 	keyBytes, err := x509.MarshalPKCS8PrivateKey(key)
 	panice(err)
 	pemBytes := pem.EncodeToMemory(&pem.Block{
 		Type:  "PRIVATE KEY",
 		Bytes: keyBytes,
 	})
-	err = os.WriteFile(path, pemBytes, 0600)
+	err = os.WriteFile(path, pemBytes, 0o600)
 	panice(err)
 }
 
@@ -94,6 +125,6 @@ func writeCerts(path string, certs ...*x509.Certificate) {
 		})
 		panice(err)
 	}
-	err := os.WriteFile(path, data.Bytes(), 0600)
+	err := os.WriteFile(path, data.Bytes(), 0o600)
 	panice(err)
 }

@@ -1,6 +1,7 @@
 package endpoints
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/spire/pkg/server/cache/entrycache"
-	"golang.org/x/net/context"
+	"github.com/spiffe/spire/pkg/server/endpoints/bundle"
 	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -24,12 +25,16 @@ import (
 	bundlev1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/bundle/v1"
 	debugv1_pb "github.com/spiffe/spire-api-sdk/proto/spire/api/server/debug/v1"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
+	localauthorityv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/localauthority/v1"
+	loggerv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/logger/v1"
 	svidv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/svid/v1"
 	trustdomainv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/trustdomain/v1"
 	"github.com/spiffe/spire/pkg/common/auth"
 	"github.com/spiffe/spire/pkg/common/peertracker"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
 	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/api/middleware"
 	"github.com/spiffe/spire/pkg/server/authpolicy"
 	"github.com/spiffe/spire/pkg/server/datastore"
@@ -45,6 +50,12 @@ const (
 	// This is the default amount of time between two reloads of the in-memory
 	// entry cache.
 	defaultCacheReloadInterval = 5 * time.Second
+
+	// This is the default amount of time events live before they are pruned
+	defaultPruneEventsOlderThan = 12 * time.Hour
+
+	// This is the default SQL transaction timeout. This value matches Postgres's default.
+	defaultSQLTransactionTimeout = 24 * time.Hour
 )
 
 // Server manages gRPC and HTTP endpoint lifecycle
@@ -62,25 +73,31 @@ type Endpoints struct {
 	SVIDObserver                 svid.Observer
 	TrustDomain                  spiffeid.TrustDomain
 	DataStore                    datastore.DataStore
+	BundleCache                  *bundle.Cache
 	APIServers                   APIServers
 	BundleEndpointServer         Server
 	Log                          logrus.FieldLogger
 	Metrics                      telemetry.Metrics
 	RateLimit                    RateLimitConfig
 	EntryFetcherCacheRebuildTask func(context.Context) error
+	EntryFetcherPruneEventsTask  func(context.Context) error
+	CertificateReloadTask        func(context.Context) error
 	AuditLogEnabled              bool
 	AuthPolicyEngine             *authpolicy.Engine
 	AdminIDs                     []spiffeid.ID
+	TLSPolicy                    tlspolicy.Policy
 }
 
 type APIServers struct {
-	AgentServer       agentv1.AgentServer
-	BundleServer      bundlev1.BundleServer
-	DebugServer       debugv1_pb.DebugServer
-	EntryServer       entryv1.EntryServer
-	HealthServer      grpc_health_v1.HealthServer
-	SVIDServer        svidv1.SVIDServer
-	TrustDomainServer trustdomainv1.TrustDomainServer
+	AgentServer          agentv1.AgentServer
+	BundleServer         bundlev1.BundleServer
+	DebugServer          debugv1_pb.DebugServer
+	EntryServer          entryv1.EntryServer
+	HealthServer         grpc_health_v1.HealthServer
+	LoggerServer         loggerv1.LoggerServer
+	SVIDServer           svidv1.SVIDServer
+	TrustDomainServer    trustdomainv1.TrustDomainServer
+	LocalAUthorityServer localauthorityv1.LocalAuthorityServer
 }
 
 // RateLimitConfig holds rate limiting configurations.
@@ -102,36 +119,66 @@ func New(ctx context.Context, c Config) (*Endpoints, error) {
 		return nil, errors.New("policy engine not provided for new endpoint")
 	}
 
-	buildCacheFn := func(ctx context.Context) (_ entrycache.Cache, err error) {
-		call := telemetry.StartCall(c.Metrics, telemetry.Entry, telemetry.Cache, telemetry.Reload)
-		defer call.Done(&err)
-		return entrycache.BuildFromDataStore(ctx, c.Catalog.GetDataStore())
-	}
-
 	if c.CacheReloadInterval == 0 {
 		c.CacheReloadInterval = defaultCacheReloadInterval
 	}
-
-	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCacheFn, c.Log, c.Clock, c.CacheReloadInterval)
-	if err != nil {
-		return nil, err
+	if c.PruneEventsOlderThan == 0 {
+		c.PruneEventsOlderThan = defaultPruneEventsOlderThan
 	}
+
+	if c.SQLTransactionTimeout == 0 {
+		c.SQLTransactionTimeout = defaultSQLTransactionTimeout
+	}
+
+	ds := c.Catalog.GetDataStore()
+
+	var ef api.AuthorizedEntryFetcher
+	var cacheRebuildTask, pruneEventsTask func(context.Context) error
+	if c.EventsBasedCache {
+		efEventsBasedCache, err := NewAuthorizedEntryFetcherWithEventsBasedCache(ctx, c.Log, c.Metrics, c.Clock, ds, c.CacheReloadInterval, c.PruneEventsOlderThan, c.SQLTransactionTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cacheRebuildTask = efEventsBasedCache.RunUpdateCacheTask
+		pruneEventsTask = efEventsBasedCache.PruneEventsTask
+		ef = efEventsBasedCache
+	} else {
+		buildCacheFn := func(ctx context.Context) (_ entrycache.Cache, err error) {
+			call := telemetry.StartCall(c.Metrics, telemetry.Entry, telemetry.Cache, telemetry.Reload)
+			defer call.Done(&err)
+			return entrycache.BuildFromDataStore(ctx, c.Catalog.GetDataStore())
+		}
+
+		efFullCache, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCacheFn, c.Log, c.Clock, ds, c.CacheReloadInterval, c.PruneEventsOlderThan)
+		if err != nil {
+			return nil, err
+		}
+		cacheRebuildTask = efFullCache.RunRebuildCacheTask
+		pruneEventsTask = efFullCache.PruneEventsTask
+		ef = efFullCache
+	}
+
+	bundleEndpointServer, certificateReloadTask := c.maybeMakeBundleEndpointServer()
 
 	return &Endpoints{
 		TCPAddr:                      c.TCPAddr,
 		LocalAddr:                    c.LocalAddr,
 		SVIDObserver:                 c.SVIDObserver,
 		TrustDomain:                  c.TrustDomain,
-		DataStore:                    c.Catalog.GetDataStore(),
+		DataStore:                    ds,
+		BundleCache:                  bundle.NewCache(ds, c.Clock),
 		APIServers:                   c.makeAPIServers(ef),
-		BundleEndpointServer:         c.maybeMakeBundleEndpointServer(),
+		BundleEndpointServer:         bundleEndpointServer,
 		Log:                          c.Log,
 		Metrics:                      c.Metrics,
 		RateLimit:                    c.RateLimit,
-		EntryFetcherCacheRebuildTask: ef.RunRebuildCacheTask,
+		EntryFetcherCacheRebuildTask: cacheRebuildTask,
+		EntryFetcherPruneEventsTask:  pruneEventsTask,
+		CertificateReloadTask:        certificateReloadTask,
 		AuditLogEnabled:              c.AuditLogEnabled,
 		AuthPolicyEngine:             c.AuthPolicyEngine,
 		AdminIDs:                     c.AdminIDs,
+		TLSPolicy:                    c.TLSPolicy,
 	}, nil
 }
 
@@ -146,7 +193,7 @@ func (e *Endpoints) ListenAndServe(ctx context.Context) error {
 	tcpServer := e.createTCPServer(ctx, unaryInterceptor, streamInterceptor)
 	udsServer := e.createUDSServer(unaryInterceptor, streamInterceptor)
 
-	// New APIs
+	// TCP and UDS
 	agentv1.RegisterAgentServer(tcpServer, e.APIServers.AgentServer)
 	agentv1.RegisterAgentServer(udsServer, e.APIServers.AgentServer)
 	bundlev1.RegisterBundleServer(tcpServer, e.APIServers.BundleServer)
@@ -157,8 +204,11 @@ func (e *Endpoints) ListenAndServe(ctx context.Context) error {
 	svidv1.RegisterSVIDServer(udsServer, e.APIServers.SVIDServer)
 	trustdomainv1.RegisterTrustDomainServer(tcpServer, e.APIServers.TrustDomainServer)
 	trustdomainv1.RegisterTrustDomainServer(udsServer, e.APIServers.TrustDomainServer)
+	localauthorityv1.RegisterLocalAuthorityServer(tcpServer, e.APIServers.LocalAUthorityServer)
+	localauthorityv1.RegisterLocalAuthorityServer(udsServer, e.APIServers.LocalAUthorityServer)
 
-	// Register Health and Debug only on UDS server
+	// UDS only
+	loggerv1.RegisterLoggerServer(udsServer, e.APIServers.LoggerServer)
 	grpc_health_v1.RegisterHealthServer(udsServer, e.APIServers.HealthServer)
 	debugv1_pb.RegisterDebugServer(udsServer, e.APIServers.DebugServer)
 
@@ -174,6 +224,14 @@ func (e *Endpoints) ListenAndServe(ctx context.Context) error {
 
 	if e.BundleEndpointServer != nil {
 		tasks = append(tasks, e.BundleEndpointServer.ListenAndServe)
+	}
+
+	if e.EntryFetcherPruneEventsTask != nil {
+		tasks = append(tasks, e.EntryFetcherPruneEventsTask)
+	}
+
+	if e.CertificateReloadTask != nil {
+		tasks = append(tasks, e.CertificateReloadTask)
 	}
 
 	err := util.RunTasks(ctx, tasks...)
@@ -213,7 +271,7 @@ func (e *Endpoints) createUDSServer(unaryInterceptor grpc.UnaryServerInterceptor
 	return grpc.NewServer(options...)
 }
 
-// runTCPServer will start the server and block until it exits or we are dying.
+// runTCPServer will start the server and block until it exits, or we are dying.
 func (e *Endpoints) runTCPServer(ctx context.Context, server *grpc.Server) error {
 	l, err := net.Listen(e.TCPAddr.Network(), e.TCPAddr.String())
 	if err != nil {
@@ -222,7 +280,8 @@ func (e *Endpoints) runTCPServer(ctx context.Context, server *grpc.Server) error
 	defer l.Close()
 	log := e.Log.WithFields(logrus.Fields{
 		telemetry.Network: l.Addr().Network(),
-		telemetry.Address: l.Addr().String()})
+		telemetry.Address: l.Addr().String(),
+	})
 
 	// Skip use of tomb here so we don't pollute a clean shutdown with errors
 	log.Info("Starting Server APIs")
@@ -243,7 +302,7 @@ func (e *Endpoints) runTCPServer(ctx context.Context, server *grpc.Server) error
 }
 
 // runLocalAccess will start a grpc server to be accessed locally
-// and block until it exits or we are dying.
+// and block until it exits, or we are dying.
 func (e *Endpoints) runLocalAccess(ctx context.Context, server *grpc.Server) error {
 	os.Remove(e.LocalAddr.String())
 	var l net.Listener
@@ -265,7 +324,8 @@ func (e *Endpoints) runLocalAccess(ctx context.Context, server *grpc.Server) err
 
 	log := e.Log.WithFields(logrus.Fields{
 		telemetry.Network: l.Addr().Network(),
-		telemetry.Address: l.Addr().String()})
+		telemetry.Address: l.Addr().String(),
+	})
 
 	// Skip use of tomb here so we don't pollute a clean shutdown with errors
 	log.Info("Starting Server APIs")
@@ -301,6 +361,11 @@ func (e *Endpoints) getTLSConfig(ctx context.Context) func(*tls.ClientHelloInfo)
 		spiffeTLSConfig.MinVersion = tls.VersionTLS12
 		spiffeTLSConfig.NextProtos = []string{http2.NextProtoTLS}
 		spiffeTLSConfig.VerifyPeerCertificate = e.serverSpiffeVerificationFunc(bundleSrc)
+
+		err := tlspolicy.ApplyPolicy(spiffeTLSConfig, e.TLSPolicy)
+		if err != nil {
+			return nil, err
+		}
 
 		return spiffeTLSConfig, nil
 	}

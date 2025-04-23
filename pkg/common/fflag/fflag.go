@@ -24,16 +24,6 @@ type RawConfig []string
 // false, with the only exception being flags that are in the process of being
 // deprecated.
 const (
-	// FlagForcedRotation controls whether or not the new APIs and
-	// extensions related to forced rotation and revocation are
-	// enabled or not. See #1934 for more information.
-	FlagForcedRotation Flag = "forced_rotation"
-
-	// FlagReattestToRenew controls whether or not the agent will reattest to
-	// renew when the SVID expires. Some attestors, such as aws_iid, are not
-	// reattestable. In those cases the agent will still renew without reattesting.
-	FlagReattestToRenew Flag = "reattest_to_renew"
-
 	// FlagTestFlag is defined purely for testing purposes.
 	FlagTestFlag Flag = "i_am_a_test_flag"
 )
@@ -45,9 +35,7 @@ var (
 		mtx    *sync.RWMutex
 	}{
 		flags: map[Flag]bool{
-			FlagForcedRotation:  false,
-			FlagReattestToRenew: false,
-			FlagTestFlag:        false,
+			FlagTestFlag: false,
 		},
 		loaded: false,
 		mtx:    new(sync.RWMutex),
@@ -110,7 +98,7 @@ func Unload() error {
 	return nil
 }
 
-// IsSet can be used to determine whether or not a particular feature flag is
+// IsSet can be used to determine whether a particular feature flag is
 // set.
 func IsSet(f Flag) bool {
 	singleton.mtx.RLock()

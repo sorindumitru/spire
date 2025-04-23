@@ -1,7 +1,8 @@
+# syntax = docker/dockerfile:1.6.0@sha256:ac85f380a63b13dfcefa89046420e1781752bab202122f8f50032edf31be0021
+
 # Build stage
-# syntax = docker/dockerfile:1.4.2@sha256:443aab4ca21183e069e7d8b2dc68006594f40bddf1b15bbd83f5137bd93e80e2
 ARG goversion
-FROM --platform=${BUILDPLATFORM} golang:${goversion}-alpine as base
+FROM --platform=${BUILDPLATFORM} golang:${goversion}-alpine3.20 as base
 WORKDIR /spire
 RUN apk --no-cache --update add file bash clang lld pkgconfig git make
 COPY go.* ./
@@ -12,43 +13,73 @@ COPY . .
 # xx is a helper for cross-compilation
 # when bumping to a new version analyze the new version for security issues
 # then use crane to lookup the digest of that version so we are immutable
-# crane digest tonistiigi/xx:1.1.2
-FROM --platform=$BUILDPLATFORM tonistiigi/xx@sha256:9dde7edeb9e4a957ce78be9f8c0fbabe0129bf5126933cd3574888f443731cda AS xx
+# crane digest tonistiigi/xx:1.3.0
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.5.0@sha256:0c6a569797744e45955f39d4f7538ac344bfb7ebf0a54006a0a4297b153ccf0f AS xx
 
 FROM --platform=${BUILDPLATFORM} base as builder
+ARG TAG
 ARG TARGETPLATFORM
 ARG TARGETARCH
 COPY --link --from=xx / /
-RUN install -d -o root -g root -m 1777 /newtmp
+
 RUN xx-go --wrap
 RUN set -e ; xx-apk --no-cache --update add build-base musl-dev libseccomp-dev
+ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    if [ "$TARGETARCH" = "arm64" ]; then CC=aarch64-alpine-linux-musl; fi && \
-    make build-static && \
-    for f in $(find bin -executable -type f); do xx-verify $f; done
+    if [ "$TARGETARCH" = "arm64" ]; then CC=aarch64-alpine-linux-musl; elif [ "$TARGETARCH" = "s390x" ]; then CC=s390x-alpine-linux-musl; fi && \
+    make build-static git_tag=$TAG git_dirty="" && \
+    for f in $(find bin -executable -type f); do xx-verify --static $f; done
 
 FROM --platform=${BUILDPLATFORM} scratch AS spire-base
+COPY --link --from=builder --chown=root:root --chmod=755 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /opt/spire
-CMD []
-COPY --link --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --link --from=builder /newtmp /tmp
+
+# Preparation environment for setting up directories
+FROM alpine as prep-spire-server
+RUN mkdir -p /spireroot/opt/spire/bin \
+    /spireroot/etc/spire/server \
+    /spireroot/run/spire/server/private \
+    /spireroot/tmp/spire-server/private \
+    /spireroot/var/lib/spire/server
+
+FROM alpine as prep-spire-agent
+RUN mkdir -p /spireroot/opt/spire/bin \
+    /spireroot/etc/spire/agent \
+    /spireroot/run/spire/agent/public \
+    /spireroot/tmp/spire-agent/public \
+    /spireroot/var/lib/spire/agent
+
+# For users that wish to run SPIRE containers with a specific uid and gid, the
+# spireuid and spiregid arguments are provided. The default paths that SPIRE
+# will try to read from, write to, and create at runtime are given the
+# corresponding file ownership/permissions at build time.
+# A default non-root user is defined for SPIRE Server and the OIDC Discovery
+# Provider. The SPIRE Agent image runs as root by default to facilitate the
+# sharing of the agent socket in Kubernetes environments.
 
 # SPIRE Server
 FROM spire-base AS spire-server
+ARG spireuid=1000
+ARG spiregid=1000
+USER ${spireuid}:${spiregid}
 ENTRYPOINT ["/opt/spire/bin/spire-server", "run"]
-COPY --link --from=builder /spire/bin/static/spire-server bin/
+COPY --link --from=prep-spire-server --chown=${spireuid}:${spiregid} --chmod=755 /spireroot /
+COPY --link --from=builder --chown=${spireuid}:${spiregid} --chmod=755 /spire/bin/static/spire-server /opt/spire/bin/
 
+# SPIRE Agent
 FROM spire-base AS spire-agent
+ARG spireuid=0
+ARG spiregid=0
+USER ${spireuid}:${spiregid}
 ENTRYPOINT ["/opt/spire/bin/spire-agent", "run"]
-COPY --link --from=builder /spire/bin/static/spire-agent bin/
-
-# K8S Workload Registrar
-FROM spire-base AS k8s-workload-registrar
-ENTRYPOINT ["/opt/spire/bin/k8s-workload-registrar"]
-COPY --link --from=builder /spire/bin/static/k8s-workload-registrar bin/
+COPY --link --from=prep-spire-agent --chown=${spireuid}:${spiregid} --chmod=755 /spireroot /
+COPY --link --from=builder --chown=${spireuid}:${spiregid} --chmod=755 /spire/bin/static/spire-agent /opt/spire/bin/
 
 # OIDC Discovery Provider
 FROM spire-base AS oidc-discovery-provider
+ARG spireuid=1000
+ARG spiregid=1000
+USER ${spireuid}:${spiregid}
 ENTRYPOINT ["/opt/spire/bin/oidc-discovery-provider"]
-COPY --link --from=builder /spire/bin/static/oidc-discovery-provider bin/
+COPY --link --from=builder --chown=${spireuid}:${spiregid} --chmod=755 /spire/bin/static/oidc-discovery-provider /opt/spire/bin/

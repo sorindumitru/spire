@@ -44,6 +44,7 @@ func TestCreate(t *testing.T) {
 					DnsNames:      []string{"unu1000", "ung1000"},
 					Downstream:    true,
 					StoreSvid:     true,
+					CreatedAt:     1547583197,
 				},
 				Status: &types.Status{
 					Code:    int32(codes.OK),
@@ -53,7 +54,7 @@ func TestCreate(t *testing.T) {
 		},
 	}
 
-	fakeRespOKFromCmd2 := &entryv1.BatchCreateEntryResponse{
+	fakeRespOKFromCmdWithoutJwtTtl := &entryv1.BatchCreateEntryResponse{
 		Results: []*entryv1.BatchCreateEntryResponse_Result{
 			{
 				Entry: &types.Entry{
@@ -71,6 +72,7 @@ func TestCreate(t *testing.T) {
 					DnsNames:      []string{"unu1000", "ung1000"},
 					Downstream:    true,
 					StoreSvid:     true,
+					CreatedAt:     1547583197,
 				},
 				Status: &types.Status{
 					Code:    int32(codes.OK),
@@ -91,6 +93,7 @@ func TestCreate(t *testing.T) {
 					X509SvidTtl: 200,
 					JwtSvidTtl:  30,
 					Admin:       true,
+					CreatedAt:   1547583197,
 				},
 				Status: &types.Status{
 					Code:    int32(codes.OK),
@@ -105,6 +108,8 @@ func TestCreate(t *testing.T) {
 					Selectors:   []*types.Selector{{Type: "unix", Value: "uid:1111"}},
 					X509SvidTtl: 200,
 					JwtSvidTtl:  30,
+					Hint:        "internal",
+					CreatedAt:   1547583197,
 				},
 				Status: &types.Status{
 					Code:    int32(codes.OK),
@@ -123,6 +128,7 @@ func TestCreate(t *testing.T) {
 					StoreSvid:   true,
 					X509SvidTtl: 200,
 					JwtSvidTtl:  30,
+					CreatedAt:   1547583197,
 				},
 				Status: &types.Status{
 					Code:    int32(codes.OK),
@@ -180,28 +186,16 @@ func TestCreate(t *testing.T) {
 			expErrJSON:   "Error: selector \"unix\" must be formatted as type:value\n",
 		},
 		{
-			name:         "Negative TTL",
-			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "-10"},
-			expErrPretty: "Error: a positive TTL is required\n",
-			expErrJSON:   "Error: a positive TTL is required\n",
+			name:         "Negative X509SvidTtl",
+			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-x509SVIDTTL", "-10"},
+			expErrPretty: "Error: a positive x509-SVID TTL is required\n",
+			expErrJSON:   "Error: a positive x509-SVID TTL is required\n",
 		},
 		{
-			name:         "Invalid TTL and X509SvidTtl",
-			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-x509SVIDTTL", "20"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-		},
-		{
-			name:         "Invalid TTL and JwtSvidTtl",
-			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-jwtSVIDTTL", "20"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-		},
-		{
-			name:         "Invalid TTL and both X509SvidTtl and JwtSvidTtl",
-			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-x509SVIDTTL", "20", "-jwtSVIDTTL", "30"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
+			name:         "Negative jwtSVIDTTL",
+			args:         []string{"-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-jwtSVIDTTL", "-10"},
+			expErrPretty: "Error: a positive JWT-SVID TTL is required\n",
+			expErrJSON:   "Error: a positive JWT-SVID TTL is required\n",
 		},
 		{
 			name:         "Federated node entries",
@@ -240,6 +234,7 @@ func TestCreate(t *testing.T) {
 				"-dns", "ung1000",
 				"-downstream",
 				"-storeSVID",
+				"-hint", "internal",
 			},
 			expReq: &entryv1.BatchCreateEntryRequest{
 				Entries: []*types.Entry{
@@ -258,6 +253,7 @@ func TestCreate(t *testing.T) {
 						DnsNames:      []string{"unu1000", "ung1000"},
 						Downstream:    true,
 						StoreSvid:     true,
+						Hint:          "internal",
 					},
 				},
 			},
@@ -312,7 +308,9 @@ StoreSvid        : true
           "spiffe://domaina.test",
           "spiffe://domainb.test"
         ],
+        "hint": "",
         "admin": true,
+        "created_at": "1547583197",
         "downstream": true,
         "expires_at": "1552410266",
         "dns_names": [
@@ -329,13 +327,14 @@ StoreSvid        : true
 `,
 		},
 		{
-			name: "Create succeeds using deprecated command line arguments",
+			name: "Create succeeds with custom entry ID",
 			args: []string{
+				"-entryID", "entry-id",
 				"-spiffeID", "spiffe://example.org/workload",
 				"-parentID", "spiffe://example.org/parent",
 				"-selector", "zebra:zebra:2000",
 				"-selector", "alpha:alpha:2000",
-				"-ttl", "60",
+				"-x509SVIDTTL", "60",
 				"-federatesWith", "spiffe://domaina.test",
 				"-federatesWith", "spiffe://domainb.test",
 				"-admin",
@@ -348,6 +347,7 @@ StoreSvid        : true
 			expReq: &entryv1.BatchCreateEntryRequest{
 				Entries: []*types.Entry{
 					{
+						Id:       "entry-id",
 						SpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/workload"},
 						ParentId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/parent"},
 						Selectors: []*types.Selector{
@@ -364,7 +364,7 @@ StoreSvid        : true
 					},
 				},
 			},
-			fakeResp: fakeRespOKFromCmd2,
+			fakeResp: fakeRespOKFromCmdWithoutJwtTtl,
 			expOutPretty: fmt.Sprintf(`Entry ID         : entry-id
 SPIFFE ID        : spiffe://example.org/workload
 Parent ID        : spiffe://example.org/parent
@@ -415,7 +415,9 @@ StoreSvid        : true
           "spiffe://domaina.test",
           "spiffe://domainb.test"
         ],
+        "hint": "",
         "admin": true,
+        "created_at": "1547583197",
         "downstream": true,
         "expires_at": "1552410266",
         "dns_names": [
@@ -451,6 +453,7 @@ StoreSvid        : true
 						Selectors:   []*types.Selector{{Type: "unix", Value: "uid:1111"}},
 						X509SvidTtl: 200,
 						JwtSvidTtl:  30,
+						Hint:        "internal",
 					},
 					{
 						SpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/storesvid"},
@@ -482,6 +485,7 @@ Revision         : 0
 X509-SVID TTL    : 200
 JWT-SVID TTL     : 30
 Selector         : unix:uid:1111
+Hint             : internal
 
 Entry ID         : entry-id-3
 SPIFFE ID        : spiffe://example.org/storesvid
@@ -519,7 +523,9 @@ StoreSvid        : true
         ],
         "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "",
         "admin": true,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
@@ -551,7 +557,9 @@ StoreSvid        : true
         ],
         "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "internal",
         "admin": false,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
@@ -587,7 +595,9 @@ StoreSvid        : true
         ],
         "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "",
         "admin": false,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
@@ -646,7 +656,9 @@ Error: failed to create one or more entries
         ],
         "x509_svid_ttl": 0,
         "federates_with": [],
+        "hint": "",
         "admin": false,
+        "created_at": "0",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],

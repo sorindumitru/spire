@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/gorilla/handlers"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/cryptoutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
-	"gopkg.in/square/go-jose.v2"
 )
 
 const (
@@ -24,22 +24,40 @@ type Handler struct {
 	allowInsecureScheme bool
 	setKeyUse           bool
 	log                 logrus.FieldLogger
+	jwtIssuer           *url.URL
+	jwksURI             *url.URL
+	serverPathPrefix    string
 
 	http.Handler
 }
 
-func NewHandler(log logrus.FieldLogger, domainPolicy DomainPolicy, source JWKSSource, allowInsecureScheme bool, setKeyUse bool) *Handler {
+func NewHandler(log logrus.FieldLogger, domainPolicy DomainPolicy, source JWKSSource, allowInsecureScheme bool, setKeyUse bool, jwtIssuer *url.URL, jwksURI *url.URL, serverPathPrefix string) *Handler {
+	if serverPathPrefix == "" {
+		serverPathPrefix = "/"
+	}
 	h := &Handler{
 		domainPolicy:        domainPolicy,
 		source:              source,
 		allowInsecureScheme: allowInsecureScheme,
 		setKeyUse:           setKeyUse,
 		log:                 log,
+		jwtIssuer:           jwtIssuer,
+		jwksURI:             jwksURI,
+		serverPathPrefix:    serverPathPrefix,
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/.well-known/openid-configuration", handlers.ProxyHeaders(http.HandlerFunc(h.serveWellKnown)))
-	mux.Handle("/keys", http.HandlerFunc(h.serveKeys))
+	wkPath, err := url.JoinPath(serverPathPrefix, "/.well-known/openid-configuration")
+	if err != nil {
+		return nil
+	}
+	jwksPath, err := url.JoinPath(serverPathPrefix, "/keys")
+	if err != nil {
+		return nil
+	}
+
+	mux.Handle(wkPath, handlers.ProxyHeaders(http.HandlerFunc(h.serveWellKnown)))
+	mux.Handle(jwksPath, http.HandlerFunc(h.serveKeys))
 
 	h.Handler = mux
 	return h
@@ -51,25 +69,54 @@ func (h *Handler) serveWellKnown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.verifyHost(r.Host); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	urlScheme := "https"
 	if h.allowInsecureScheme && r.TLS == nil && r.URL.Scheme != "https" {
 		urlScheme = "http"
 	}
 
-	issuerURL := url.URL{
-		Scheme: urlScheme,
-		Host:   r.Host,
+	issuerURL := h.jwtIssuer
+	if h.jwtIssuer == nil {
+		issuerURL = &url.URL{
+			Scheme: urlScheme,
+			Host:   r.Host,
+		}
+		if h.serverPathPrefix != "/" {
+			issuerURL.Path = h.serverPathPrefix
+		}
 	}
 
-	jwksURI := url.URL{
-		Scheme: urlScheme,
-		Host:   r.Host,
-		Path:   "/keys",
+	var jwksURI *url.URL
+	switch {
+	case h.jwksURI != nil:
+		jwksURI = h.jwksURI
+	case h.jwtIssuer != nil:
+		// If jwksIsser is set but not jwksURI, fall back to 1.11.1 behavior until we can remove jwksIssuer leaking into jwksURI in 1.13.0
+		keysPath, err := url.JoinPath(h.jwtIssuer.Path, "keys")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jwksURI = &url.URL{
+			Scheme: h.jwtIssuer.Scheme,
+			Host:   h.jwtIssuer.Host,
+			Path:   keysPath,
+		}
+	default:
+		keysPath, err := url.JoinPath(h.serverPathPrefix, "keys")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jwksURI = &url.URL{
+			Scheme: urlScheme,
+			Host:   r.Host,
+			Path:   keysPath,
+		}
+	}
+
+	if err := h.verifyHost(r.Host); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	doc := struct {
@@ -137,7 +184,7 @@ func (h *Handler) verifyHost(host string) error {
 	// ProxyHeaders middleware). The value may be in host or host:port form.
 	domain, _, err := net.SplitHostPort(host)
 	if err != nil {
-		// `Host` was not in the host:port form form.
+		// `Host` was not in the host:port form.
 		domain = host
 	}
 	return h.domainPolicy(domain)

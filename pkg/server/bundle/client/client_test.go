@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +42,7 @@ func TestClient(t *testing.T) {
 			status: http.StatusOK,
 			// We don't need a really elaborate body here. this test just
 			// makes sure we unmarshal the body. The unmarshal tests will
-			// provide the coverage for unmarshaling code.
+			// provide the coverage for unmarshalling code.
 			body:       `{"spiffe_refresh_hint": 10}`,
 			serverID:   serverID,
 			expectedID: serverID,
@@ -89,7 +91,6 @@ func TestClient(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			serverCert, serverKey := createServerCertificate(t, testCase.serverID)
 
@@ -97,6 +98,7 @@ func TestClient(t *testing.T) {
 				w.WriteHeader(testCase.status)
 				_, _ = w.Write([]byte(testCase.body))
 			}))
+			server.Config.ErrorLog = log.New(io.Discard, "", 0)
 			server.TLS = &tls.Config{
 				Certificates: []tls.Certificate{
 					{
@@ -148,8 +150,10 @@ func TestClient(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, bundle)
-			require.Equal(t, trustDomain.IDString(), bundle.TrustDomainID())
-			require.Equal(t, 10*time.Second, bundle.RefreshHint())
+			require.Equal(t, trustDomain.IDString(), bundle.TrustDomain().IDString())
+			refreshHint, ok := bundle.RefreshHint()
+			require.True(t, ok)
+			require.Equal(t, 10*time.Second, refreshHint)
 		})
 	}
 }

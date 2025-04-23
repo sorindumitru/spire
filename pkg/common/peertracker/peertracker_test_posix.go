@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package peertracker
 
@@ -7,11 +6,11 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -29,7 +28,7 @@ func (f *fakePeer) killGrandchild() {
 		f.t.Fatal("no known grandchild")
 	}
 
-	err := syscall.Kill(f.grandchildPID, syscall.SIGKILL)
+	err := unix.Kill(f.grandchildPID, unix.SIGKILL)
 	if err != nil {
 		f.t.Fatalf("unable to kill grandchild: %v", err)
 	}
@@ -51,7 +50,7 @@ func listener(t *testing.T, log *logrus.Logger, addr net.Addr) *Listener {
 	return listener
 }
 
-func childExecCommand(t *testing.T, childPath string, addr net.Addr) *exec.Cmd {
+func childExecCommand(childPath string, addr net.Addr) *exec.Cmd {
 	// #nosec G204 test code
 	return exec.Command(childPath, "-socketPath", addr.(*net.UnixAddr).Name)
 }

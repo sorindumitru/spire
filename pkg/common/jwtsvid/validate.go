@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	"github.com/zeebo/errs"
-	"gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 type KeyStore interface {
@@ -27,7 +25,7 @@ func NewKeyStore(trustDomainKeys map[spiffeid.TrustDomain]map[string]crypto.Publ
 	}
 }
 
-func (t *keyStore) FindPublicKey(ctx context.Context, td spiffeid.TrustDomain, keyID string) (crypto.PublicKey, error) {
+func (t *keyStore) FindPublicKey(_ context.Context, td spiffeid.TrustDomain, keyID string) (crypto.PublicKey, error) {
 	publicKeys, ok := t.trustDomainKeys[td]
 	if !ok {
 		return nil, fmt.Errorf("no keys found for trust domain %q", td)
@@ -39,30 +37,20 @@ func (t *keyStore) FindPublicKey(ctx context.Context, td spiffeid.TrustDomain, k
 	return publicKey, nil
 }
 
-func ValidateToken(ctx context.Context, token string, keyStore KeyStore, audience []string) (spiffeid.ID, map[string]interface{}, error) {
-	tok, err := jwt.ParseSigned(token)
+func ValidateToken(ctx context.Context, token string, keyStore KeyStore, audience []string) (spiffeid.ID, map[string]any, error) {
+	tok, err := jwt.ParseSigned(token, AllowedSignatureAlgorithms)
 	if err != nil {
-		return spiffeid.ID{}, nil, errs.New("unable to parse JWT token")
+		return spiffeid.ID{}, nil, fmt.Errorf("unable to parse JWT token: %w", err)
 	}
 
 	if len(tok.Headers) != 1 {
-		return spiffeid.ID{}, nil, errs.New("expected a single token header; got %d", len(tok.Headers))
-	}
-
-	// Make sure it has an algorithm supported by JWT-SVID
-	alg := tok.Headers[0].Algorithm
-	switch jose.SignatureAlgorithm(alg) {
-	case jose.RS256, jose.RS384, jose.RS512,
-		jose.ES256, jose.ES384, jose.ES512,
-		jose.PS256, jose.PS384, jose.PS512:
-	default:
-		return spiffeid.ID{}, nil, errs.New("unsupported token signature algorithm %q", alg)
+		return spiffeid.ID{}, nil, fmt.Errorf("expected a single token header; got %d", len(tok.Headers))
 	}
 
 	// Obtain the key ID from the header
 	keyID := tok.Headers[0].KeyID
 	if keyID == "" {
-		return spiffeid.ID{}, nil, errs.New("token header missing key id")
+		return spiffeid.ID{}, nil, fmt.Errorf("token header missing key id")
 	}
 
 	// Parse out the unverified claims. We need to look up the key by the trust
@@ -70,14 +58,14 @@ func ValidateToken(ctx context.Context, token string, keyStore KeyStore, audienc
 	// when creating the generic map of claims that we return to the caller.
 	var claims jwt.Claims
 	if err := tok.UnsafeClaimsWithoutVerification(&claims); err != nil {
-		return spiffeid.ID{}, nil, errs.Wrap(err)
+		return spiffeid.ID{}, nil, err
 	}
 	if claims.Subject == "" {
-		return spiffeid.ID{}, nil, errs.New("token missing subject claim")
+		return spiffeid.ID{}, nil, errors.New("token missing subject claim")
 	}
 	spiffeID, err := spiffeid.FromString(claims.Subject)
 	if err != nil {
-		return spiffeid.ID{}, nil, errs.New("token has in invalid subject claim: %v", err)
+		return spiffeid.ID{}, nil, fmt.Errorf("token has in invalid subject claim: %w", err)
 	}
 
 	// Construct the trust domain id from the SPIFFE ID and look up key by ID
@@ -87,25 +75,23 @@ func ValidateToken(ctx context.Context, token string, keyStore KeyStore, audienc
 	}
 
 	// Now obtain the generic claims map verified using the obtained key
-	claimsMap := make(map[string]interface{})
+	claimsMap := make(map[string]any)
 	if err := tok.Claims(key, &claimsMap); err != nil {
-		return spiffeid.ID{}, nil, errs.Wrap(err)
+		return spiffeid.ID{}, nil, err
 	}
 
 	// Now that the signature over the claims has been verified, validate the
 	// standard claims.
 	if err := claims.Validate(jwt.Expected{
-		Audience: audience,
-		Time:     time.Now(),
+		AnyAudience: audience,
+		Time:        time.Now(),
 	}); err != nil {
 		// Convert expected validation errors for pretty errors
 		switch {
 		case errors.Is(err, jwt.ErrExpired):
-			err = errs.New("token has expired")
+			err = errors.New("token has expired")
 		case errors.Is(err, jwt.ErrInvalidAudience):
-			err = errs.New("expected audience in %q (audience=%q)", audience, claims.Audience)
-		default:
-			err = errs.Wrap(err)
+			err = fmt.Errorf("expected audience in %q (audience=%q)", audience, claims.Audience)
 		}
 		return spiffeid.ID{}, nil, err
 	}

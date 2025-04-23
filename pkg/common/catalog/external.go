@@ -14,7 +14,6 @@ import (
 	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
 	"github.com/spiffe/spire-plugin-sdk/private"
 	"github.com/spiffe/spire/pkg/common/log"
-	"github.com/zeebo/errs"
 	"google.golang.org/grpc"
 )
 
@@ -143,21 +142,21 @@ type hcClientPlugin struct {
 
 var _ goplugin.GRPCPlugin = (*hcClientPlugin)(nil)
 
-func (p *hcClientPlugin) GRPCServer(b *goplugin.GRPCBroker, s *grpc.Server) error {
+func (p *hcClientPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
 	return errors.New("not implemented host side")
 }
 
-func (p *hcClientPlugin) GRPCClient(ctx context.Context, b *goplugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
+func (p *hcClientPlugin) GRPCClient(ctx context.Context, b *goplugin.GRPCBroker, c *grpc.ClientConn) (any, error) {
 	// Manually start up the server via b.Accept since b.AcceptAndServe does
 	// some logging we don't care for. Although b.AcceptAndServe is currently
 	// the only way to feed the TLS config to the brokered connection, AutoMTLS
 	// does not work yet anyway, so it is a moot point.
 	listener, err := b.Accept(private.HostServiceProviderID)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 
-	server := newHostServer(p.config.Name, p.config.HostServices)
+	server := newHostServer(p.config.Log, p.config.Name, p.config.HostServices)
 
 	var wg sync.WaitGroup
 	wg.Add(1)

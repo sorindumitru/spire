@@ -42,7 +42,7 @@ func (c *deleteCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintDelete)
 }
 
-func (c *deleteCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *deleteCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	if c.id == "" {
 		return errors.New("id is required")
 	}
@@ -57,7 +57,7 @@ func (c *deleteCommand) Run(ctx context.Context, env *commoncli.Env, serverClien
 	return c.printer.PrintProto(resp)
 }
 
-func prettyPrintDelete(env *commoncli.Env, results ...interface{}) error {
+func prettyPrintDelete(env *commoncli.Env, results ...any) error {
 	if deleteResp, ok := results[0].(*trustdomain.BatchDeleteFederationRelationshipResponse); ok && len(deleteResp.Results) > 0 {
 		result := deleteResp.Results[0]
 		switch result.Status.Code {

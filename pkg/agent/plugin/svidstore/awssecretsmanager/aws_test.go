@@ -82,6 +82,7 @@ func TestConfigure(t *testing.T) {
 
 	for _, tt := range []struct {
 		name            string
+		trustDomain     string
 		envs            map[string]string
 		accessKeyID     string
 		secretAccessKey string
@@ -94,6 +95,7 @@ func TestConfigure(t *testing.T) {
 	}{
 		{
 			name:            "access key and secret from config",
+			trustDomain:     "example.org",
 			envs:            envs,
 			accessKeyID:     "ACCESS_KEY",
 			secretAccessKey: "ID",
@@ -105,9 +107,10 @@ func TestConfigure(t *testing.T) {
 			},
 		},
 		{
-			name:   "access key and secret from env vars",
-			envs:   envs,
-			region: "r1",
+			name:        "access key and secret from env vars",
+			trustDomain: "example.org",
+			envs:        envs,
+			region:      "r1",
 			expectConfig: &Configuration{
 				AccessKeyID:     "foh",
 				SecretAccessKey: "bar",
@@ -116,12 +119,14 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			name:            "no region provided",
+			trustDomain:     "example.org",
 			envs:            envs,
 			expectCode:      codes.InvalidArgument,
 			expectMsgPrefix: "region is required",
 		},
 		{
 			name:            "new client fails",
+			trustDomain:     "example.org",
 			envs:            envs,
 			region:          "r1",
 			expectClientErr: errors.New("oh no"),
@@ -130,6 +135,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			name:            "malformed configuration",
+			trustDomain:     "example.org",
 			envs:            envs,
 			region:          "r1",
 			customConfig:    "{ not a config }",
@@ -142,6 +148,9 @@ func TestConfigure(t *testing.T) {
 			options := []plugintest.Option{
 				plugintest.CaptureConfigureError(&err),
 			}
+			options = append(options, plugintest.CoreConfig(catalog.CoreConfig{
+				TrustDomain: spiffeid.RequireTrustDomainFromString(tt.trustDomain),
+			}))
 
 			if tt.customConfig != "" {
 				options = append(options, plugintest.Configure(tt.customConfig))
@@ -176,7 +185,7 @@ func TestConfigure(t *testing.T) {
 
 			plugintest.Load(t, builtin(p), nil, options...)
 			spiretest.RequireGRPCStatusHasPrefix(t, err, tt.expectCode, tt.expectMsgPrefix)
-			// Expect no client unsuccess calls
+			// Expect no client unsuccessful calls
 			switch tt.expectCode {
 			case codes.OK:
 				require.NotNil(t, p.smClient)
@@ -349,7 +358,7 @@ func TestPutX509SVID(t *testing.T) {
 			expectMsg:  "svidstore(aws_secretsmanager): failed to parse request: failed to parse CertChain: x509: malformed certificate",
 		},
 		{
-			name:       "unnexpected aws error when describe secret",
+			name:       "unexpected aws error when describe secret",
 			req:        successReq,
 			expectCode: codes.Internal,
 			expectMsg:  "svidstore(aws_secretsmanager): failed to describe secret: InvalidParameterException: failed to describe secret",
@@ -537,7 +546,7 @@ func TestPutX509SVID(t *testing.T) {
 			require.Equal(t, putSecretInput, sm.putSecretInput)
 
 			require.Equal(t, tt.expectDeleteSecretInput, sm.deleteSecretInput)
-			require.Equal(t, tt.expectDescribeInput, sm.drescribeSecretInput)
+			require.Equal(t, tt.expectDescribeInput, sm.describeSecretInput)
 			require.Equal(t, tt.expectRestoreSecretInput, sm.restoreSecretInput)
 		})
 	}
@@ -665,7 +674,7 @@ func TestDeleteX509SVID(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, tt.expectDeleteSecretInput, sm.deleteSecretInput)
-			require.Equal(t, tt.expectDescribeInput, sm.drescribeSecretInput)
+			require.Equal(t, tt.expectDescribeInput, sm.describeSecretInput)
 		})
 	}
 }
@@ -685,15 +694,15 @@ type smConfig struct {
 type fakeSecretsManagerClient struct {
 	t testing.TB
 
-	drescribeSecretInput *secretsmanager.DescribeSecretInput
-	createSecretInput    *secretsmanager.CreateSecretInput
-	putSecretInput       *secretsmanager.PutSecretValueInput
-	deleteSecretInput    *secretsmanager.DeleteSecretInput
-	restoreSecretInput   *secretsmanager.RestoreSecretInput
-	c                    *smConfig
+	describeSecretInput *secretsmanager.DescribeSecretInput
+	createSecretInput   *secretsmanager.CreateSecretInput
+	putSecretInput      *secretsmanager.PutSecretValueInput
+	deleteSecretInput   *secretsmanager.DeleteSecretInput
+	restoreSecretInput  *secretsmanager.RestoreSecretInput
+	c                   *smConfig
 }
 
-func (sm *fakeSecretsManagerClient) createTestClient(ctx context.Context, _, _, region string) (SecretsManagerClient, error) {
+func (sm *fakeSecretsManagerClient) createTestClient(_ context.Context, _, _, region string) (SecretsManagerClient, error) {
 	if sm.c.newClientErr != nil {
 		return nil, sm.c.newClientErr
 	}
@@ -703,7 +712,7 @@ func (sm *fakeSecretsManagerClient) createTestClient(ctx context.Context, _, _, 
 	return sm, nil
 }
 
-func (sm *fakeSecretsManagerClient) DescribeSecret(ctx context.Context, input *secretsmanager.DescribeSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (sm *fakeSecretsManagerClient) DescribeSecret(_ context.Context, input *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	if sm.c.describeErr != nil {
 		return nil, sm.c.describeErr
 	}
@@ -720,11 +729,11 @@ func (sm *fakeSecretsManagerClient) DescribeSecret(ctx context.Context, input *s
 		resp.DeletedDate = aws.Time(time.Now())
 	}
 
-	sm.drescribeSecretInput = input
+	sm.describeSecretInput = input
 	return resp, nil
 }
 
-func (sm *fakeSecretsManagerClient) CreateSecret(ctx context.Context, input *secretsmanager.CreateSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+func (sm *fakeSecretsManagerClient) CreateSecret(_ context.Context, input *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
 	if sm.c.createSecretErr != nil {
 		return nil, sm.c.createSecretErr
 	}
@@ -733,7 +742,7 @@ func (sm *fakeSecretsManagerClient) CreateSecret(ctx context.Context, input *sec
 	return &secretsmanager.CreateSecretOutput{ARN: input.Name}, nil
 }
 
-func (sm *fakeSecretsManagerClient) PutSecretValue(ctx context.Context, input *secretsmanager.PutSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
+func (sm *fakeSecretsManagerClient) PutSecretValue(_ context.Context, input *secretsmanager.PutSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
 	if sm.c.putSecretErr != nil {
 		return nil, sm.c.putSecretErr
 	}
@@ -745,7 +754,7 @@ func (sm *fakeSecretsManagerClient) PutSecretValue(ctx context.Context, input *s
 	return &secretsmanager.PutSecretValueOutput{ARN: input.SecretId, VersionId: aws.String("1")}, nil
 }
 
-func (sm *fakeSecretsManagerClient) DeleteSecret(ctx context.Context, params *secretsmanager.DeleteSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+func (sm *fakeSecretsManagerClient) DeleteSecret(_ context.Context, params *secretsmanager.DeleteSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
 	if sm.c.deleteSecretErr != nil {
 		return nil, sm.c.deleteSecretErr
 	}
@@ -757,7 +766,7 @@ func (sm *fakeSecretsManagerClient) DeleteSecret(ctx context.Context, params *se
 		Name: params.SecretId,
 	}, nil
 }
-func (sm *fakeSecretsManagerClient) RestoreSecret(ctx context.Context, params *secretsmanager.RestoreSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
+func (sm *fakeSecretsManagerClient) RestoreSecret(_ context.Context, params *secretsmanager.RestoreSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
 	if sm.c.restoreSecretErr != nil {
 		return nil, sm.c.restoreSecretErr
 	}

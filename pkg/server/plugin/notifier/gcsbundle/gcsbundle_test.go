@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	identityproviderv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/hostservice/server/identityprovider/v1"
 	plugintypes "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/types"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/server/plugin/notifier"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/fakes/fakeidentityprovider"
@@ -28,21 +31,24 @@ func TestRequiresIdentityProvider(t *testing.T) {
 
 func TestConfigure(t *testing.T) {
 	testCases := []struct {
-		name   string
-		config string
-		code   codes.Code
-		desc   string
+		name        string
+		trustDomain string
+		config      string
+		code        codes.Code
+		desc        string
 	}{
 		{
-			name: "malformed",
+			name:        "malformed",
+			trustDomain: "example.org",
 			config: `
 				MALFORMED
 			`,
 			code: codes.InvalidArgument,
-			desc: "unable to decode configuration",
+			desc: "plugin configuration is malformed",
 		},
 		{
-			name: "missing bucket",
+			name:        "missing bucket",
+			trustDomain: "example.org",
 			config: `
 				object_path = "bundle.pem"
 			`,
@@ -50,7 +56,8 @@ func TestConfigure(t *testing.T) {
 			desc: "bucket must be set",
 		},
 		{
-			name: "missing object path",
+			name:        "missing object path",
+			trustDomain: "example.org",
 			config: `
 				bucket = "the-bucket"
 			`,
@@ -58,7 +65,8 @@ func TestConfigure(t *testing.T) {
 			desc: "object_path must be set",
 		},
 		{
-			name: "success without service account file",
+			name:        "success without service account file",
+			trustDomain: "example.org",
 			config: `
 				bucket = "the-bucket"
 				object_path = "bundle.pem"
@@ -66,7 +74,8 @@ func TestConfigure(t *testing.T) {
 			code: codes.OK,
 		},
 		{
-			name: "success with service account file",
+			name:        "success with service account file",
+			trustDomain: "example.org",
 			config: `
 				bucket = "the-bucket"
 				object_path = "bundle.pem"
@@ -77,12 +86,14 @@ func TestConfigure(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			idp := fakeidentityprovider.New()
 
 			var err error
 			plugintest.Load(t, BuiltIn(), nil,
+				plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString(tt.trustDomain),
+				}),
 				plugintest.Configure(tt.config),
 				plugintest.CaptureConfigureError(&err),
 				plugintest.HostServices(identityproviderv1.IdentityProviderServiceServer(idp)))
@@ -193,7 +204,6 @@ func testUpdateBundleObject(t *testing.T, notify func(notifier.Notifier) error) 
 			desc: "notifier(gcs_bundle): unable to update bundle object the-bucket/bundle.pem: googleapi: got HTTP response code 412 with body: ohno",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a raw instance so we can hook the bucket client creation,
 			// possibly overriding with a test specific hook.
@@ -220,6 +230,9 @@ func testUpdateBundleObject(t *testing.T, notify func(notifier.Notifier) error) 
 				plugintest.HostServices(identityproviderv1.IdentityProviderServiceServer(idp)),
 			}
 			if !tt.skipConfigure {
+				options = append(options, plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+				}))
 				options = append(options, plugintest.Configure(`
 					bucket = "the-bucket"
 					object_path = "bundle.pem"
@@ -254,13 +267,13 @@ func newFakeBucketClient() *fakeBucketClient {
 	return &fakeBucketClient{}
 }
 
-func (c *fakeBucketClient) GetObjectGeneration(ctx context.Context, bucket, object string) (int64, error) {
+func (c *fakeBucketClient) GetObjectGeneration(context.Context, string, string) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return 99, c.getObjectGenerationErr
 }
 
-func (c *fakeBucketClient) PutObject(ctx context.Context, bucket, object string, data []byte, generation int64) error {
+func (c *fakeBucketClient) PutObject(_ context.Context, bucket, object string, data []byte, generation int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -280,7 +293,7 @@ func (c *fakeBucketClient) PutObject(ctx context.Context, bucket, object string,
 		return err
 	}
 
-	c.data = append([]byte(nil), data...)
+	c.data = slices.Clone(data)
 	return nil
 }
 
@@ -298,7 +311,7 @@ func (c *fakeBucketClient) AppendPutObjectError(err error) {
 
 func (c *fakeBucketClient) GetBundleData() []byte {
 	c.mu.Lock()
-	data := append([]byte(nil), c.data...)
+	data := slices.Clone(c.data)
 	c.mu.Unlock()
 	return data
 }

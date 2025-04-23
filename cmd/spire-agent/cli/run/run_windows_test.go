@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package run
 
@@ -9,8 +8,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hashicorp/hcl/hcl/printer"
 	"github.com/spiffe/spire/pkg/agent"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	commoncli "github.com/spiffe/spire/pkg/common/cli"
 	"github.com/spiffe/spire/pkg/common/fflag"
 	"github.com/spiffe/spire/pkg/common/log"
@@ -168,38 +167,40 @@ func TestParseConfigGood(t *testing.T) {
 	assert.Equal(t, true, c.Agent.AllowUnauthenticatedVerifiers)
 	assert.Equal(t, []string{"c1", "c2", "c3"}, c.Agent.AllowedForeignJWTClaims)
 
+	// Parse/reprint cycle trims outer whitespace
+	const data = `join_token = "PLUGIN-AGENT-NOT-A-SECRET"`
+
 	// Check for plugins configurations
-	pluginConfigs := *c.Plugins
-	expectedData := "join_token = \"PLUGIN-AGENT-NOT-A-SECRET\""
-	var data bytes.Buffer
-	err = printer.DefaultConfig.Fprint(&data, pluginConfigs["plugin_type_agent"]["plugin_name_agent"].PluginData)
-	assert.NoError(t, err)
+	expectedPluginConfigs := catalog.PluginConfigs{
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_name_agent",
+			Path:       "./pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   false,
+		},
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_disabled",
+			Path:       ".\\pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   true,
+		},
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_enabled",
+			Path:       "c:/temp/pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FileData("plugin.conf"),
+			Disabled:   false,
+		},
+	}
 
-	assert.Len(t, pluginConfigs, 1)
-	assert.Len(t, pluginConfigs["plugin_type_agent"], 3)
-
-	pluginConfig := pluginConfigs["plugin_type_agent"]["plugin_name_agent"]
-	assert.Nil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), true)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginAgentChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, "./pluginAgentCmd")
-	assert.Equal(t, expectedData, data.String())
-
-	// Disabled plugin
-	pluginConfig = pluginConfigs["plugin_type_agent"]["plugin_disabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), false)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginAgentChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, ".\\pluginAgentCmd")
-	assert.Equal(t, expectedData, data.String())
-
-	// Enabled plugin
-	pluginConfig = pluginConfigs["plugin_type_agent"]["plugin_enabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), true)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginAgentChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, "c:/temp/pluginAgentCmd")
-	assert.Equal(t, expectedData, data.String())
+	pluginConfigs, err := catalog.PluginConfigsFromHCLNode(c.Plugins)
+	require.NoError(t, err)
+	require.Equal(t, expectedPluginConfigs, pluginConfigs)
 }
 
 func mergeInputCasesOS() []mergeInputCase {
@@ -223,7 +224,7 @@ func mergeInputCasesOS() []mergeInputCase {
 			},
 		},
 		{
-			msg:       "named_pipe_name should be configuable by CLI flag",
+			msg:       "named_pipe_name should be configurable by CLI flag",
 			fileInput: func(c *Config) {},
 			cliInput: func(c *agentConfig) {
 				c.Experimental.NamedPipeName = "foo"
@@ -257,7 +258,7 @@ func mergeInputCasesOS() []mergeInputCase {
 	}
 }
 
-func newAgentConfigCasesOS() []newAgentConfigCase {
+func newAgentConfigCasesOS(*testing.T) []newAgentConfigCase {
 	return []newAgentConfigCase{
 		{
 			msg: "named_pipe_name should be correctly configured",

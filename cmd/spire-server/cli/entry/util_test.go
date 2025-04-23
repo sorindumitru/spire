@@ -2,6 +2,7 @@ package entry
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path"
 	"testing"
@@ -9,13 +10,12 @@ import (
 	"github.com/mitchellh/cli"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
-	"github.com/spiffe/spire/cmd/spire-server/cli/common"
 	common_cli "github.com/spiffe/spire/pkg/common/cli"
+	"github.com/spiffe/spire/test/clitest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/spiffe/spire/test/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
@@ -45,7 +45,6 @@ func TestParseEntryJSON(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			p := testCase.testDataPath
 
@@ -88,6 +87,7 @@ func TestParseEntryJSON(t *testing.T) {
 				ParentId:    &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/join_token/TokenDatabase"},
 				X509SvidTtl: 200,
 				JwtSvidTtl:  30,
+				Hint:        "internal",
 			}
 			entry3 := &types.Entry{
 				Selectors: []*types.Selector{
@@ -154,7 +154,7 @@ func (e *entryTest) afterTest(t *testing.T) {
 }
 
 func (e *entryTest) args(extra ...string) []string {
-	return append([]string{common.AddrArg, e.addr}, extra...)
+	return append([]string{clitest.AddrArg, e.addr}, extra...)
 }
 
 type fakeEntryServer struct {
@@ -177,14 +177,14 @@ type fakeEntryServer struct {
 	batchUpdateEntryResp *entryv1.BatchUpdateEntryResponse
 }
 
-func (f fakeEntryServer) CountEntries(ctx context.Context, req *entryv1.CountEntriesRequest) (*entryv1.CountEntriesResponse, error) {
+func (f fakeEntryServer) CountEntries(context.Context, *entryv1.CountEntriesRequest) (*entryv1.CountEntriesResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.countEntriesResp, nil
 }
 
-func (f fakeEntryServer) ListEntries(ctx context.Context, req *entryv1.ListEntriesRequest) (*entryv1.ListEntriesResponse, error) {
+func (f fakeEntryServer) ListEntries(_ context.Context, req *entryv1.ListEntriesRequest) (*entryv1.ListEntriesResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -192,7 +192,7 @@ func (f fakeEntryServer) ListEntries(ctx context.Context, req *entryv1.ListEntri
 	return f.listEntriesResp, nil
 }
 
-func (f fakeEntryServer) GetEntry(ctx context.Context, req *entryv1.GetEntryRequest) (*types.Entry, error) {
+func (f fakeEntryServer) GetEntry(_ context.Context, req *entryv1.GetEntryRequest) (*types.Entry, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -200,7 +200,7 @@ func (f fakeEntryServer) GetEntry(ctx context.Context, req *entryv1.GetEntryRequ
 	return f.getEntryResp, nil
 }
 
-func (f fakeEntryServer) BatchDeleteEntry(ctx context.Context, req *entryv1.BatchDeleteEntryRequest) (*entryv1.BatchDeleteEntryResponse, error) {
+func (f fakeEntryServer) BatchDeleteEntry(_ context.Context, req *entryv1.BatchDeleteEntryRequest) (*entryv1.BatchDeleteEntryResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -208,7 +208,7 @@ func (f fakeEntryServer) BatchDeleteEntry(ctx context.Context, req *entryv1.Batc
 	return f.batchDeleteEntryResp, nil
 }
 
-func (f fakeEntryServer) BatchCreateEntry(ctx context.Context, req *entryv1.BatchCreateEntryRequest) (*entryv1.BatchCreateEntryResponse, error) {
+func (f fakeEntryServer) BatchCreateEntry(_ context.Context, req *entryv1.BatchCreateEntryRequest) (*entryv1.BatchCreateEntryResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -216,7 +216,7 @@ func (f fakeEntryServer) BatchCreateEntry(ctx context.Context, req *entryv1.Batc
 	return f.batchCreateEntryResp, nil
 }
 
-func (f fakeEntryServer) BatchUpdateEntry(ctx context.Context, req *entryv1.BatchUpdateEntryRequest) (*entryv1.BatchUpdateEntryResponse, error) {
+func (f fakeEntryServer) BatchUpdateEntry(_ context.Context, req *entryv1.BatchUpdateEntryRequest) (*entryv1.BatchUpdateEntryResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -241,7 +241,7 @@ func setupTest(t *testing.T, newClient func(*common_cli.Env) cli.Command) *entry
 	})
 
 	test := &entryTest{
-		addr:   common.GetAddr(addr),
+		addr:   clitest.GetAddr(addr),
 		stdin:  stdin,
 		stdout: stdout,
 		stderr: stderr,

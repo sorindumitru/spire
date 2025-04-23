@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"syscall"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -112,7 +111,7 @@ func TestExitDetection(t *testing.T) {
 	require.EqualError(t, conn.Info.Watcher.IsAlive(), "caller is no longer being watched")
 
 	// Start a forking child and allow it to exit while the grandchild holds the socket
-	peer.connectFromForkingChild(t, test.addr, test.childPath, doneCh)
+	peer.connectFromForkingChild(test.addr, test.childPath, doneCh)
 
 	rawConn, err = test.listener.Accept()
 
@@ -149,7 +148,7 @@ func TestExitDetection(t *testing.T) {
 		secondEntry := test.logHook.Entries[1]
 		require.Equal(t, logrus.WarnLevel, secondEntry.Level)
 		require.Equal(t, "Caller exit suspected due to failed readdirent", secondEntry.Message)
-		require.Equal(t, syscall.ENOENT, secondEntry.Data["error"])
+		requireCallerExitFailedDirent(t, secondEntry.Data["error"])
 	case "windows":
 		require.EqualError(t, conn.Info.Watcher.IsAlive(), "caller exit detected: exit code: 0")
 		require.Len(t, test.logHook.Entries, 2)
@@ -164,12 +163,10 @@ func TestExitDetection(t *testing.T) {
 		require.FailNow(t, "missing case for OS specific failure")
 	}
 
-	// Read a bit of data from our grandchild just to be sure it's still there
-	theSign := make([]byte, 10)
-	expectedSign := []byte("i'm alive!")
-	_, err = conn.Read(theSign)
-	require.NoError(t, err)
-	require.Equal(t, expectedSign, theSign)
+	// IsAlive should close the underlying connection with the grandchild when
+	// it detects the caller has exited.
+	_, err = conn.Read(make([]byte, 10))
+	require.Error(t, err)
 
 	conn.Close()
 
@@ -215,14 +212,14 @@ func (f *fakePeer) disconnect() {
 }
 
 // run child to connect and fork. allows us to test stale PID data
-func (f *fakePeer) connectFromForkingChild(t *testing.T, addr net.Addr, childPath string, doneCh chan error) {
+func (f *fakePeer) connectFromForkingChild(addr net.Addr, childPath string, doneCh chan error) {
 	if f.grandchildPID != 0 {
 		f.t.Fatalf("grandchild already running with PID %v", f.grandchildPID)
 	}
 
 	go func() {
 		// #nosec G204 test code
-		out, err := childExecCommand(t, childPath, addr).Output()
+		out, err := childExecCommand(childPath, addr).Output()
 		if err != nil {
 			doneCh <- fmt.Errorf("child process failed: %w", err)
 			return

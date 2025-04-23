@@ -3,7 +3,6 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"io"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -27,6 +26,8 @@ const (
 	workloadattestorType = "WorkloadAttestor"
 )
 
+var ReconfigureTask = catalog.ReconfigureTask
+
 type Catalog interface {
 	GetKeyManager() keymanager.KeyManager
 	GetNodeAttestor() nodeattestor.NodeAttestor
@@ -34,15 +35,15 @@ type Catalog interface {
 	GetWorkloadAttestors() []workloadattestor.WorkloadAttestor
 }
 
-type HCLPluginConfigMap = catalog.HCLPluginConfigMap
+type PluginConfigs = catalog.PluginConfigs
 
-type HCLPluginConfig = catalog.HCLPluginConfig
+type PluginConfig = catalog.PluginConfig
 
 type Config struct {
-	Log          logrus.FieldLogger
-	TrustDomain  spiffeid.TrustDomain
-	PluginConfig HCLPluginConfigMap
-	Metrics      telemetry.Metrics
+	Log           logrus.FieldLogger
+	TrustDomain   spiffeid.TrustDomain
+	PluginConfigs PluginConfigs
+	Metrics       telemetry.Metrics
 }
 
 type Repository struct {
@@ -51,8 +52,8 @@ type Repository struct {
 	svidStoreRepository
 	workloadAttestorRepository
 
-	log           logrus.FieldLogger
-	catalogCloser io.Closer
+	log     logrus.FieldLogger
+	catalog *catalog.Catalog
 }
 
 func (repo *Repository) Plugins() map[string]catalog.PluginRepo {
@@ -68,9 +69,13 @@ func (repo *Repository) Services() []catalog.ServiceRepo {
 	return nil
 }
 
+func (repo *Repository) Reconfigure(ctx context.Context) {
+	repo.catalog.Reconfigure(ctx)
+}
+
 func (repo *Repository) Close() {
 	repo.log.Debug("Closing catalog")
-	if err := repo.catalogCloser.Close(); err == nil {
+	if err := repo.catalog.Close(); err == nil {
 		repo.log.Info("Catalog closed")
 	} else {
 		repo.log.WithError(err).Error("Failed to close catalog")
@@ -78,25 +83,20 @@ func (repo *Repository) Close() {
 }
 
 func Load(ctx context.Context, config Config) (_ *Repository, err error) {
-	if c, ok := config.PluginConfig[nodeAttestorType][jointoken.PluginName]; ok && c.IsEnabled() && c.IsExternal() {
+	if c, ok := config.PluginConfigs.Find(nodeAttestorType, jointoken.PluginName); ok && c.IsEnabled() && c.IsExternal() {
 		return nil, fmt.Errorf("the built-in join_token node attestor cannot be overridden by an external plugin")
-	}
-
-	pluginConfigs, err := catalog.PluginConfigsFromHCL(config.PluginConfig)
-	if err != nil {
-		return nil, err
 	}
 
 	// Load the plugins and populate the repository
 	repo := &Repository{
 		log: config.Log,
 	}
-	repo.catalogCloser, err = catalog.Load(ctx, catalog.Config{
+	repo.catalog, err = catalog.Load(ctx, catalog.Config{
 		Log: config.Log,
 		CoreConfig: catalog.CoreConfig{
 			TrustDomain: config.TrustDomain,
 		},
-		PluginConfigs: pluginConfigs,
+		PluginConfigs: config.PluginConfigs,
 		HostServices: []pluginsdk.ServiceServer{
 			metricsv1.MetricsServiceServer(metricsservice.V1(config.Metrics)),
 		},

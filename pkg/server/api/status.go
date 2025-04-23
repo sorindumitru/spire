@@ -6,14 +6,23 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
+	"github.com/spiffe/spire/pkg/common/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 // CreateStatus creates a proto Status
-func CreateStatus(code codes.Code, format string, a ...interface{}) *types.Status {
+func CreateStatus(code codes.Code, msg string) *types.Status {
 	return &types.Status{
-		Code:    int32(code),
+		Code:    util.MustCast[int32](code),
+		Message: msg,
+	}
+}
+
+// CreateStatus creates a proto Status
+func CreateStatusf(code codes.Code, format string, a ...any) *types.Status {
+	return &types.Status{
+		Code:    util.MustCast[int32](code),
 		Message: fmt.Sprintf(format, a...),
 	}
 }

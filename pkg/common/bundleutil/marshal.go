@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"time"
 
-	"gopkg.in/square/go-jose.v2"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 )
 
 type marshalConfig struct {
 	refreshHint    time.Duration
+	sequenceNumber uint64
 	noX509SVIDKeys bool
 	noJWTSVIDKeys  bool
 	standardJWKS   bool
@@ -29,6 +31,14 @@ func (o marshalOption) configure(c *marshalConfig) error {
 func OverrideRefreshHint(value time.Duration) MarshalOption {
 	return marshalOption(func(c *marshalConfig) error {
 		c.refreshHint = value
+		return nil
+	})
+}
+
+// OverrideSequenceNumber overrides the sequence number in the bundle
+func OverrideSequenceNumber(value uint64) MarshalOption {
+	return marshalOption(func(c *marshalConfig) error {
+		c.sequenceNumber = value
 		return nil
 	})
 }
@@ -57,9 +67,20 @@ func StandardJWKS() MarshalOption {
 	})
 }
 
-func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
+func Marshal(bundle *spiffebundle.Bundle, opts ...MarshalOption) ([]byte, error) {
+	refreshHint, ok := bundle.RefreshHint()
+	if !ok {
+		refreshHint = 0
+	}
+
+	sequenceNumber, ok := bundle.SequenceNumber()
+	if !ok {
+		sequenceNumber = 0
+	}
+
 	c := &marshalConfig{
-		refreshHint: bundle.RefreshHint(),
+		refreshHint:    refreshHint,
+		sequenceNumber: sequenceNumber,
 	}
 	for _, opt := range opts {
 		if err := opt.configure(c); err != nil {
@@ -68,6 +89,8 @@ func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 	}
 
 	var jwks jose.JSONWebKeySet
+	jwks.Keys = make([]jose.JSONWebKey, 0)
+
 	maybeUse := func(use string) string {
 		if !c.standardJWKS {
 			return use
@@ -76,7 +99,7 @@ func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 	}
 
 	if !c.noX509SVIDKeys {
-		for _, rootCA := range bundle.RootCAs() {
+		for _, rootCA := range bundle.X509Authorities() {
 			jwks.Keys = append(jwks.Keys, jose.JSONWebKey{
 				Key:          rootCA.PublicKey,
 				Certificates: []*x509.Certificate{rootCA},
@@ -86,7 +109,7 @@ func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 	}
 
 	if !c.noJWTSVIDKeys {
-		for keyID, jwtSigningKey := range bundle.JWTSigningKeys() {
+		for keyID, jwtSigningKey := range bundle.JWTAuthorities() {
 			jwks.Keys = append(jwks.Keys, jose.JSONWebKey{
 				Key:   jwtSigningKey,
 				KeyID: keyID,
@@ -95,11 +118,12 @@ func Marshal(bundle *Bundle, opts ...MarshalOption) ([]byte, error) {
 		}
 	}
 
-	var out interface{} = jwks
+	var out any = jwks
 	if !c.standardJWKS {
 		out = bundleDoc{
 			JSONWebKeySet: jwks,
 			RefreshHint:   int(c.refreshHint / time.Second),
+			Sequence:      c.sequenceNumber,
 		}
 	}
 

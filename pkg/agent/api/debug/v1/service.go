@@ -3,6 +3,7 @@ package debug
 import (
 	"context"
 	"crypto/x509"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	debugv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/agent/debug/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/agent/manager"
+	"github.com/spiffe/spire/pkg/common/util"
 	"github.com/spiffe/spire/test/clock"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,7 +26,7 @@ const (
 )
 
 // RegisterService registers debug service on provided server
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	debugv1.RegisterDebugServer(s, service)
 }
 
@@ -68,11 +70,11 @@ type getInfoResp struct {
 }
 
 // GetInfo gets SPIRE Agent debug information
-func (s *Service) GetInfo(ctx context.Context, req *debugv1.GetInfoRequest) (*debugv1.GetInfoResponse, error) {
+func (s *Service) GetInfo(context.Context, *debugv1.GetInfoRequest) (*debugv1.GetInfoResponse, error) {
 	s.getInfoResp.mtx.Lock()
 	defer s.getInfoResp.mtx.Unlock()
 
-	// Update cache when expired or does not exists
+	// Update cache when expired or does not exist
 	if s.getInfoResp.ts.IsZero() || s.clock.Now().Sub(s.getInfoResp.ts) >= cacheExpiry {
 		state := s.m.GetCurrentCredentials()
 		// Get current agent's credential SVID
@@ -92,13 +94,33 @@ func (s *Service) GetInfo(ctx context.Context, req *debugv1.GetInfoRequest) (*de
 			})
 		}
 
+		uptime, err := util.CheckedCast[int32](int64(s.uptime().Seconds()))
+		if err != nil {
+			return nil, fmt.Errorf("invalid value for uptime: %w", err)
+		}
+		x509SvidsCount, err := util.CheckedCast[int32](s.m.CountX509SVIDs())
+		if err != nil {
+			return nil, fmt.Errorf("out of range value for X.509 SVIDs count: %w", err)
+		}
+		jwtSvidsCount, err := util.CheckedCast[int32](s.m.CountJWTSVIDs())
+		if err != nil {
+			return nil, fmt.Errorf("out of range value for JWT SVIDs count: %w", err)
+		}
+		svidstoreX509SvidsCount, err := util.CheckedCast[int32](s.m.CountSVIDStoreX509SVIDs())
+		if err != nil {
+			return nil, fmt.Errorf("out of range value for SVIDStore X.509 SVIDs count: %w", err)
+		}
+
 		// Reset clock and set current response
 		s.getInfoResp.ts = s.clock.Now()
 		s.getInfoResp.resp = &debugv1.GetInfoResponse{
-			SvidChain:       svidChain,
-			Uptime:          int32(s.uptime().Seconds()),
-			SvidsCount:      int32(s.m.CountSVIDs()),
-			LastSyncSuccess: s.m.GetLastSync().UTC().Unix(),
+			SvidChain:                     svidChain,
+			Uptime:                        uptime,
+			SvidsCount:                    x509SvidsCount,
+			CachedX509SvidsCount:          x509SvidsCount,
+			CachedJwtSvidsCount:           jwtSvidsCount,
+			CachedSvidstoreX509SvidsCount: svidstoreX509SvidsCount,
+			LastSyncSuccess:               s.m.GetLastSync().UTC().Unix(),
 		}
 	}
 
@@ -113,7 +135,7 @@ func spiffeIDFromCert(cert *x509.Certificate) *types.SPIFFEID {
 	}
 
 	return &types.SPIFFEID{
-		TrustDomain: id.TrustDomain().String(),
+		TrustDomain: id.TrustDomain().Name(),
 		Path:        id.Path(),
 	}
 }
@@ -123,7 +145,7 @@ func (s *Service) getCertificateChain(svid []*x509.Certificate) ([]*x509.Certifi
 	cachedBundle := s.m.GetBundle()
 
 	// Create bundle source using SVID roots, and verify certificate to extract SVID chain
-	bundleSource := x509bundle.FromX509Authorities(s.td, cachedBundle.RootCAs())
+	bundleSource := x509bundle.FromX509Authorities(s.td, cachedBundle.X509Authorities())
 	_, certs, err := x509svid.Verify(svid, bundleSource)
 	if err != nil {
 		s.log.WithError(err).Error("Failed to verify agent SVID")

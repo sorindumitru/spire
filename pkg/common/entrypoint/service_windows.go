@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package entrypoint
 
@@ -66,5 +65,5 @@ loop:
 	status <- svc.Status{State: svc.StopPending}
 	stop()
 	wg.Wait()
-	return false, uint32(retCode)
+	return false, uint32(retCode) //nolint:gosec // don't care about potential integer conversion overflow
 }

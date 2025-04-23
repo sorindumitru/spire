@@ -21,6 +21,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/pemutil"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
@@ -66,6 +67,36 @@ type Configuration struct {
 	RootSpec CertificateAuthoritySpec `hcl:"root_cert_spec,block"`
 }
 
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Configuration {
+	newConfig := new(Configuration)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportError("plugin configuration is malformed")
+		return nil
+	}
+
+	// Without a project and location, we can never locate CAs
+	if newConfig.RootSpec.Project == "" {
+		status.ReportError("plugin configuration root_cert_spec.Project is missing")
+	}
+	if newConfig.RootSpec.Location == "" {
+		status.ReportError("plugin configuration root_cert_spec.Location is missing")
+	}
+
+	// Even LabelKey/Value pair is necessary
+	if newConfig.RootSpec.LabelKey == "" {
+		status.ReportError("plugin configuration root_cert_spec.LabelKey is missing")
+	}
+	if newConfig.RootSpec.LabelValue == "" {
+		status.ReportError("plugin configuration root_cert_spec.LabelValue is missing")
+	}
+
+	if newConfig.RootSpec.CaPool == "" {
+		status.ReportInfo("The ca_pool value is not configured. Falling back to searching the region for matching CAs. The ca_pool configurable will be required in a future release.")
+	}
+
+	return newConfig
+}
+
 type CAClient interface {
 	CreateCertificate(ctx context.Context, req *privatecapb.CreateCertificateRequest) (*privatecapb.Certificate, error)
 	LoadCertificateAuthorities(ctx context.Context, spec CertificateAuthoritySpec) ([]*privatecapb.CertificateAuthority, error)
@@ -79,8 +110,8 @@ type Plugin struct {
 	// need to support hot-reloading of configuration (by receiving another
 	// call to Configure). So we need to prevent the configuration from
 	// being used concurrently and make sure it is updated atomically.
-	mu sync.Mutex
-	c  *Configuration
+	mu     sync.Mutex
+	config *Configuration
 
 	log hclog.Logger
 
@@ -133,50 +164,38 @@ func (p *Plugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyReq
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
 	// Parse HCL config payload into config struct
-	config := new(Configuration)
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
-	// Without a project and location, we can never locate CAs
-	if config.RootSpec.Project == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration has empty root_cert_spec.Project property")
-	}
-	if config.RootSpec.Location == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration has empty root_cert_spec.Location property")
-	}
-	// Even LabelKey/Value pair is necessary
-	if config.RootSpec.LabelKey == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration has empty root_cert_spec.LabelKey property")
-	}
-	if config.RootSpec.LabelValue == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration has empty root_cert_spec.LabelValue property")
-	}
-	if config.RootSpec.CaPool == "" {
-		p.log.Warn("The ca_pool value is not configured. Falling back to searching the region for matching CAs. The ca_pool configurable will be required in a future release.")
-	}
-	// Swap out the current configuration with the new configuration
-	p.setConfig(config)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = newConfig
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, err
 }
 
 func (p *Plugin) getConfig() (*Configuration, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.c == nil {
+	if p.config == nil {
 		return nil, status.Error(codes.FailedPrecondition, "not configured")
 	}
 
-	return p.c, nil
-}
-
-func (p *Plugin) setConfig(c *Configuration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.c = c
+	return p.config, nil
 }
 
 func (p *Plugin) mintX509CA(ctx context.Context, csr []byte, preferredTTL int32) (*upstreamauthorityv1.MintX509CAResponse, error) {
@@ -206,7 +225,7 @@ func (p *Plugin) mintX509CA(ctx context.Context, csr []byte, preferredTTL int32)
 		return nil, status.Errorf(codes.InvalidArgument, "no certificate authorities found with label pair %q:%q", rootSpec.LabelKey, rootSpec.LabelValue)
 	}
 
-	// We dont want to use revoked, disabled or pending deletion CAs
+	// We don't want to use revoked, disabled or pending deletion CAs
 	// In short, we only need CAs that are in enabled state
 	allCertRoots = filterOutNonEnabledCAs(allCertRoots)
 	// we want the CA that is expiring the earliest
@@ -220,7 +239,7 @@ func (p *Plugin) mintX509CA(ctx context.Context, csr []byte, preferredTTL int32)
 
 	chosenCA := allCertRoots[0]
 
-	// All of the CAs that are eligible for signing are still trusted
+	// All the CAs that are eligible for signing are still trusted
 	var trustBundle []*privatecapb.CertificateAuthority
 	if len(allCertRoots) > 1 {
 		trustBundle = append(trustBundle, allCertRoots[1:]...)
@@ -333,7 +352,7 @@ func (p *Plugin) mintX509CA(ctx context.Context, csr []byte, preferredTTL int32)
 	fullChain := []*x509.Certificate{cert}
 	fullChain = append(fullChain, certChain[:len(certChain)-1]...)
 
-	x509CAChain, err := x509certificate.ToPluginProtos(fullChain)
+	x509CAChain, err := x509certificate.ToPluginFromCertificates(fullChain)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to form response X.509 CA chain: %v", err)
 	}
@@ -358,7 +377,7 @@ func (p *Plugin) mintX509CA(ctx context.Context, csr []byte, preferredTTL int32)
 
 	// We may well have specified multiple paths to the same root.
 	rootBundle = x509util.DedupeCertificates(rootBundle)
-	upstreamX509Roots, err := x509certificate.ToPluginProtos(rootBundle)
+	upstreamX509Roots, err := x509certificate.ToPluginFromCertificates(rootBundle)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to form response upstream X.509 roots: %v", err)
 	}
@@ -410,7 +429,7 @@ func (client *gcpCAClient) LoadCertificateAuthorities(ctx context.Context, spec 
 		certIt := client.pcaClient.ListCertificateAuthorities(ctx, &privatecapb.ListCertificateAuthoritiesRequest{
 			Parent: pool,
 			Filter: fmt.Sprintf("labels.%s:%s", spec.LabelKey, spec.LabelValue),
-			// There is "OrderBy" option but it seems to work only for the name field
+			// There is "OrderBy" option, but it seems to work only for the name field
 			// So we will have to sort it by expiry timestamp at our end
 		})
 

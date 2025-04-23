@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package k8s
 
@@ -9,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/spiffe/spire/test/plugintest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,11 +37,11 @@ type fakeContainerHelper struct {
 	osError     error
 }
 
-func (h *fakeContainerHelper) Configure(config *HCLConfig, log hclog.Logger) error {
+func (h *fakeContainerHelper) Configure(*HCLConfig, hclog.Logger) error {
 	return h.err
 }
 
-func (h *fakeContainerHelper) GetOSSelectors(ctx context.Context, log hclog.Logger, containerStatus *corev1.ContainerStatus) ([]string, error) {
+func (h *fakeContainerHelper) GetOSSelectors(context.Context, hclog.Logger, *corev1.ContainerStatus) ([]string, error) {
 	if h.osError != nil {
 		return nil, h.osError
 	}
@@ -67,23 +65,6 @@ func (s *Suite) addGetContainerResponsePidInPod() {
 	s.oc.cHelper.cIDs = map[int32]string{
 		123: "9bca8d63d5fa610783847915bcff0ecac1273e5b4bed3f6fa1b07350e0135961",
 	}
-}
-
-func (s *Suite) TestFailedToStartWhenUsingSigstore() {
-	t := s.T()
-	p := s.newPlugin()
-
-	var err error
-	plugintest.Load(t, builtin(p), nil,
-		plugintest.Configure(`
-			experimental = {
-				sigstore = {
-					rekor_url = "https://rekor.org"
-				}
-			}
-			`),
-		plugintest.CaptureConfigureError(&err))
-	spiretest.RequireGRPCStatus(t, err, codes.InvalidArgument, "sigstore configuration is not supported on windows environment")
 }
 
 func TestContainerHelper(t *testing.T) {
@@ -116,7 +97,7 @@ type fakeProcessHelper struct {
 	err         error
 }
 
-func (f *fakeProcessHelper) GetContainerIDByProcess(pID int32, log hclog.Logger) (string, error) {
+func (f *fakeProcessHelper) GetContainerIDByProcess(int32, hclog.Logger) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}

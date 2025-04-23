@@ -1,7 +1,6 @@
 package run
 
 import (
-	"bytes"
 	"crypto/x509/pkix"
 	"io"
 	"os"
@@ -11,7 +10,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl"
-	"github.com/hashicorp/hcl/hcl/printer"
+	"github.com/hashicorp/hcl/hcl/ast"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -19,7 +18,8 @@ import (
 	"github.com/spiffe/spire/pkg/common/log"
 	"github.com/spiffe/spire/pkg/server"
 	bundleClient "github.com/spiffe/spire/pkg/server/bundle/client"
-	"github.com/spiffe/spire/pkg/server/ca"
+	"github.com/spiffe/spire/pkg/server/credtemplate"
+	"github.com/spiffe/spire/pkg/server/endpoints/bundle"
 	"github.com/spiffe/spire/pkg/server/plugin/keymanager"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/assert"
@@ -64,41 +64,43 @@ func TestParseConfigGood(t *testing.T) {
 	_, ok := trustDomainConfig.EndpointProfile.(bundleClient.HTTPSWebProfile)
 	assert.True(t, ok)
 	assert.True(t, c.Server.AuditLogEnabled)
+	assert.True(t, c.Server.Experimental.RequirePQKEM)
 	testParseConfigGoodOS(t, c)
 
+	// Parse/reprint cycle trims outer whitespace
+	const data = `join_token = "PLUGIN-SERVER-NOT-A-SECRET"`
+
 	// Check for plugins configurations
-	pluginConfigs := *c.Plugins
-	expectedData := "join_token = \"PLUGIN-SERVER-NOT-A-SECRET\""
-	var data bytes.Buffer
-	err = printer.DefaultConfig.Fprint(&data, pluginConfigs["plugin_type_server"]["plugin_name_server"].PluginData)
-	assert.NoError(t, err)
+	expectedPluginConfigs := catalog.PluginConfigs{
+		{
+			Type:       "plugin_type_server",
+			Name:       "plugin_name_server",
+			Path:       "./pluginServerCmd",
+			Checksum:   "pluginServerChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   false,
+		},
+		{
+			Type:       "plugin_type_server",
+			Name:       "plugin_disabled",
+			Path:       "./pluginServerCmd",
+			Checksum:   "pluginServerChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   true,
+		},
+		{
+			Type:       "plugin_type_server",
+			Name:       "plugin_enabled",
+			Path:       "./pluginServerCmd",
+			Checksum:   "pluginServerChecksum",
+			DataSource: catalog.FileData("plugin.conf"),
+			Disabled:   false,
+		},
+	}
 
-	assert.Len(t, pluginConfigs, 1)
-	assert.Len(t, pluginConfigs["plugin_type_server"], 3)
-
-	// Default config
-	pluginConfig := pluginConfigs["plugin_type_server"]["plugin_name_server"]
-	assert.Nil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), true)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginServerChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, "./pluginServerCmd")
-	assert.Equal(t, expectedData, data.String())
-
-	// Disabled plugin
-	pluginConfig = pluginConfigs["plugin_type_server"]["plugin_disabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), false)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginServerChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, "./pluginServerCmd")
-	assert.Equal(t, expectedData, data.String())
-
-	// Enabled plugin
-	pluginConfig = pluginConfigs["plugin_type_server"]["plugin_enabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, pluginConfig.IsEnabled(), true)
-	assert.Equal(t, pluginConfig.PluginChecksum, "pluginServerChecksum")
-	assert.Equal(t, pluginConfig.PluginCmd, "./pluginServerCmd")
-	assert.Equal(t, expectedData, data.String())
+	pluginConfigs, err := catalog.PluginConfigsFromHCLNode(c.Plugins)
+	require.NoError(t, err)
+	require.Equal(t, expectedPluginConfigs, pluginConfigs)
 }
 
 func TestMergeInput(t *testing.T) {
@@ -352,15 +354,39 @@ func TestMergeInput(t *testing.T) {
 			},
 		},
 		{
-			msg: "default_svid_ttl should be configurable by file",
+			msg:       "log_source_location should default to false if not set",
+			fileInput: func(c *Config) {},
+			cliFlags:  []string{},
+			test: func(t *testing.T, c *Config) {
+				require.False(t, c.Server.LogSourceLocation)
+			},
+		},
+		{
+			msg: "log_source_location should be configurable by file",
 			fileInput: func(c *Config) {
-				c.Server.DefaultSVIDTTL = "1h"
-				c.Server.DefaultX509SVIDTTL = ""
-				c.Server.DefaultJWTSVIDTTL = ""
+				c.Server.LogSourceLocation = true
 			},
 			cliFlags: []string{},
 			test: func(t *testing.T, c *Config) {
-				require.Equal(t, "1h", c.Server.DefaultSVIDTTL)
+				require.True(t, c.Server.LogSourceLocation)
+			},
+		},
+		{
+			msg:       "log_source_location should be configurable by CLI flag",
+			fileInput: func(c *Config) {},
+			cliFlags:  []string{"-logSourceLocation"},
+			test: func(t *testing.T, c *Config) {
+				require.True(t, c.Server.LogSourceLocation)
+			},
+		},
+		{
+			msg: "log_source_location specified by CLI flag should take precedence over file",
+			fileInput: func(c *Config) {
+				c.Server.LogSourceLocation = false
+			},
+			cliFlags: []string{"-logSourceLocation"},
+			test: func(t *testing.T, c *Config) {
+				require.True(t, c.Server.LogSourceLocation)
 			},
 		},
 		{
@@ -430,12 +456,20 @@ func TestMergeInput(t *testing.T) {
 				require.True(t, c.Server.AuditLogEnabled)
 			},
 		},
+		{
+			msg: "require_pq_kem should be configurable by file",
+			fileInput: func(c *Config) {
+				c.Server.Experimental.RequirePQKEM = true
+			},
+			cliFlags: []string{},
+			test: func(t *testing.T, c *Config) {
+				require.True(t, c.Server.Experimental.RequirePQKEM)
+			},
+		},
 	}
 	cases = append(cases, mergeInputCasesOS(t)...)
 
 	for _, testCase := range cases {
-		testCase := testCase
-
 		fileInput := &Config{Server: &serverConfig{}}
 
 		testCase.fileInput(fileInput)
@@ -480,6 +514,28 @@ func TestNewServerConfig(t *testing.T) {
 			},
 		},
 		{
+			msg: "IPv6 bind_address in square brackets and bind_port should be correctly parsed",
+			input: func(c *Config) {
+				c.Server.BindAddress = "[2001:101::]"
+				c.Server.BindPort = 1337
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "2001:101::", c.BindAddress.IP.String())
+				require.Equal(t, 1337, c.BindAddress.Port)
+			},
+		},
+		{
+			msg: "IPv6 bind_address without square brackets and bind_port should be correctly parsed",
+			input: func(c *Config) {
+				c.Server.BindAddress = "2001:101::"
+				c.Server.BindPort = 1337
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "2001:101::", c.BindAddress.IP.String())
+				require.Equal(t, 1337, c.BindAddress.Port)
+			},
+		},
+		{
 			msg: "bind_address with hostname value should be correctly parsed",
 			input: func(c *Config) {
 				c.Server.BindAddress = "localhost"
@@ -493,7 +549,7 @@ func TestNewServerConfig(t *testing.T) {
 			msg:         "invalid bind_address should return an error",
 			expectError: true,
 			input: func(c *Config) {
-				c.Server.BindAddress = "this-is-not-an-ip-address"
+				c.Server.BindAddress = "^[notavalidhostname*!"
 			},
 			test: func(t *testing.T, c *server.Config) {
 				require.Nil(t, c)
@@ -600,6 +656,135 @@ func TestNewServerConfig(t *testing.T) {
 			input: func(c *Config) {
 				c.Server.Federation = &federationConfig{
 					BundleEndpoint: &bundleEndpointConfig{
+						Address:     "192.168.1.1",
+						Port:        1337,
+						RefreshHint: "10m",
+					},
+				}
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "192.168.1.1", c.Federation.BundleEndpoint.Address.IP.String())
+				require.Equal(t, 1337, c.Federation.BundleEndpoint.Address.Port)
+				require.Equal(t, 10*time.Minute, c.Federation.BundleEndpoint.RefreshHint)
+			},
+		},
+		{
+			msg: "bundle endpoint has acme",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: &bundleEndpointConfig{
+						ACME: &bundleEndpointACMEConfig{
+							DirectoryURL: "somepath.tt",
+							DomainName:   "example.org",
+							Email:        "mail@example.org",
+							ToSAccepted:  true,
+						},
+					},
+				}
+			},
+			test: func(t *testing.T, c *server.Config) {
+				expectACME := &bundle.ACMEConfig{
+					DirectoryURL: "somepath.tt",
+					DomainName:   "example.org",
+					Email:        "mail@example.org",
+					ToSAccepted:  true,
+					CacheDir:     "bundle-acme",
+				}
+				require.Equal(t, expectACME, c.Federation.BundleEndpoint.ACME)
+			},
+		},
+		{
+			msg: "bundle endpoint has spiffe profile",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileHTTPSSPIFFETest(t),
+				}
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "0.0.0.0", c.Federation.BundleEndpoint.Address.IP.String())
+				require.Equal(t, 8443, c.Federation.BundleEndpoint.Address.Port)
+				require.Equal(t, 10*time.Minute, c.Federation.BundleEndpoint.RefreshHint)
+				require.Nil(t, c.Federation.BundleEndpoint.ACME)
+			},
+		},
+		{
+			msg: "bundle endpoint has web profile",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileHTTPSWebACMETest(t),
+				}
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "0.0.0.0", c.Federation.BundleEndpoint.Address.IP.String())
+				require.Equal(t, 8443, c.Federation.BundleEndpoint.Address.Port)
+				require.Equal(t, 10*time.Minute, c.Federation.BundleEndpoint.RefreshHint)
+
+				expectACME := &bundle.ACMEConfig{
+					DomainName: "example.org",
+					Email:      "mail@example.org",
+					CacheDir:   "bundle-acme",
+				}
+				require.Equal(t, expectACME, c.Federation.BundleEndpoint.ACME)
+				require.Nil(t, c.Federation.BundleEndpoint.DiskCertManager)
+			},
+		},
+		{
+			msg: "bundle endpoint has web profile with certs on disk",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileHTTPSWebServingCertFileTest(t),
+				}
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, "0.0.0.0", c.Federation.BundleEndpoint.Address.IP.String())
+				require.Equal(t, 8443, c.Federation.BundleEndpoint.Address.Port)
+				require.Equal(t, 10*time.Minute, c.Federation.BundleEndpoint.RefreshHint)
+
+				require.Nil(t, c.Federation.BundleEndpoint.ACME)
+				require.NotNil(t, c.Federation.BundleEndpoint.DiskCertManager)
+			},
+		},
+		{
+			msg: "bundle endpoint has empty web profile",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileEmptyHTTPSWebTest(t),
+				}
+			},
+			expectError: true,
+			test: func(t *testing.T, c *server.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "bundle endpoint has acme and profile",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileACMEAndProfileTest(t),
+				}
+			},
+			expectError: true,
+			test: func(t *testing.T, c *server.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "bundle endpoint has unknown profile",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: bundleEndpointProfileUnknownTest(t),
+				}
+			},
+			expectError: true,
+			test: func(t *testing.T, c *server.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "bundle endpoint does not have a default refresh hint",
+			input: func(c *Config) {
+				c.Server.Federation = &federationConfig{
+					BundleEndpoint: &bundleEndpointConfig{
 						Address: "192.168.1.1",
 						Port:    1337,
 					},
@@ -608,6 +793,7 @@ func TestNewServerConfig(t *testing.T) {
 			test: func(t *testing.T, c *server.Config) {
 				require.Equal(t, "192.168.1.1", c.Federation.BundleEndpoint.Address.IP.String())
 				require.Equal(t, 1337, c.Federation.BundleEndpoint.Address.Port)
+				require.Equal(t, 5*time.Minute, c.Federation.BundleEndpoint.RefreshHint)
 			},
 		},
 		{
@@ -636,15 +822,6 @@ func TestNewServerConfig(t *testing.T) {
 			},
 		},
 		{
-			msg: "default_svid_ttl is correctly parsed",
-			input: func(c *Config) {
-				c.Server.DefaultSVIDTTL = "1m"
-			},
-			test: func(t *testing.T, c *server.Config) {
-				require.Equal(t, time.Minute, c.X509SVIDTTL)
-			},
-		},
-		{
 			msg: "default_x509_svid_ttl is correctly parsed",
 			input: func(c *Config) {
 				c.Server.DefaultX509SVIDTTL = "2m"
@@ -660,18 +837,6 @@ func TestNewServerConfig(t *testing.T) {
 			},
 			test: func(t *testing.T, c *server.Config) {
 				require.Equal(t, 3*time.Minute, c.JWTSVIDTTL)
-			},
-		},
-		{
-			msg:         "invalid default_svid_ttl returns an error",
-			expectError: true,
-			input: func(c *Config) {
-				c.Server.DefaultSVIDTTL = "b"
-				c.Server.DefaultX509SVIDTTL = ""
-				c.Server.DefaultJWTSVIDTTL = ""
-			},
-			test: func(t *testing.T, c *server.Config) {
-				require.Nil(t, c)
 			},
 		},
 		{
@@ -839,7 +1004,7 @@ func TestNewServerConfig(t *testing.T) {
 				c.Server.CASubject = nil
 			},
 			test: func(t *testing.T, c *server.Config) {
-				require.Equal(t, defaultCASubject, c.CASubject)
+				require.Equal(t, credtemplate.DefaultX509CASubject(), c.CASubject)
 			},
 		},
 		{
@@ -848,7 +1013,7 @@ func TestNewServerConfig(t *testing.T) {
 				c.Server.CASubject = &caSubjectConfig{}
 			},
 			test: func(t *testing.T, c *server.Config) {
-				require.Equal(t, defaultCASubject, c.CASubject)
+				require.Equal(t, credtemplate.DefaultX509CASubject(), c.CASubject)
 			},
 		},
 		{
@@ -931,7 +1096,7 @@ func TestNewServerConfig(t *testing.T) {
 			},
 			logOptions: assertLogsContainEntries([]spiretest.LogEntry{
 				{
-					Data:  map[string]interface{}{"trust_domain": strings.Repeat("a", 256)},
+					Data:  map[string]any{"trust_domain": strings.Repeat("a", 256)},
 					Level: logrus.WarnLevel,
 					Message: "Configured trust domain name should be less than 255 characters to be " +
 						"SPIFFE compliant; a longer trust domain name may impact interoperability",
@@ -955,6 +1120,25 @@ func TestNewServerConfig(t *testing.T) {
 			expectError: true,
 			input: func(c *Config) {
 				c.Server.Experimental.CacheReloadInterval = "b"
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg: "prune_events_older_than is correctly parsed",
+			input: func(c *Config) {
+				c.Server.Experimental.PruneEventsOlderThan = "1m"
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.Equal(t, time.Minute, c.PruneEventsOlderThan)
+			},
+		},
+		{
+			msg:         "invalid prune_events_older_than returns an error",
+			expectError: true,
+			input: func(c *Config) {
+				c.Server.Experimental.PruneEventsOlderThan = "b"
 			},
 			test: func(t *testing.T, c *server.Config) {
 				require.Nil(t, c)
@@ -1008,52 +1192,25 @@ func TestNewServerConfig(t *testing.T) {
 			},
 		},
 		{
-			msg: "omit_x509svid_uid is unset",
-			input: func(c *Config) {
-				c.Server.OmitX509SVIDUID = nil
-			},
+			msg:   "require PQ KEM is disabled (default)",
+			input: func(c *Config) {},
 			test: func(t *testing.T, c *server.Config) {
-				require.False(t, c.OmitX509SVIDUID)
+				require.Equal(t, false, c.TLSPolicy.RequirePQKEM)
 			},
 		},
 		{
-			msg: "omit_x509svid_uid is set to false",
+			msg: "require PQ KEM is enabled",
 			input: func(c *Config) {
-				value := false
-				c.Server.OmitX509SVIDUID = &value
+				c.Server.Experimental.RequirePQKEM = true
 			},
-			logOptions: assertLogsContainEntries([]spiretest.LogEntry{
-				{
-					Level:   logrus.WarnLevel,
-					Message: "The omit_x509svid_uid flag is deprecated and will be removed from a future release",
-				},
-			}),
 			test: func(t *testing.T, c *server.Config) {
-				require.False(t, c.OmitX509SVIDUID)
-			},
-		},
-		{
-			msg: "omit_x509svid_uid is set to true",
-			input: func(c *Config) {
-				value := true
-				c.Server.OmitX509SVIDUID = &value
-			},
-			logOptions: assertLogsContainEntries([]spiretest.LogEntry{
-				{
-					Level:   logrus.WarnLevel,
-					Message: "The omit_x509svid_uid flag is deprecated and will be removed from a future release",
-				},
-			}),
-			test: func(t *testing.T, c *server.Config) {
-				require.True(t, c.OmitX509SVIDUID)
+				require.Equal(t, true, c.TLSPolicy.RequirePQKEM)
 			},
 		},
 	}
-	cases = append(cases, newServerConfigCasesOS()...)
+	cases = append(cases, newServerConfigCasesOS(t)...)
 
 	for _, testCase := range cases {
-		testCase := testCase
-
 		input := defaultValidConfig()
 
 		testCase.input(input)
@@ -1084,7 +1241,7 @@ func defaultValidConfig() *Config {
 	c.Server.DataDir = "."
 	c.Server.TrustDomain = "example.org"
 
-	c.Plugins = &catalog.HCLPluginConfigMap{}
+	c.Plugins = &ast.ObjectList{}
 
 	return c
 }
@@ -1176,7 +1333,6 @@ func TestValidateConfig(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			conf := defaultValidConfig()
 			testCase.applyConf(conf)
@@ -1389,8 +1545,6 @@ func TestWarnOnUnknownConfig(t *testing.T) {
 	}
 
 	for _, testCase := range cases {
-		testCase := testCase
-
 		c, err := ParseFile(filepath.Join(testFileDir, testCase.confFile), false)
 		require.NoError(t, err)
 
@@ -1431,10 +1585,10 @@ func TestLogOptions(t *testing.T) {
 		log.WithReopenableOutputFile(logFile),
 	}
 
-	agentConfig, err := NewServerConfig(defaultValidConfig(), logOptions, false)
+	serverConfig, err := NewServerConfig(defaultValidConfig(), logOptions, false)
 	require.NoError(t, err)
 
-	logger := agentConfig.Log.(*log.Logger).Logger
+	logger := serverConfig.Log.(*log.Logger).Logger
 
 	// defaultConfig() sets level to info,  which should override DEBUG set above
 	require.Equal(t, logrus.InfoLevel, logger.Level)
@@ -1448,7 +1602,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 	cases := []struct {
 		msg                      string
 		caTTL                    time.Duration
-		svidTTL                  time.Duration
 		x509SvidTTL              time.Duration
 		jwtSvidTTL               time.Duration
 		hasCompatibleSvidTTL     bool
@@ -1458,97 +1611,30 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "All values are default values",
 			caTTL:                    0,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     true,
 			hasCompatibleX509SvidTTL: true,
 			hasCompatibleJwtSvidTTL:  true,
 		},
 		{
 			msg:                      "ca_ttl is large enough for all default SVID TTL",
 			caTTL:                    time.Hour * 7,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     true,
 			hasCompatibleX509SvidTTL: true,
 			hasCompatibleJwtSvidTTL:  true,
 		},
 		{
 			msg:                      "ca_ttl is not large enough for the default SVID TTL",
 			caTTL:                    time.Minute * 1,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     false,
 			hasCompatibleX509SvidTTL: false,
 			hasCompatibleJwtSvidTTL:  false,
 		},
 		{
-			msg:                      "default_svid_ttl is small enough for the default CA TTL",
-			caTTL:                    0,
-			svidTTL:                  time.Hour * 3,
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     true,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
-			msg:                      "default_svid_ttl is not small enough for the default CA TTL",
-			caTTL:                    0,
-			svidTTL:                  time.Hour * 24,
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     false,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
-			msg:                      "default_svid_ttl is small enough for the configured CA TTL",
-			caTTL:                    time.Hour * 24,
-			svidTTL:                  time.Hour * 1,
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     true,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
-			msg:                      "default_svid_ttl is not small enough for the configured CA TTL",
-			caTTL:                    time.Hour * 24,
-			svidTTL:                  time.Hour * 23,
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     false,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
-			msg:                      "default_svid_ttl is larger than the configured CA TTL",
-			caTTL:                    time.Hour * 24,
-			svidTTL:                  time.Hour * 25,
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     false,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
-			msg:                      "default_svid_ttl is small enough for the configured CA TTL but larger than the max",
-			caTTL:                    time.Hour * 24 * 7 * 4 * 6, // Six months
-			svidTTL:                  time.Hour * 24 * 7 * 2,     // Two weeks
-			x509SvidTTL:              0,
-			jwtSvidTTL:               0,
-			hasCompatibleSvidTTL:     false,
-			hasCompatibleX509SvidTTL: true,
-			hasCompatibleJwtSvidTTL:  true,
-		},
-		{
 			msg:                      "default_x509_svid_ttl is small enough for the default CA TTL",
 			caTTL:                    0,
-			svidTTL:                  0,
 			x509SvidTTL:              time.Hour * 3,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
@@ -1558,7 +1644,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_x509_svid_ttl is not small enough for the default CA TTL",
 			caTTL:                    0,
-			svidTTL:                  0,
 			x509SvidTTL:              time.Hour * 24,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
@@ -1568,7 +1653,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_x509_svid_ttl is small enough for the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              time.Hour * 1,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
@@ -1578,7 +1662,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_x509_svid_ttl is not small enough for the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              time.Hour * 23,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
@@ -1588,7 +1671,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_x509_svid_ttl is larger than the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              time.Hour * 25,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
@@ -1598,8 +1680,7 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_x509_svid_ttl is small enough for the configured CA TTL but larger than the max",
 			caTTL:                    time.Hour * 24 * 7 * 4 * 6, // Six months
-			svidTTL:                  0,
-			x509SvidTTL:              time.Hour * 24 * 7 * 2, // Two weeks,
+			x509SvidTTL:              time.Hour * 24 * 7 * 2,     // Two weeks,
 			jwtSvidTTL:               0,
 			hasCompatibleSvidTTL:     true,
 			hasCompatibleX509SvidTTL: false,
@@ -1608,7 +1689,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is small enough for the default CA TTL",
 			caTTL:                    0,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               time.Hour * 3,
 			hasCompatibleSvidTTL:     true,
@@ -1618,7 +1698,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is not small enough for the default CA TTL",
 			caTTL:                    0,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               time.Hour * 24,
 			hasCompatibleSvidTTL:     true,
@@ -1628,7 +1707,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is small enough for the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               time.Hour * 1,
 			hasCompatibleSvidTTL:     true,
@@ -1638,7 +1716,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is not small enough for the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               time.Hour * 23,
 			hasCompatibleSvidTTL:     true,
@@ -1648,7 +1725,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is larger than the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  0,
 			x509SvidTTL:              0,
 			jwtSvidTTL:               time.Hour * 25,
 			hasCompatibleSvidTTL:     true,
@@ -1658,9 +1734,8 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "default_jwt_svid_ttl is small enough for the configured CA TTL but larger than the max",
 			caTTL:                    time.Hour * 24 * 7 * 4 * 6, // Six months
-			svidTTL:                  0,
 			x509SvidTTL:              0,
-			jwtSvidTTL:               time.Hour * 24 * 7 * 2, // Two weeks,,
+			jwtSvidTTL:               time.Hour * 24 * 7 * 2, // Two weeks
 			hasCompatibleSvidTTL:     true,
 			hasCompatibleX509SvidTTL: true,
 			hasCompatibleJwtSvidTTL:  false,
@@ -1668,7 +1743,6 @@ func TestHasCompatibleTTLs(t *testing.T) {
 		{
 			msg:                      "all default svid_ttls are small enough for the configured CA TTL",
 			caTTL:                    time.Hour * 24,
-			svidTTL:                  time.Hour * 1,
 			x509SvidTTL:              time.Hour * 1,
 			jwtSvidTTL:               time.Hour * 1,
 			hasCompatibleSvidTTL:     true,
@@ -1678,22 +1752,17 @@ func TestHasCompatibleTTLs(t *testing.T) {
 	}
 
 	for _, testCase := range cases {
-		testCase := testCase
 		if testCase.caTTL == 0 {
-			testCase.caTTL = ca.DefaultCATTL
-		}
-		if testCase.svidTTL == 0 {
-			testCase.svidTTL = ca.DefaultX509SVIDTTL
+			testCase.caTTL = credtemplate.DefaultX509CATTL
 		}
 		if testCase.x509SvidTTL == 0 {
-			testCase.x509SvidTTL = ca.DefaultX509SVIDTTL
+			testCase.x509SvidTTL = credtemplate.DefaultX509SVIDTTL
 		}
 		if testCase.jwtSvidTTL == 0 {
-			testCase.jwtSvidTTL = ca.DefaultJWTSVIDTTL
+			testCase.jwtSvidTTL = credtemplate.DefaultJWTSVIDTTL
 		}
 
 		t.Run(testCase.msg, func(t *testing.T) {
-			require.Equal(t, testCase.hasCompatibleSvidTTL, hasCompatibleTTL(testCase.caTTL, testCase.svidTTL))
 			require.Equal(t, testCase.hasCompatibleX509SvidTTL, hasCompatibleTTL(testCase.caTTL, testCase.x509SvidTTL))
 			require.Equal(t, testCase.hasCompatibleJwtSvidTTL, hasCompatibleTTL(testCase.caTTL, testCase.jwtSvidTTL))
 		})
@@ -1731,7 +1800,7 @@ func TestMaxSVIDTTL(t *testing.T) {
 		},
 	} {
 		if v.caTTL == 0 {
-			v.caTTL = ca.DefaultCATTL
+			v.caTTL = credtemplate.DefaultX509CATTL
 		}
 
 		assert.Equal(t, v.expect, printMaxSVIDTTL(v.caTTL))
@@ -1807,10 +1876,10 @@ func TestMinCATTL(t *testing.T) {
 		},
 	} {
 		if v.x509SVIDTTL == 0 {
-			v.x509SVIDTTL = ca.DefaultX509SVIDTTL
+			v.x509SVIDTTL = credtemplate.DefaultX509SVIDTTL
 		}
 		if v.jwtSVIDTTL == 0 {
-			v.jwtSVIDTTL = ca.DefaultJWTSVIDTTL
+			v.jwtSVIDTTL = credtemplate.DefaultJWTSVIDTTL
 		}
 
 		// The expected value is the MinCATTL calculated from the largest of the available TTLs
@@ -1866,6 +1935,93 @@ func TestAgentTTL(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, c.expectedDuration, sconfig.AgentTTL)
 	}
+}
+
+func bundleEndpointProfileACMEAndProfileTest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+	acme {
+             domain_name = "example.org"
+             email = "mail@example.org"
+	}
+        profile "https_web" {
+	     acme {
+                domain_name = "example.org"
+                email = "mail@example.org"
+	     }
+        }`
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
+}
+
+func bundleEndpointProfileHTTPSWebServingCertFileTest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+        profile "https_web" {
+        	serving_cert_file {
+        		cert_file_path = "../../../../test/fixture/certs/svid.pem"
+        		key_file_path = "../../../../test/fixture/certs/svid_key.pem"
+        		file_sync_interval = "5m"
+        	}
+        }`
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
+}
+
+func bundleEndpointProfileHTTPSWebACMETest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+        profile "https_web" {
+	     acme {
+                domain_name = "example.org"
+                email = "mail@example.org"
+	     }
+        }`
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
+}
+
+func bundleEndpointProfileEmptyHTTPSWebTest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+        profile "https_web" {}`
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
+}
+func bundleEndpointProfileHTTPSSPIFFETest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+        profile "https_spiffe" {}`
+
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
+}
+
+func bundleEndpointProfileUnknownTest(t *testing.T) *bundleEndpointConfig {
+	configString := `address = "0.0.0.0"
+        port = 8443
+        refresh_hint = "10m"
+        profile "some_name" {}`
+
+	config := new(bundleEndpointConfig)
+	require.NoError(t, hcl.Decode(config, configString))
+
+	return config
 }
 
 func httpsSPIFFEConfigTest(t *testing.T) federatesWithConfig {

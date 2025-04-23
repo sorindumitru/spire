@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package process
 
@@ -7,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
 	"golang.org/x/sys/windows"
 )
 
@@ -48,7 +47,11 @@ func (h *helper) GetContainerIDByProcess(pID int32, log hclog.Logger) (string, e
 	currentProcess := h.wapi.CurrentProcess()
 
 	// Duplicate the process handle that we want to validate, with limited permissions.
-	childProcessHandle, err := h.wapi.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pID))
+	pidUint32, err := util.CheckedCast[uint32](pID)
+	if err != nil {
+		return "", fmt.Errorf("invalid value for PID: %w", err)
+	}
+	childProcessHandle, err := h.wapi.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pidUint32)
 	if err != nil {
 		return "", fmt.Errorf("failed to open child process: %w", err)
 	}
@@ -122,7 +125,7 @@ func (h *helper) searchProcessByExeFile(exeFile string, log hclog.Logger) ([]uin
 	var results []uint32
 
 	for {
-		entryExeFile := syscall.UTF16ToString(entry.ExeFile[:])
+		entryExeFile := windows.UTF16ToString(entry.ExeFile[:])
 		if entryExeFile == exeFile {
 			results = append(results, entry.ProcessID)
 		}
@@ -195,7 +198,7 @@ func (h *helper) getJobName(handle SystemHandleInformationExItem, currentProcess
 		return "", fmt.Errorf("failed to get object name: %w", err)
 	}
 
-	// Jobs created on windows environments start with "\Container_"
+	// Jobs created on Windows environments start with "\Container_"
 	if !strings.HasPrefix(objectName, containerPrefix) {
 		return "", nil
 	}

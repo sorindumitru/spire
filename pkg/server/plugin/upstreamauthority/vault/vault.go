@@ -17,10 +17,13 @@ import (
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/pemutil"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 )
 
 const (
 	pluginName = "vault"
+
+	PluginConfigMalformed = "plugin configuration is malformed"
 )
 
 // BuiltIn constructs a catalog.BuiltIn using a new instance of this plugin.
@@ -56,6 +59,22 @@ type Configuration struct {
 	InsecureSkipVerify bool `hcl:"insecure_skip_verify" json:"insecure_skip_verify"`
 	// Name of the Vault namespace
 	Namespace string `hcl:"namespace" json:"namespace"`
+}
+
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Configuration {
+	newConfig := new(Configuration)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportError("plugin configuration is malformed")
+		return nil
+	}
+
+	// TODO: add field validations
+
+	// TODO: consider moving some elements of parseAuthMethod into config checking
+	// TODO: consider moving some elements of genClientParams into config checking
+	// TODO: consider moving some elements of NewClientConfig into config checking
+
+	return newConfig
 }
 
 // TokenAuthConfig represents parameters for token auth method
@@ -133,21 +152,20 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 	p.logger = log
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config := new(Configuration)
-
-	if err := hcl.Decode(&config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
+func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	am, err := parseAuthMethod(config)
+	am, err := parseAuthMethod(newConfig)
 	if err != nil {
 		return nil, err
 	}
-	cp, err := p.genClientParams(am, config)
+	cp, err := p.genClientParams(am, newConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +178,15 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.cc = vcConfig
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, err
 }
 
 func (p *Plugin) MintX509CAAndSubscribe(req *upstreamauthorityv1.MintX509CARequest, stream upstreamauthorityv1.UpstreamAuthority_MintX509CAAndSubscribeServer) error {
@@ -221,7 +248,7 @@ func (p *Plugin) MintX509CAAndSubscribe(req *upstreamauthorityv1.MintX509CAReque
 		return status.Errorf(codes.Internal, "failed to parse Root CA certificate: %v", err)
 	}
 
-	upstreamX509Roots, err := x509certificate.ToPluginProtos([]*x509.Certificate{upstreamRoot})
+	upstreamX509Roots, err := x509certificate.ToPluginFromCertificates([]*x509.Certificate{upstreamRoot})
 	if err != nil {
 		return status.Errorf(codes.Internal, "unable to form response upstream X.509 roots: %v", err)
 	}
@@ -249,7 +276,7 @@ func (p *Plugin) MintX509CAAndSubscribe(req *upstreamauthorityv1.MintX509CAReque
 		certChain = append(certChain, b)
 	}
 
-	x509CAChain, err := x509certificate.ToPluginProtos(certChain)
+	x509CAChain, err := x509certificate.ToPluginFromCertificates(certChain)
 	if err != nil {
 		return status.Errorf(codes.Internal, "unable to form response X.509 CA chain: %v", err)
 	}

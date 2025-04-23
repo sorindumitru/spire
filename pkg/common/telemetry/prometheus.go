@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	prommetrics "github.com/armon/go-metrics/prometheus"
+	prommetrics "github.com/hashicorp/go-metrics/prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -49,6 +49,10 @@ func newPrometheusRunner(c *MetricsConfig) (sinkRunner, error) {
 	if runner.c.Host != "localhost" {
 		runner.log.Warnf("Agent is now configured to accept remote network connections for Prometheus stats collection. Please ensure access to this port is tightly controlled")
 	}
+	runner.log.WithFields(logrus.Fields{
+		"host": runner.c.Host,
+		"port": runner.c.Port,
+	}).Info("Starting prometheus exporter")
 
 	runner.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", runner.c.Host, runner.c.Port),

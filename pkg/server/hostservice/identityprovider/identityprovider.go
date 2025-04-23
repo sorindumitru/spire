@@ -13,7 +13,6 @@ import (
 	"github.com/spiffe/spire/pkg/common/coretypes/jwtkey"
 	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/server/datastore"
-	"github.com/zeebo/errs"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -91,7 +90,7 @@ type identityProviderV1 struct {
 	s *IdentityProvider
 }
 
-func (v1 *identityProviderV1) FetchX509Identity(ctx context.Context, req *identityproviderv1.FetchX509IdentityRequest) (*identityproviderv1.FetchX509IdentityResponse, error) {
+func (v1 *identityProviderV1) FetchX509Identity(ctx context.Context, _ *identityproviderv1.FetchX509IdentityRequest) (*identityproviderv1.FetchX509IdentityResponse, error) {
 	deps, err := v1.s.getDeps()
 	if err != nil {
 		return nil, err
@@ -124,7 +123,7 @@ func (v1 *identityProviderV1) FetchX509Identity(ctx context.Context, req *identi
 
 	privateKey, err := x509.MarshalPKCS8PrivateKey(x509Identity.PrivateKey)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 
 	return &identityproviderv1.FetchX509IdentityResponse{
@@ -133,10 +132,11 @@ func (v1 *identityProviderV1) FetchX509Identity(ctx context.Context, req *identi
 			PrivateKey: privateKey,
 		},
 		Bundle: &plugintypes.Bundle{
-			TrustDomain:     v1.s.config.TrustDomain.String(),
+			TrustDomain:     v1.s.config.TrustDomain.Name(),
 			X509Authorities: x509Authorities,
 			JwtAuthorities:  jwtAuthorities,
 			RefreshHint:     bundle.RefreshHint,
+			SequenceNumber:  bundle.SequenceNumber,
 		},
 	}, nil
 }

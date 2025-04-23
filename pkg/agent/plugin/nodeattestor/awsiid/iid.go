@@ -15,13 +15,15 @@ import (
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
 	caws "github.com/spiffe/spire/pkg/common/plugin/aws"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const (
-	docPath = "instance-identity/document"
-	sigPath = "instance-identity/signature"
+	docPath        = "instance-identity/document"
+	sigPath        = "instance-identity/signature"
+	sigRSA2048Path = "instance-identity/rsa2048"
 )
 
 func BuiltIn() catalog.BuiltIn {
@@ -37,6 +39,16 @@ func builtin(p *IIDAttestorPlugin) catalog.BuiltIn {
 // IIDAttestorConfig configures a IIDAttestorPlugin.
 type IIDAttestorConfig struct {
 	EC2MetadataEndpoint string `hcl:"ec2_metadata_endpoint"`
+}
+
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *IIDAttestorConfig {
+	newConfig := &IIDAttestorConfig{}
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("unable to decode configuration: %v", err)
+		return nil
+	}
+
+	return newConfig
 }
 
 // IIDAttestorPlugin implements aws nodeattestation in the agent.
@@ -101,14 +113,22 @@ func fetchMetadata(ctx context.Context, endpoint string) (*caws.IIDAttestationDa
 		return nil, err
 	}
 
-	sig, err := getMetadataSig(ctx, client)
+	sig, err := getMetadataSig(ctx, client, sigPath)
 	if err != nil {
 		return nil, err
 	}
 
+	sigRSA2048, err := getMetadataSig(ctx, client, sigRSA2048Path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Agent sends both RSA-1024 and RSA-2048 signatures. This is for maintaining backwards compatibility, to support
+	// new SPIRE agents to attest to older SPIRE servers.
 	return &caws.IIDAttestationData{
-		Document:  doc,
-		Signature: sig,
+		Document:         doc,
+		Signature:        sig,
+		SignatureRSA2048: sigRSA2048,
 	}, nil
 }
 
@@ -123,9 +143,9 @@ func getMetadataDoc(ctx context.Context, client *imds.Client) (string, error) {
 	return readStringAndClose(res.Content)
 }
 
-func getMetadataSig(ctx context.Context, client *imds.Client) (string, error) {
+func getMetadataSig(ctx context.Context, client *imds.Client, signaturePath string) (string, error) {
 	res, err := client.GetDynamicData(ctx, &imds.GetDynamicDataInput{
-		Path: sigPath,
+		Path: signaturePath,
 	})
 	if err != nil {
 		return "", err
@@ -145,19 +165,26 @@ func readStringAndClose(r io.ReadCloser) (string, error) {
 }
 
 // Configure implements the Config interface method of the same name
-func (p *IIDAttestorPlugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	// Parse HCL config payload into config struct
-	config := &IIDAttestorConfig{}
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
+func (p *IIDAttestorPlugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
-
-	p.config = config
+	p.config = newConfig
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *IIDAttestorPlugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 func (p *IIDAttestorPlugin) getConfig() (*IIDAttestorConfig, error) {

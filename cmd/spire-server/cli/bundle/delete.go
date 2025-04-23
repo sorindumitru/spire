@@ -44,7 +44,7 @@ func (c *deleteCommand) Name() string {
 }
 
 func (c *deleteCommand) Synopsis() string {
-	return "Deletes bundle data"
+	return "Deletes federated bundle data"
 }
 
 func (c *deleteCommand) AppendFlags(fs *flag.FlagSet) {
@@ -53,7 +53,7 @@ func (c *deleteCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintDelete)
 }
 
-func (c *deleteCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *deleteCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	if c.id == "" {
 		return errors.New("id is required")
 	}
@@ -77,7 +77,7 @@ func (c *deleteCommand) Run(ctx context.Context, env *commoncli.Env, serverClien
 	return c.printer.PrintProto(resp)
 }
 
-func prettyPrintDelete(env *commoncli.Env, results ...interface{}) error {
+func prettyPrintDelete(env *commoncli.Env, results ...any) error {
 	deleteResp, ok := results[0].(*bundlev1.BatchDeleteFederatedBundleResponse)
 	if !ok {
 		return cliprinter.ErrInternalCustomPrettyFunc

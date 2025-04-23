@@ -1,5 +1,596 @@
 # Changelog
 
+## [1.12.0] - 2025-03-21
+
+### Added
+
+- Support for any S3 compatible object storage such as MinIO in the `aws_s3` BundlePublisher plugin (#5757)
+- Support for Rego V1 in the authorization policy engine (#5769)
+- Support for SAN-based selectors in the `x509pop` NodeAttestor plugin (#5775)
+
+### Changed
+
+- Agents now use the SyncAuthorizedEntries API for periodically synchronization of authorized entries by default (#5906)
+- Timestamps in logs are now formatted to include nanoseconds (#5798)
+- Improved entry lookup performance in NewJWTSVID and BatchNewX509SVID server RPCs (#5819)
+- Increased the maximum number of idle database connections to 100 (#5853)
+- The maximum idle time per database connection is now set to 30 seconds (#5853)
+- Small documentation improvements (#5873, #5876)
+- The experimental events-based cache now supports reading events from read-only replicas when data staleness is tolerated, enhancing read performance (#5911)
+- The `use_legacy_downstream_x509_ca_ttl` server setting is now set to false by default (#5917)
+
+### Deprecated
+
+- `use_sync_authorized_entries` experimental agent setting (#5906)
+- `use_legacy_downstream_x509_ca_ttl` server setting (#5917)
+
+### Removed
+
+- The deprecated `k8s_sat` NodeAttestor plugin (#5703)
+
+### Fixed
+
+- Issue where agents did not receive entry updates when new entries with the same entry ID were created while `use_sync_authorized_entries` was enabled (#5764)
+
+## [1.11.2] - 2025-02-13
+
+### Added
+
+- `gcp_secretmanager` SVIDStore plugin now supports specifying the regions where secrets are created (#5718)
+- Support for expanding environment variables in the OIDC Discovery Provider configuration (#5689)
+- Support for optionally enabling `trust_domain` label for all metrics (#5673)
+- The JWKS URI returned in the discovery document can now be configured in the OIDC Discovery Provider (#5690)
+- A server path prefix can now be specified in the OIDC Discovery Provider (#5690)
+
+### Changed
+
+- Small documentation improvements (#5809, #5720)
+
+### Fixed
+
+- Regression in the hydration of the experimental event-based cache that caused a delay in availability (#5842)
+- Do not log an error when the Envoy SDS v3 API connection has been closed cleanly (#5835)
+- SVIDStore plugins to properly parse metadata in entry selectors containing ':' characters (#5750)
+- Compatibility with deployments that use a server port other than 443 when the `jwt_issuer` configuration is set in the OIDC Discovery Provider (#5690)
+- Domain verification is now properly done when setting the `jwt_issuer` configuration in the OIDC Discovery Provider (#5690)
+
+### Security
+
+- Fixed to properly call the CompareObjectHandles function when it's available on Windows systems, as an extra security measure in the peertracker (#5749)
+
+## [1.11.1] - 2024-12-12
+
+### Added
+
+- The Go based text/template engine used in various plugins has been extended to include a set of functions from the SPRIG library (#5593, #5625)
+- The JWT-SVID cache in the agent is now configurable (#5633)
+- The JWT issuer is now configurable in the OIDC Discovery Provider (#5657)
+
+### Changed
+
+- CA journal now relies on the authority ID instead of the issued time when updating the status of keys (#5622)
+
+### Fixed
+
+- Spelling and grammar fixes (#5571)
+- Handling of IPv6 address consistently for the binding address of the server and health checks (#5623)
+- Link to Telemetry documentation in the Contributing guide (#5650)
+- Handling of registration entries with revision number 0 when the agent syncs entries with the server (#5680)
+
+### Known Issues
+
+- Setting the new `jwt_issuer` configuration property in oidc-discovery-provider is not compatible with deployments that use a server port other than 443 (#5696)
+- Domain verification is bypassed when setting the new `jwt_issuer` configuration property in oidc-discovery-provider (#5697)
+
+## [1.11.0] - 2024-10-24
+
+### Added
+
+- Support for forced rotation and revocation (<https://github.com/orgs/spiffe/projects/21>)
+- New EJBCA UpstreamAuthority plugin for SPIRE Server (#5378)
+- Support for variables in templates contained in the config file (#5576)
+- Support for the configuration validation RPC on all built-in plugins (#5303)
+- Improved logging when built-in plugins panic (#5476)
+- Improved CPU and memory resource usage for concurrent Kubernetes Workload attestation (#5408)
+- Documentation additions and improvements (#5589, #5588, #5499, #5433, #5430, #5269)
+
+### Changed
+
+- SPIRE Agent LRU identity cache is now unconditionally enabled. The LRU size can be controlled via the `x509_svid_cache_max_size` configuration option. (#5383, #5531)
+- Entry API RPCs return per-entry InvalidArgument status when creating/updating malformed entries (#5506)
+- Support for CGroups v2 in K8s and Docker workload attestors is now enabled by default (#5454)
+
+### Removed
+
+- Deprecated -ttl flag from the SPIRE Server `entry create` and `entry update` commands (#5483)
+- Official support for MySQL 5.X. While SPIRE may continue to work with this version, no explicit testing will be performed by the project (#5487)
+
+### Fixed
+
+- Missing TrustDomain field passed to x509pop path template (#5577)
+- Behavior in the experimental events-based cache causing duplicate entries/agents evaluation in the same cycle (#5509)
+
+## [1.10.4] - 2024-09-12
+
+### Fixed
+
+- Add missing commits to spire-plugin-sdk and spire-api-sdk releases (spiffe/spire-api-sdk#66, spiffe/spire-plugin-sdk#39)
+
+## [1.10.3] - 2024-09-03
+
+### Fixed
+
+- Regression in agent health check, requiring the agent to have an SVID on disk to be healthy (#5459)
+
+## [1.10.2] - 2024-09-03
+
+### Added
+
+- `http_challenge` NodeAttestor plugin (#4909)
+- Experimental support for validating container image signatures through Sigstore selectors in the docker Workload Attestor (#5272)
+- Metrics for monitoring the event-based cache (#5411)
+
+### Changed
+
+- Delegated Identity API to allow subscription by process ID (#5272)
+- Agent Debug endpoint to count SVIDs by type (#5352)
+- Agent health check to report an unhealthy status until the Agent SVID is attested (#5298)
+- Small documentation improvements (#5393)
+
+### Fixed
+
+- `aws_iid` NodeAttestor to properly handle multiple network interfaces (#5300)
+- Server configuration to correctly propagate the `sql_transaction_timeout` setting in the experimental events-based cache (#5345)
+
+## [1.10.1] - 2024-08-01
+
+### Added
+
+- New Grafana dashboard template (#5188)
+- `aws_rolesanywhere_trustanchor` BundlePublisher plugin (#5048)
+
+### Changed
+
+- `spire` UpstreamAuthority to optionally use the Preferred TTL on intermediate authorities (#5264)
+- Federation endpoint to support custom bundle and certificates for authorization (#5163)
+- Small documentation improvements (#5235, #5220)
+
+### Fixed
+
+- Event-based cache to handle events missed at the cache startup (#5289)
+- LRU cache to no longer send update notifications to all subscribers (#5281)
+
+## [1.10.0] - 2024-06-24
+
+### Added
+
+- Plugin reconfiguration support using the `plugin_data_file` configurable (#5166)
+
+### Changed
+
+- SPIRE Server and OIDC provider images to use non-root users (#4967, #5227)
+- `k8s_psat` NodeAttestor attestor to no longer fail when a cluster is not configured (#5216)
+- Agents are required to renew SVIDs through re-attestation when using a supporting Node Attestor (#5204)
+- Small documentation improvements (#5181, #5189)
+- Evicted agents that support reattestation can now reattest without being restarted (#4991)
+
+### Fixed
+
+- PSAT node attestor to cross-check the audience fields (#5142)
+- Events-based cache to handle out of order events (#5071)
+
+### Deprecated
+
+- `x509_svid_cache_max_size` and `disable_lru_cache` in agent configuration (#5150)
+
+### Removed
+
+- The deprecated `disable_reattest_to_renew` agent configurable (#5217)
+- The deprecated `key_metadata_file` configurable from the `aws_kms`, `azure_key_vault` and  `gcp_kms` server KeyManagers (#5207)
+- The deprecated `use_msi` configurable from the `azure_key_vault` server KeyManager and `azure_msi` NodeAttestor (#5207, #5209)
+- The deprecated `exclude_sn_from_ca_subject` server configurable (#5203)
+- Agent no longer cleans up deprecated bundle and SVID files (#5205)
+- The CA journal file is no longer stored on disk, and existing CA journal files are cleaned up  (#5202)
+
+## [1.9.6] - 2024-05-14
+
+### Added
+
+- Opt-in support for CGroups v2 in K8s and Docker workload attestors (#5076)
+- `gcp_cloudstorage` BundlePublisher plugin (#4961)
+- The `aws_iid` node attestor can now check if the AWS account ID is part of an AWS Organization (#4838)
+- More filtering options to count and show entries and agents (#4714)
+
+### Changed
+
+- Credential composer to not convert timestamp related claims (i.e., exp and iat) to floating point values (#5115)
+- FetchJWTBundles now returns an empty collection of keys instead of null (#5031)
+
+### Fixed
+
+- Using expired tokens when connecting to database (#5119)
+- Server no longer tries to create JWT authority when X.509 authority fails (#5064)
+- Issues in experimental events-based entry cache (#5030, #5037, #5042)
+
+## [1.9.5] - 2024-05-07
+
+### Security
+
+- Updated to Go 1.21.10 to address CVE-2024-24788
+
+## [1.9.4] - 2023-04-05
+
+### Security
+
+- Updated to google.golang.org/grpc v1.62.2 and golang.org/x/net v0.24.0 to address CVE-2023-45288
+
+## [1.9.3] - 2024-04-03
+
+### Security
+
+- Updated to Go 1.21.9 to address CVE-2023-45288
+- Limit the preallocation of memory when making paginated requests to the ListEntries and ListAgents RPCs
+
+## [1.9.2] - 2024-03-25
+
+### Added
+
+- Support for AWS IAM-based authentication with AWS RDS backed databases (#4828)
+- Support for adjusting the SPIRE Server log level at runtime (#4880)
+- New `retry_bootstrap` option to SPIRE Agent to retry failed bootstrapping with SPIRE Server, with a backoff, in lieu of failing the startup process (#4597)
+- Improved logging (#4902, #4906)
+- Documentation improvements (#4895, #4951, #4907)
+
+## [1.9.1] - 2024-03-05
+
+### Security
+
+- Update Go to v1.21.8 to patch CVE-2024-24783
+
+## [1.9.0] - 2024-02-22
+
+### Added
+
+- `uniqueid` CredentialComposer plugin that adds the x509UniqueIdentifier attribute to workload X509-SVIDs (#4862)
+- Agent's Admin API has now a default location defined (#4856)
+- Partial selectors from workload attestation are now logged when attestation is interrupted (#4846)
+- X509-SVIDs minted by SPIRE can now include wildcards in the DNS names (#4814)
+
+### Changed
+
+- CA journal data is now stored in the datastore, removing the on-disk dependency of the server (#4690)
+- `aws_kms`, `azure_key_vault`, and `gcp_kms` KeyManager plugins no longer require storing metadata files on disk (#4700)
+- Bundle endpoint refresh hint now defaults to 5 minutes (#4847, #4888)
+- Graceful shutdown is now blocked while built-in plugin RPCs drain (#4820)
+- Entry cache hydration is now done with paginated requests to the datastore (#4721, #4826)
+- Agents renew SVIDs through re-attestation by default when using a supporting Node Attestor (#4791)
+- The SPIRE Agent LRU SVID cache is no longer experimental and is enabled by default (#4773)
+- Small documentation improvements (#4764, #4787)
+- Read-replicas are no longer used when hydrating the experimental events-based entry cache (#4868)
+- Workload gRPC connections are now terminated when the peertracker liveness check fails instead of just failing the RPC calls (#4611)
+
+### Fixed
+
+- Missing creation of events in the experimental events-based cache entry when an entry was pruned (#4860)
+- Bug in SPIRE Agent LRU SVID cache that caused health checks to fail (#4852)
+- Refreshing of selectors of attested agents when using the experimental events-based entry cache (#4803)
+
+### Deprecated
+
+- `k8s_sat` NodeAttestor plugin (#4841)
+
+### Removed
+
+- X509-SVIDs issued by the server no longer have the x509UniqueIdentifier attribute as part of the subject (#4862)
+
+## [1.8.11] - 2024-05-07
+
+### Security
+
+- Updated to Go 1.21.10 to address CVE-2024-24788
+
+## [1.8.10] - 2023-04-05
+
+### Security
+
+- Updated to google.golang.org/grpc v1.62.2 and golang.org/x/net v0.24.0 to address CVE-2023-45288
+
+## [1.8.9] - 2024-04-03
+
+### Security
+
+- Updated to Go 1.21.9 to address CVE-2023-45288
+- Limit the preallocation of memory when making paginated requests to the ListEntries and ListAgents RPCs
+
+## [1.8.8] - 2024-03-05
+
+### Security
+
+- Update Go to v1.21.8 to patch CVE-2024-24783
+
+## [1.8.7] - 2023-12-21
+
+### Added
+
+- Agents can now be configured with an availability target, which establishes the minimum amount of time desired to gracefully handle server or agent downtime, influencing how aggressively X509-SVIDs should be rotated (#4599)
+- SyncAuthorizedEntries RPC, which allows agents to only sync down changes instead of the entire set of entries. Agents can be configured to use this new RPC through the `use_sync_authorized_entries` experimental setting (#4648)
+- Experimental support for an events based entry cache which reduces overhead on the database (#4379, #4411, #4527, #4451, #4562, #4723, #4731)
+
+### Changed
+
+- The maximum number of open database connections in the datastore now defaults to 100 instead of unlimited (#4656)
+- Agents now shut down when they can't synchronize entries with the server due to an unknown authority error (#4617)
+
+### Removed
+
+- Agents no longer maintains agent SVID and bundle information in the legacy paths in the data directory (#4717)
+
+## [1.8.6] - 2023-12-07
+
+### Security
+
+- Updated to Go 1.21.5 to address CVE-2023-39326
+
+## [1.8.5] - 2023-11-22
+
+### Added
+
+- All credential types supported by Azure can now be used in `azure_msi` NodeAttestor plugin and `azure_key_vault` KeyManager plugin (#4568)
+- `EnableHostnameLabel` field in Server and Agent `telemetry` configuration section that enables addition of a hostname label to metrics (#4584)
+
+### Changed
+
+- Agent SDS API now provides a SPIFFEValidationContext as the default CertificateValidationContext when the Envoy version cannot be determined (#4618)
+- Server CAs now contain a `serialNumber` attribute in the `Subject` DN (#4585)
+- Improved accuracy of Agent log message for SVID renewal events (#4654)
+
+### Deprecated
+
+- `use_msi` configuration fields in `azure_msi` NodeAttestor plugin and `azure_key_vault` KeyManager plugin are deprecated in favor of the chained Azure SDK credential loading strategy (#4568)
+
+### Fixed
+
+- Agent SDS API now provides correct CertificateValidationContext when Envoy registered in SPIRE after the first SDS request (#4611)
+
+## [1.8.4] - 2023-11-07
+
+### Security
+
+- Updated to Go 1.21.4 to address CVE-2023-45283, CVE-2023-45284
+
+## [1.8.3] - 2023-10-25
+
+### Added
+
+- SPIRE Agent distributes sync requests to the SPIRE server to mitigate thundering herd situations (#4534)
+- Allow configuring prefixes for all metrics (#4535)
+- Documentation improvements (#4579, #4569)
+
+### Changed
+
+- SPIRE Agent performs the initial sync more aggressively when tuned with a longer sync interval (#4479)
+
+### Fixed
+
+- Release artifacts have the correct version information (#4564)
+- The SPIRE Agent `insecureBootstrap` and `trustBundleUrl` configurables are now mutually exclusive (#4532)
+- Bug preventing JWT-SVIDs from being minted when a Credential Composer plugin is configured (#4489)
+
+## [1.8.2] - 2023-10-12
+
+### Security
+
+- Updated to google.golang.org/grpc v1.58.3 and golang.org/x/net v0.17.0 to address CVE-2023-39325, CVE-2023-44487
+
+## [1.8.1] - 2023-10-10
+
+### Security
+
+- Updated to Go 1.21.3 to address CVE-2023-39325, CVE-2023-44487
+
+## [1.8.0] - 2023-09-20
+
+### Added
+
+- `azure_key_vault` KeyManager plugin (#4458)
+- Server configuration to set refresh hint of local bundle (#4400)
+- Support for batch entry deletion in `spire-server` CLI (#4371)
+- `aws_iid` NodeAttestor can now be used in AWS Gov Cloud and China regions (#4427)
+- `status_code` and `status_message` fields in SPIRE Agent logs on gRPC errors (#4262)
+
+### Changed
+
+- Bundle server configuration is now organized by endpoint profiles (#4476)
+- Release artifacts are now statically linked with musl rather than glibc (#4491)
+- Agent no longer requests unused SVIDs for node aliases they belong to, reducing server signing load (#4467)
+- Entry IDs can now be optionally set by the client for BatchCreateEntry requests (#4477)
+
+### Fixed
+
+- Concurrent workload attestation using `systemd` plugin (#4360)
+- Bug in `k8s` WorkloadAttestor plugin that failed attestation in some scenarios (#4468)
+- Server can now be run on Linux arm64 when using SQLite (#4491)
+
+### Removed
+
+- Support for Envoy SDS v2 API (#4444)
+- Server no longer cleans up stale data in the database on startup (#4443)
+- Server no longer deletes entries with invalid SPIFFE IDs on startup (#4449)
+
+## [1.7.6] - 2023-12-07
+
+### Security
+
+- Updated to Go 1.20.12 to address CVE-2023-39326
+
+## [1.7.5] - 2023-11-07
+
+### Security
+
+- Updated to Go 1.20.11 to address CVE-2023-45283, CVE-2023-45284
+
+## [1.7.4] - 2023-10-12
+
+### Security
+
+- Updated to google.golang.org/grpc v1.58.3 and golang.org/x/net v0.17.0 to address CVE-2023-39325, CVE-2023-44487
+
+## [1.7.3] - 2023-10-10
+
+### Security
+
+- Updated to Go 1.20.10 to address CVE-2023-39325, CVE-2023-44487
+
+## [1.7.2] - 2023-08-16
+
+### Added
+
+- `aws_s3` BundlePublisher plugin (#4355)
+- SPIRE Server bundle endpoint now includes bundle sequence number (#4389)
+- Telemetry in experimental Agent LRU cache (#4335)
+- Telemetry in Agent Delegated Identity API (#4399)
+- Documentation improvements (#4336, #4407)
+
+### Fixed
+
+- Server no longer unnecessarily activates its CA a second time on startup (#4368)
+
+## [1.7.1] - 2023-07-27
+
+### Added
+
+- x509pop node attestor emits a new selector with the leaf certificate serial number (#4216)
+- HTTPS server in the OIDC Discovery Provider can now be configured to use a certificate file (#4190)
+- Option to log source information in server and agent logs (#4246)
+
+### Changed
+
+- Agent now has an exponential backoff strategy when syncing with the server (#4279)
+
+### Fixed
+
+- Regression causing X509 CAs minted by an UpstreamAuthority plugin to be rejected if they have the digitalSignature key usage set (#4352)
+- SPIRE Agent cache bug resulting in workloads receiving JWT-SVIDs with incomplete audience set (#4309)
+- The `spire-server agent show` command to properly show the "Can re-attest" attribute (#4288)
+
+## [1.7.0] - 2023-06-14
+
+### Added
+
+- AWS IID Node Attestor now supports all regions, including GovCloud and regions in China (#4124)
+
+### Fixed
+
+- Systemd workload attestor fails with error `connection closed by user` (#4165)
+- Reduced SPIRE Agent CPU usage during kubernetes workload attestation (#4240)
+
+### Removed
+
+- Envoy SDSv2 API is deprecated and now disabled by default (#4228)
+
+## [1.6.5] - 2023-07-27
+
+### Fixed
+
+- Regression causing X509 CAs minted by an UpstreamAuthority plugin to be rejected if they have the digitalSignature key usage set (#4352)
+
+## [1.6.4] - 2023-05-17
+
+### Added
+
+- ARM64 binaries are now included in the release artifacts (#4143)
+- Various build script improvements (#4062, #4081, #4096, #4127)
+- Various doc improvements (#4076)
+- Workload API hint support (#3993, #4074)
+- Improved performance when listing queries for PostgreSQL (#4111)
+- Support for SPIFFE bundle sequence numbers (#4061)
+- New Systemd Workload Attestor plugin (#4058)
+- New [BundlePublisher](https://github.com/spiffe/spire-plugin-sdk/blob/v1.6.4/proto/spire/plugin/server/bundlepublisher/v1/bundlepublisher.proto) plugin type (#4022)
+- New `agent purge` command for removing stale agent records (#3982)
+
+### Fixed
+
+- Bug determining if an entry was unique (#4063)
+
+## [1.6.3] - 2023-04-12
+
+### Added
+
+- Entry API responses now include the `created_at` field (#3975)
+- `spire-server agent` CLI commands and Agent APIs now show if agents can be re-attested and supports `by_can_reattest` filtering (#3880)
+- Entry API along with `spire-server entry create`, `spire-server entry show` and `spire-server entry update` CLI commands now support hint information, allowing hinting to workloads the intended use of the SVID (#3926, #3787)
+
+### Fixed
+
+- The `vault` UpstreamAuthority plugin to properly set the URI SAN (#3971)
+- Node selector data related to nodes is now cleaned when deleting a node (#3873)
+- Clean stale node selector data from previously deleted nodes (#3941)
+- Regression causing a failure to parse JSON formatted and verbose HCL configuration for plugins (#3939, #3999)
+- Regression where some workloads with active FetchX509SVID streams were not notified when an entry is removed (#3923)
+- The federated bundle updater now properly logs the trust domain name (#3927)
+- Regression causing X509 CAs minted by an UpstreamAuthority plugin to be rejected if they did not have a URI SAN (#3997)
+
+## [1.6.2] - 2023-04-04
+
+### Security
+
+- Updated to Go 1.20.3 to address CVE-2023-24534
+
+## [1.6.1] - 2023-03-1
+
+### Fixed
+
+- Different CA TTL than configured (#3934)
+
+## [1.6.0] - 2023-02-28
+
+### Added
+
+- Support for customization of SVID and CA attributes through CredentialComposer plugins (#3819, #3832, #3862, #3869)
+- Experimental support to validate container images signatures through sigstore selectors (#3159)
+- Published scratch images now support ARM64 architecture (#3607)
+- Published scratch images are now signed using Sigstore (#3707)
+- `spire-server mint` and `spire-server token generate` CLI commands now support the `-output` flag (#3800)
+- `spire-agent api` CLI command now supports the `-output` flag (#3818)
+- Release images now include a non-root user and default folders (#3811)
+- Agent accepts bootstrap bundles in SPIFFE format (#3753)
+- Database index for registration entry hint column (#3828)
+
+### Changed
+
+- Plugins are configured and executed in the order they are defined (#3797)
+- Documentation improvements (#3826, #3842, #3870)
+
+### Fixed
+
+- Server crash when authorization layer was unable to talk to the datastore (#3829)
+- Timestamps in logs are now consistently in local time (#3734)
+
+### Removed
+
+- Non-scratch images are no longer published (#3785)
+- `k8s-workload-registar` is no longer released and maintained (#3853)
+- Unused database column `x509_svid_ttl` from `registered_entries` table (#3808)
+- The deprecated `enabled` flag from InMem telemetry config (#3796)
+- The deprecated `default_svid_ttl` configurable (#3795)
+- The deprecated `omit_x509svid_uid` configurable (#3794)
+
+## [1.5.6] - 2023-04-04
+
+### Added
+
+- A log message in the k8s-workload-registrar webhook when validation fails (#4011)
+
+### Security
+
+- Updated to Go 1.19.8 to address CVE-2023-24534
+
+## [1.5.5] - 2023-02-14
+
+### Security
+
+- Updated to Go 1.19.6 and golang.org/x/net v0.7.0 to address CVE-2022-41723, CVE-2022-41724, CVE-2022-41725.
+
 ## [1.5.4] - 2023-01-12
 
 ### Added
@@ -72,6 +663,12 @@
 ### Removed
 
 - NodeResolver plugin type and `azure_msi` builtin NodeResolver plugin (#3470)
+
+## [1.4.7] - 2023-02-14
+
+### Security
+
+- Updated to Go 1.19.6 and golang.org/x/net v0.7.0 to address CVE-2022-41723, CVE-2022-41724, CVE-2022-41725.
 
 ## [1.4.6] - 2022-12-06
 
@@ -560,7 +1157,7 @@
 - Regression preventing agent selectors from showing in `spire-server agent show` command (#2133)
 - Issue in the token authentication method of the Vault Upstream Authority plugin (#2110)
 - Reporting of errors in server entry cache telemetry (#2091)
-- Agent logs an error and automatically shuts down when its SVID has expired and it requires re-attestation (#2065)
+- Agent logs an error and automatically shuts down when its SVID has expired, and it requires re-attestation (#2065)
 
 ## [0.12.1] - 2021-03-04
 
@@ -646,7 +1243,7 @@
 
 - Fixed Kubernetes Workload Registrar issues (#1814, #1818, #1823)
 - Fixed BatchCreateEntry return value to match docs, returning the contents of an entry if it already exists (#1824)
-- Fixed issue preventing brand new deployments from downgrading successfully (#1829)
+- Fixed issue preventing brand-new deployments from downgrading successfully (#1829)
 - Fixed a regression introduced in 0.11.0 that caused external node attestor plugins that rely on binary data to fail (#1863)
 
 ## [0.11.0] - 2020-08-28
@@ -750,7 +1347,7 @@
 
 ## [0.9.0] - 2019-11-14
 
-- Users can now opt-out of workload executable hashing when enabling the workload path as a selector (#1078)
+- Users can now opt out of workload executable hashing when enabling the workload path as a selector (#1078)
 - Added M3 support to telemetry and other telemetry and logging improvements (#1059, #1085, #1086, #1094, #1102, #1122,#1138,#1160,#1186,#1208)
 - SQL auto-migration can be disabled (#1089)
 - SQL schema compatibility checks are aligned with upgrade compatibility guarantees (#1089)

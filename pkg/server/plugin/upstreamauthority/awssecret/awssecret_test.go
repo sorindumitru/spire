@@ -10,6 +10,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/cryptoutil"
 	"github.com/spiffe/spire/pkg/common/x509svid"
 	"github.com/spiffe/spire/pkg/server/plugin/upstreamauthority"
@@ -58,13 +59,13 @@ func TestConfigure(t *testing.T) {
 			test:            "malformed configuration",
 			overrideConfig:  "MALFORMED",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "unable to decode configuration:",
+			expectMsgPrefix: "plugin configuration is malformed",
 		},
 		{
 			test:               "no trust domain",
 			overrideCoreConfig: &catalog.CoreConfig{},
 			expectCode:         codes.InvalidArgument,
-			expectMsgPrefix:    "trust_domain is required",
+			expectMsgPrefix:    "server core configuration must contain trust_domain",
 		},
 		{
 			test:            "missing key ARN",
@@ -75,7 +76,7 @@ func TestConfigure(t *testing.T) {
 			securityToken:   "security_token",
 			assumeRoleARN:   "assume_role_arn",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "configuration missing key ARN",
+			expectMsgPrefix: "configuration missing 'key_file_arn' value",
 		},
 		{
 			test:            "missing cert ARN",
@@ -86,7 +87,7 @@ func TestConfigure(t *testing.T) {
 			securityToken:   "security_token",
 			assumeRoleARN:   "assume_role_arn",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "configuration missing cert ARN",
+			expectMsgPrefix: "configuration missing 'cert_file_arn' value",
 		},
 		{
 			test:            "missing cert and key ARNs",
@@ -96,7 +97,7 @@ func TestConfigure(t *testing.T) {
 			securityToken:   "security_token",
 			assumeRoleARN:   "assume_role_arn",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "configuration missing both cert ARN and key ARN",
+			expectMsgPrefix: "configuration missing 'cert_file_arn' value",
 		},
 		{
 			test:            "fails to create client",
@@ -196,7 +197,6 @@ func TestConfigure(t *testing.T) {
 			expectMsgPrefix: "unable to read missing_bundle: secret not found",
 		},
 	} {
-		tt := tt
 		t.Run(tt.test, func(t *testing.T) {
 			var err error
 
@@ -227,7 +227,7 @@ func TestConfigure(t *testing.T) {
 				}))
 			}
 
-			p := new(Plugin)
+			p := New()
 			p.hooks.clock = clk
 			p.hooks.newClient = fakeStorageClientCreator
 
@@ -242,7 +242,9 @@ func TestMintX509CA(t *testing.T) {
 	clk := clock.NewMock(t)
 	certsAndKeys, fakeStorageClientCreator := generateTestData(t, clk)
 
-	x509Authority := []*x509.Certificate{certsAndKeys.rootCert}
+	x509Authority := []*x509certificate.X509Authority{
+		{Certificate: certsAndKeys.rootCert},
+	}
 
 	makeCSR := func(spiffeID string) []byte {
 		csr, err := util.NewCSRTemplateWithKey(spiffeID, key)
@@ -279,7 +281,7 @@ func TestMintX509CA(t *testing.T) {
 		expectCode              codes.Code
 		expectMsgPrefix         string
 		expectX509CASpiffeID    string
-		expectedX509Authorities []*x509.Certificate
+		expectedX509Authorities []*x509certificate.X509Authority
 		expectTTL               time.Duration
 		numExpectedCAs          int
 	}{
@@ -325,9 +327,8 @@ func TestMintX509CA(t *testing.T) {
 			expectMsgPrefix: "upstreamauthority(awssecret): unable to sign CSR: unable to parse CSR",
 		},
 	} {
-		tt := tt
 		t.Run(tt.test, func(t *testing.T) {
-			p := new(Plugin)
+			p := New()
 			p.hooks.clock = clk
 			p.hooks.getenv = func(s string) string {
 				return ""
@@ -393,7 +394,7 @@ func TestMintX509CA(t *testing.T) {
 func TestPublishJWTKey(t *testing.T) {
 	clk := clock.NewMock(t)
 	_, fakeStorageClientCreator := generateTestData(t, clk)
-	p := new(Plugin)
+	p := New()
 	p.hooks.clock = clk
 	p.hooks.newClient = fakeStorageClientCreator
 

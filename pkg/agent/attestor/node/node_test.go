@@ -52,11 +52,11 @@ func TestAttestor(t *testing.T) {
 	agentCert := createAgentCertificate(t, caCert, agentKey, "/test/foo")
 	expiredCert := createExpiredCertificate(t, caCert, agentKey)
 	bundle := &types.Bundle{
-		TrustDomain:     trustDomain.String(),
+		TrustDomain:     trustDomain.Name(),
 		X509Authorities: []*types.X509Certificate{{Asn1: caCert.Raw}},
 	}
 	svid := &types.X509SVID{
-		Id:        &types.SPIFFEID{TrustDomain: trustDomain.String(), Path: "/test/foo"},
+		Id:        &types.SPIFFEID{TrustDomain: trustDomain.Name(), Path: "/test/foo"},
 		CertChain: [][]byte{agentCert.Raw},
 	}
 
@@ -193,7 +193,7 @@ func TestAttestor(t *testing.T) {
 			bootstrapBundle: caCert,
 			agentService: &fakeAgentService{
 				svid: &types.X509SVID{
-					Id:        &types.SPIFFEID{TrustDomain: trustDomain.String(), Path: "/join_token/JOINTOKEN"},
+					Id:        &types.SPIFFEID{TrustDomain: trustDomain.Name(), Path: "/join_token/JOINTOKEN"},
 					CertChain: [][]byte{createAgentCertificate(t, caCert, agentKey, "/join_token/JOINTOKEN").Raw},
 				},
 				joinToken: "JOINTOKEN",
@@ -281,8 +281,6 @@ func TestAttestor(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
-
 		t.Run(testCase.name, func(t *testing.T) {
 			require := require.New(t)
 
@@ -349,7 +347,7 @@ func TestAttestor(t *testing.T) {
 			require.NotNil(result.Key)
 			require.NotNil(result.Bundle)
 
-			rootCAs := result.Bundle.RootCAs()
+			rootCAs := result.Bundle.X509Authorities()
 			require.Len(rootCAs, 1)
 			require.Equal(rootCAs[0].Raw, caCert.Raw)
 			require.Equal(result.Reattestable, testCase.agentService.reattestable)
@@ -417,7 +415,7 @@ type fakeBundleService struct {
 	bundlev1.BundleServer
 }
 
-func (c *fakeBundleService) GetBundle(ctx context.Context, in *bundlev1.GetBundleRequest) (*types.Bundle, error) {
+func (c *fakeBundleService) GetBundle(context.Context, *bundlev1.GetBundleRequest) (*types.Bundle, error) {
 	if c.getBundleErr != nil {
 		return nil, c.getBundleErr
 	}
@@ -527,7 +525,6 @@ func TestIsSVIDExpired(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.Desc, func(t *testing.T) {
 			isExpired := attestor.IsSVIDExpired(tt.SVID, func() time.Time { return now })
 			require.Equal(t, tt.ExpectExpired, isExpired)

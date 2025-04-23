@@ -32,8 +32,7 @@ func TestMergedTrustDomainConfigSource(t *testing.T) {
 	})
 
 	t.Run("context is passed through and error returned", func(t *testing.T) {
-		expectedCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		expectedCtx := t.Context()
 
 		var actualCtx context.Context
 		source := client.MergeTrustDomainConfigSources(client.TrustDomainConfigSourceFunc(
@@ -61,8 +60,8 @@ func TestMergedTrustDomainConfigSource(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, map[spiffeid.TrustDomain]client.TrustDomainConfig{
-			domain1: client.TrustDomainConfig{EndpointURL: "A"},
-			domain2: client.TrustDomainConfig{EndpointURL: "A"},
+			domain1: {EndpointURL: "A"},
+			domain2: {EndpointURL: "A"},
 		}, configs)
 	})
 }

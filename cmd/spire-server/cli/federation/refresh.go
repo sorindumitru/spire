@@ -43,7 +43,7 @@ func (c *refreshCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintRefresh)
 }
 
-func (c *refreshCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *refreshCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	if c.id == "" {
 		return errors.New("id is required")
 	}
@@ -63,6 +63,6 @@ func (c *refreshCommand) Run(ctx context.Context, env *commoncli.Env, serverClie
 	}
 }
 
-func prettyPrintRefresh(env *commoncli.Env, _ ...interface{}) error {
+func prettyPrintRefresh(env *commoncli.Env, _ ...any) error {
 	return env.Println("Bundle refreshed")
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"flag"
 
@@ -12,12 +13,11 @@ import (
 	commoncli "github.com/spiffe/spire/pkg/common/cli"
 	"github.com/spiffe/spire/pkg/common/cliprinter"
 	"github.com/spiffe/spire/pkg/server/api"
-	"golang.org/x/net/context"
 )
 
 type showCommand struct {
 	env *commoncli.Env
-	// SPIFFE ID of the agent being showed
+	// SPIFFE ID of the agent being shown
 	spiffeID string
 	printer  cliprinter.Printer
 }
@@ -42,7 +42,7 @@ func (*showCommand) Synopsis() string {
 }
 
 // Run shows an agent given its SPIFFE ID
-func (c *showCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *showCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	if c.spiffeID == "" {
 		return errors.New("a SPIFFE ID is required")
 	}
@@ -66,7 +66,7 @@ func (c *showCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintAgent)
 }
 
-func prettyPrintAgent(env *commoncli.Env, results ...interface{}) error {
+func prettyPrintAgent(env *commoncli.Env, results ...any) error {
 	agent, ok := results[0].(*types.Agent)
 	if !ok {
 		return errors.New("internal error: cli printer; please report this bug")

@@ -74,7 +74,7 @@ func PerIPLimit(limit int) api.RateLimiter {
 }
 
 // WithRateLimits returns a middleware that performs rate limiting for the
-// group of methods descripted by the rateLimits map. It provides the
+// group of methods described by the rateLimits map. It provides the
 // configured rate limiter to the method handlers via the request context. If
 // the middleware is invoked for a method that is not described in the map, it
 // will fail the RPC with an INTERNAL error code, describing the RPC that was
@@ -97,7 +97,7 @@ func WithRateLimits(rateLimits map[string]api.RateLimiter, metrics telemetry.Met
 
 type noLimit struct{}
 
-func (noLimit) RateLimit(ctx context.Context, count int) error {
+func (noLimit) RateLimit(context.Context, int) error {
 	return nil
 }
 
@@ -105,7 +105,7 @@ func (noLimit) noop() {}
 
 type disabledLimit struct{}
 
-func (disabledLimit) RateLimit(ctx context.Context, count int) error {
+func (disabledLimit) RateLimit(context.Context, int) error {
 	return nil
 }
 
@@ -128,10 +128,10 @@ type perIPLimiter struct {
 
 	mtx sync.RWMutex
 
-	// previous holds all of the limiters that were current at the GC
+	// previous holds all the limiters that were current at the GC
 	previous map[string]rawRateLimiter
 
-	// current holds all of the limiters that have been created or moved
+	// current holds all the limiters that have been created or moved
 	// from the previous limiters since the last GC.
 	current map[string]rawRateLimiter
 
@@ -201,7 +201,7 @@ type rateLimitsMiddleware struct {
 	metrics  telemetry.Metrics
 }
 
-func (i rateLimitsMiddleware) Preprocess(ctx context.Context, fullMethod string, req interface{}) (context.Context, error) {
+func (i rateLimitsMiddleware) Preprocess(ctx context.Context, fullMethod string, _ any) (context.Context, error) {
 	rateLimiter, ok := i.limiters[fullMethod]
 	if !ok {
 		middleware.LogMisconfiguration(ctx, "Rate limiting misconfigured; this is a bug")
@@ -210,7 +210,7 @@ func (i rateLimitsMiddleware) Preprocess(ctx context.Context, fullMethod string,
 	return rpccontext.WithRateLimiter(ctx, &rateLimiterWrapper{rateLimiter: rateLimiter, metrics: i.metrics}), nil
 }
 
-func (i rateLimitsMiddleware) Postprocess(ctx context.Context, fullMethod string, handlerInvoked bool, rpcErr error) {
+func (i rateLimitsMiddleware) Postprocess(ctx context.Context, _ string, handlerInvoked bool, rpcErr error) {
 	// Handlers are expected to invoke the rate limiter unless they failed to
 	// parse parameters. If the handler itself wasn't invoked then there is no
 	// need to check if rate limiting was invoked.
@@ -242,7 +242,7 @@ func logLimiterMisuse(ctx context.Context, rateLimiter api.RateLimiter, used boo
 	case noLimit:
 		// RPC should not invoke the rate limiter, since that would imply a
 		// misconfiguration. Either the RPC is wrong, or the middleware is
-		// wrong as to whether or not the RPC should rate limit.
+		// wrong as to whether the RPC should rate limit.
 		if used {
 			middleware.LogMisconfiguration(ctx, "Rate limiter used unexpectedly; this is a bug")
 		}

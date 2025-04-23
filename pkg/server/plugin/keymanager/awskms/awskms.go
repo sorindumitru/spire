@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +18,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/keymanager/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/diskutil"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -92,11 +94,47 @@ type Plugin struct {
 
 // Config provides configuration context for the plugin
 type Config struct {
-	AccessKeyID     string `hcl:"access_key_id" json:"access_key_id"`
-	SecretAccessKey string `hcl:"secret_access_key" json:"secret_access_key"`
-	Region          string `hcl:"region" json:"region"`
-	KeyMetadataFile string `hcl:"key_metadata_file" json:"key_metadata_file"`
-	KeyPolicyFile   string `hcl:"key_policy_file" json:"key_policy_file"`
+	AccessKeyID        string `hcl:"access_key_id" json:"access_key_id"`
+	SecretAccessKey    string `hcl:"secret_access_key" json:"secret_access_key"`
+	Region             string `hcl:"region" json:"region"`
+	KeyIdentifierFile  string `hcl:"key_identifier_file" json:"key_identifier_file"`
+	KeyIdentifierValue string `hcl:"key_identifier_value" json:"key_identifier_value"`
+	KeyPolicyFile      string `hcl:"key_policy_file" json:"key_policy_file"`
+}
+
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Config {
+	newConfig := new(Config)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("unable to decode configuration: %v", err)
+		return nil
+	}
+
+	if newConfig.Region == "" {
+		status.ReportError("configuration is missing a region")
+	}
+
+	if newConfig.KeyIdentifierValue != "" {
+		re := regexp.MustCompile(".*[^A-z0-9/_-].*")
+		if re.MatchString(newConfig.KeyIdentifierValue) {
+			status.ReportError("Key identifier must contain only alphanumeric characters, forward slashes (/), underscores (_), and dashes (-)")
+		}
+		if strings.HasPrefix(newConfig.KeyIdentifierValue, "alias/aws/") {
+			status.ReportError("Key identifier must not start with alias/aws/")
+		}
+		if len(newConfig.KeyIdentifierValue) > 256 {
+			status.ReportError("Key identifier must not be longer than 256 characters")
+		}
+	}
+
+	if newConfig.KeyIdentifierFile == "" && newConfig.KeyIdentifierValue == "" {
+		status.ReportError("configuration requires a key identifier file or a key identifier value")
+	}
+
+	if newConfig.KeyIdentifierFile != "" && newConfig.KeyIdentifierValue != "" {
+		status.ReportError("configuration can't have a key identifier file and a key identifier value at the same time")
+	}
+
+	return newConfig
 }
 
 // New returns an instantiated plugin
@@ -106,7 +144,8 @@ func New() *Plugin {
 
 func newPlugin(
 	newKMSClient func(aws.Config) (kmsClient, error),
-	newSTSClient func(aws.Config) (stsClient, error)) *Plugin {
+	newSTSClient func(aws.Config) (stsClient, error),
+) *Plugin {
 	return &Plugin{
 		entries: make(map[string]keyEntry),
 		hooks: pluginHooks{
@@ -125,19 +164,13 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 
 // Configure sets up the plugin
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config, err := parseAndValidateConfig(req.HclConfiguration)
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	serverID, err := loadServerID(config.KeyMetadataFile)
-	if err != nil {
-		return nil, err
-	}
-	p.log.Debug("Loaded server id", "server_id", serverID)
-
-	if config.KeyPolicyFile != "" {
-		policyBytes, err := os.ReadFile(config.KeyPolicyFile)
+	if newConfig.KeyPolicyFile != "" {
+		policyBytes, err := os.ReadFile(newConfig.KeyPolicyFile)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to read file configured in 'key_policy_file': %v", err)
 		}
@@ -145,7 +178,16 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 		p.keyPolicy = &policyStr
 	}
 
-	awsCfg, err := newAWSConfig(ctx, config)
+	serverID := newConfig.KeyIdentifierValue
+	if serverID == "" {
+		serverID, err = getOrCreateServerID(newConfig.KeyIdentifierFile)
+		if err != nil {
+			return nil, err
+		}
+	}
+	p.log.Debug("Loaded server id", "server_id", serverID)
+
+	awsCfg, err := newAWSConfig(ctx, newConfig)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create client configuration: %v", err)
 	}
@@ -181,7 +223,7 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.trustDomain = req.CoreConfiguration.TrustDomain
 	p.serverID = serverID
 
-	// cancels previous tasks in case of re configure
+	// cancels previous tasks in case of re-configure
 	if p.cancelTasks != nil {
 		p.cancelTasks()
 	}
@@ -194,6 +236,15 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	go p.disposeKeysTask(ctx)
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(ctx context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, err
 }
 
 // GenerateKey creates a key in KMS. If a key already exists in the local storage, it is updated.
@@ -265,7 +316,7 @@ func (p *Plugin) SignData(ctx context.Context, req *keymanagerv1.SignDataRequest
 }
 
 // GetPublicKey returns the public key for a given key
-func (p *Plugin) GetPublicKey(ctx context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
+func (p *Plugin) GetPublicKey(_ context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
 	if req.KeyId == "" {
 		return nil, status.Error(codes.InvalidArgument, "key id is required")
 	}
@@ -311,10 +362,10 @@ func (p *Plugin) createKey(ctx context.Context, spireKeyID string, keyType keyma
 	}
 
 	createKeyInput := &kms.CreateKeyInput{
-		Description:           aws.String(description),
-		KeyUsage:              types.KeyUsageTypeSignVerify,
-		CustomerMasterKeySpec: keySpec,
-		Policy:                p.keyPolicy,
+		Description: aws.String(description),
+		KeyUsage:    types.KeyUsageTypeSignVerify,
+		KeySpec:     keySpec,
+		Policy:      p.keyPolicy,
 	}
 
 	key, err := p.kmsClient.CreateKey(ctx, createKeyInput)
@@ -391,7 +442,7 @@ func (p *Plugin) setCache(keyEntries []*keyEntry) {
 	}
 }
 
-// scheduleDeleteTask ia a long running task that deletes keys that were rotated
+// scheduleDeleteTask ia a long-running task that deletes keys that were rotated
 func (p *Plugin) scheduleDeleteTask(ctx context.Context) {
 	backoffMin := 1 * time.Second
 	backoffMax := 60 * time.Second
@@ -488,7 +539,7 @@ func (p *Plugin) refreshAliases(ctx context.Context) error {
 	}
 
 	if errs != nil {
-		return fmt.Errorf(strings.Join(errs, ": "))
+		return errors.New(strings.Join(errs, ": "))
 	}
 	return nil
 }
@@ -587,7 +638,7 @@ func (p *Plugin) disposeAliases(ctx context.Context) error {
 	}
 
 	if errs != nil {
-		return fmt.Errorf(strings.Join(errs, ": "))
+		return errors.New(strings.Join(errs, ": "))
 	}
 
 	return nil
@@ -693,7 +744,7 @@ func (p *Plugin) disposeKeys(ctx context.Context) error {
 		}
 	}
 	if errs != nil {
-		return fmt.Errorf(strings.Join(errs, ": "))
+		return errors.New(strings.Join(errs, ": "))
 	}
 
 	return nil
@@ -755,7 +806,7 @@ func (p *Plugin) createDefaultPolicy(ctx context.Context) (*string, error) {
 	roleName, err := roleNameFromARN(*result.Arn)
 	if err != nil {
 		// the server has not assumed any role, use default KMS policy and log a warn message
-		p.log.Warn("In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instace.")
+		p.log.Warn("In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instance.", reasonTag, err)
 		return nil, nil
 	}
 
@@ -818,26 +869,7 @@ func sanitizeTrustDomain(trustDomain string) string {
 	return strings.ReplaceAll(trustDomain, ".", "_")
 }
 
-// parseAndValidateConfig returns an error if any configuration provided does not meet acceptable criteria
-func parseAndValidateConfig(c string) (*Config, error) {
-	config := new(Config)
-
-	if err := hcl.Decode(config, c); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
-	}
-
-	if config.Region == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration is missing a region")
-	}
-
-	if config.KeyMetadataFile == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration is missing server id file path")
-	}
-
-	return config, nil
-}
-
-func signingAlgorithmForKMS(keyType keymanagerv1.KeyType, signerOpts interface{}) (types.SigningAlgorithmSpec, error) {
+func signingAlgorithmForKMS(keyType keymanagerv1.KeyType, signerOpts any) (types.SigningAlgorithmSpec, error) {
 	var (
 		hashAlgo keymanagerv1.HashAlgorithm
 		isPSS    bool
@@ -884,31 +916,31 @@ func signingAlgorithmForKMS(keyType keymanagerv1.KeyType, signerOpts interface{}
 	}
 }
 
-func keyTypeFromKeySpec(keySpec types.CustomerMasterKeySpec) (keymanagerv1.KeyType, bool) {
+func keyTypeFromKeySpec(keySpec types.KeySpec) (keymanagerv1.KeyType, bool) {
 	switch keySpec {
-	case types.CustomerMasterKeySpecRsa2048:
+	case types.KeySpecRsa2048:
 		return keymanagerv1.KeyType_RSA_2048, true
-	case types.CustomerMasterKeySpecRsa4096:
+	case types.KeySpecRsa4096:
 		return keymanagerv1.KeyType_RSA_4096, true
-	case types.CustomerMasterKeySpecEccNistP256:
+	case types.KeySpecEccNistP256:
 		return keymanagerv1.KeyType_EC_P256, true
-	case types.CustomerMasterKeySpecEccNistP384:
+	case types.KeySpecEccNistP384:
 		return keymanagerv1.KeyType_EC_P384, true
 	default:
 		return keymanagerv1.KeyType_UNSPECIFIED_KEY_TYPE, false
 	}
 }
 
-func keySpecFromKeyType(keyType keymanagerv1.KeyType) (types.CustomerMasterKeySpec, bool) {
+func keySpecFromKeyType(keyType keymanagerv1.KeyType) (types.KeySpec, bool) {
 	switch keyType {
 	case keymanagerv1.KeyType_RSA_2048:
-		return types.CustomerMasterKeySpecRsa2048, true
+		return types.KeySpecRsa2048, true
 	case keymanagerv1.KeyType_RSA_4096:
-		return types.CustomerMasterKeySpecRsa4096, true
+		return types.KeySpecRsa4096, true
 	case keymanagerv1.KeyType_EC_P256:
-		return types.CustomerMasterKeySpecEccNistP256, true
+		return types.KeySpecEccNistP256, true
 	case keymanagerv1.KeyType_EC_P384:
-		return types.CustomerMasterKeySpecEccNistP384, true
+		return types.KeySpecEccNistP384, true
 	default:
 		return "", false
 	}
@@ -921,7 +953,7 @@ func min(x, y time.Duration) time.Duration {
 	return y
 }
 
-func loadServerID(idPath string) (string, error) {
+func getOrCreateServerID(idPath string) (string, error) {
 	// get id from path
 	data, err := os.ReadFile(idPath)
 	switch {
@@ -961,7 +993,7 @@ func makeFingerprint(pkixData []byte) string {
 }
 
 // encodeKeyID maps "." and "+" characters to the asciihex value using "_" as
-// escape character. Currently KMS does not support those characters to be used
+// escape character. Currently, KMS does not support those characters to be used
 // as alias name.
 func encodeKeyID(keyID string) string {
 	keyID = strings.ReplaceAll(keyID, ".", "_2e")

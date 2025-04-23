@@ -1,22 +1,21 @@
 //go:build !windows
-// +build !windows
 
 package k8s
 
 import (
-	"context"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/spiffe/spire/pkg/agent/common/cgroups"
-	"github.com/spiffe/spire/pkg/agent/plugin/workloadattestor/k8s/sigstore"
-	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/containerinfo"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -29,54 +28,44 @@ func (p *Plugin) defaultTokenPath() string {
 }
 
 func createHelper(c *Plugin) ContainerHelper {
+	rootDir := c.rootDir
+	if rootDir == "" {
+		rootDir = "/"
+	}
 	return &containerHelper{
-		fs: c.fs,
+		rootDir: rootDir,
 	}
 }
 
 type containerHelper struct {
-	fs             cgroups.FileSystem
-	sigstoreClient sigstore.Sigstore
+	rootDir                     string
+	useNewContainerLocator      bool
+	verboseContainerLocatorLogs bool
 }
 
 func (h *containerHelper) Configure(config *HCLConfig, log hclog.Logger) error {
-	// set experimental flags
-	if config.Experimental != nil && config.Experimental.Sigstore != nil {
-		if h.sigstoreClient == nil {
-			newcache := sigstore.NewCache(maximumAmountCache)
-			h.sigstoreClient = sigstore.New(newcache, nil)
-		}
-
-		if err := configureSigstoreClient(h.sigstoreClient, config.Experimental.Sigstore, log); err != nil {
-			return err
-		}
+	h.verboseContainerLocatorLogs = config.VerboseContainerLocatorLogs
+	h.useNewContainerLocator = config.UseNewContainerLocator == nil || *config.UseNewContainerLocator
+	if h.useNewContainerLocator {
+		log.Info("Using the new container locator")
+	} else {
+		log.Warn("Using the legacy container locator. This option will removed in a future release.")
 	}
 
 	return nil
 }
 
-func (h *containerHelper) GetOSSelectors(ctx context.Context, log hclog.Logger, containerStatus *corev1.ContainerStatus) ([]string, error) {
-	var selectors []string
-	if h.sigstoreClient != nil {
-		log.Debug("Attemping to get signature info for container", telemetry.ContainerName, containerStatus.Name)
-		sigstoreSelectors, err := h.sigstoreClient.AttestContainerSignatures(ctx, containerStatus)
+func (h *containerHelper) GetPodUIDAndContainerID(pID int32, log hclog.Logger) (types.UID, string, error) {
+	if !h.useNewContainerLocator {
+		cgroups, err := cgroups.GetCgroups(pID, dirFS(h.rootDir))
 		if err != nil {
-			log.Error("Error retrieving signature payload", "error", err)
-			return nil, status.Errorf(codes.Internal, "error retrieving signature payload: %v", err)
+			return "", "", status.Errorf(codes.Internal, "unable to obtain cgroups: %v", err)
 		}
-		selectors = append(selectors, sigstoreSelectors...)
+		return getPodUIDAndContainerIDFromCGroups(cgroups)
 	}
 
-	return selectors, nil
-}
-
-func (h *containerHelper) GetPodUIDAndContainerID(pID int32, _ hclog.Logger) (types.UID, string, error) {
-	cgroups, err := cgroups.GetCgroups(pID, h.fs)
-	if err != nil {
-		return "", "", status.Errorf(codes.Internal, "unable to obtain cgroups: %v", err)
-	}
-
-	return getPodUIDAndContainerIDFromCGroups(cgroups)
+	extractor := containerinfo.Extractor{RootDir: h.rootDir, VerboseLogging: h.verboseContainerLocatorLogs}
+	return extractor.GetPodUIDAndContainerID(pID, log)
 }
 
 func getPodUIDAndContainerIDFromCGroups(cgroups []cgroups.Cgroup) (types.UID, string, error) {
@@ -114,7 +103,7 @@ var cgroupREs = []*regexp.Regexp{
 	// cgroup name. It assumes that any ".scope" suffix has been trimmed off
 	// beforehand.  CAUTION: we used to verify that the pod and container id were
 	// descendants of a kubepods directory, however, as of Kubernetes 1.21, cgroups
-	// namespaces are in use and therefore we can no longer discern if that is the
+	// namespaces are in use, and therefore we can no longer discern if that is the
 	// case from within SPIRE agent container (since the container itself is
 	// namespaced). As such, the regex has been relaxed to simply find the pod UID
 	// followed by the container ID with allowances for arbitrary punctuation, and
@@ -125,7 +114,7 @@ var cgroupREs = []*regexp.Regexp{
 		// zero or more punctuation separated "segments" (e.g. "docker-")
 		`(?:[[:^punct:]]+[[:punct:]])*` +
 		// non-punctuation end of string, i.e., the container ID
-		`(?P<containerid>[[:^punct:]]+)$`),
+		`(?P<containerid>[[:xdigit:]]{64})$`),
 
 	// This regex applies for container runtimes, that won't put the PodUID into
 	// the cgroup name.
@@ -138,7 +127,7 @@ var cgroupREs = []*regexp.Regexp{
 		// /crio-
 		`(?:[[:^punct:]]*/*)*crio[[:punct:]]` +
 		// non-punctuation end of string, i.e., the container ID
-		`(?P<containerid>[[:^punct:]]+)$`),
+		`(?P<containerid>[[:xdigit:]]{64})$`),
 }
 
 func reSubMatchMap(r *regexp.Regexp, str string) map[string]string {
@@ -212,33 +201,8 @@ func canonicalizePodUID(uid string) types.UID {
 	}, uid))
 }
 
-func configureSigstoreClient(client sigstore.Sigstore, c *SigstoreHCLConfig, log hclog.Logger) error {
-	// Rekor URL is required
-	if c.RekorURL == nil {
-		return status.Errorf(codes.InvalidArgument, "missing Rekor URL")
-	}
-	if err := client.SetRekorURL(*c.RekorURL); err != nil {
-		return status.Errorf(codes.InvalidArgument, "failed to set Rekor URL: %v", err)
-	}
+type dirFS string
 
-	// Configure sigstore settings
-	enforceSCT := true
-	if c.EnforceSCT != nil {
-		enforceSCT = *c.EnforceSCT
-	}
-
-	client.SetEnforceSCT(enforceSCT)
-
-	client.ClearSkipList()
-	if c.SkippedImages != nil {
-		client.AddSkippedImages(c.SkippedImages)
-	}
-	client.SetLogger(log)
-	client.ClearAllowedSubjects()
-	for issuer, subjects := range c.AllowedSubjects {
-		for _, subject := range subjects {
-			client.AddAllowedSubject(issuer, subject)
-		}
-	}
-	return nil
+func (d dirFS) Open(p string) (io.ReadCloser, error) {
+	return os.Open(filepath.Join(string(d), p))
 }

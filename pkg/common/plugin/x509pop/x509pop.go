@@ -26,13 +26,17 @@ const (
 )
 
 // DefaultAgentPathTemplate is the default template
-var DefaultAgentPathTemplate = agentpathtemplate.MustParse("/{{ .PluginName }}/{{ .Fingerprint }}")
+var DefaultAgentPathTemplateCN = agentpathtemplate.MustParse("/{{ .PluginName }}/{{ .Fingerprint }}")
+var DefaultAgentPathTemplateSVID = agentpathtemplate.MustParse("/{{ .PluginName }}/{{ .SVIDPathTrimmed }}")
 
 type agentPathTemplateData struct {
 	*x509.Certificate
-	Fingerprint string
-	PluginName  string
-	TrustDomain string
+	SerialNumberHex string
+	Fingerprint     string
+	PluginName      string
+	TrustDomain     string
+	SVIDPathTrimmed string
+	URISanSelectors map[string]string
 }
 
 type AttestationData struct {
@@ -111,7 +115,7 @@ func GenerateChallenge(cert *x509.Certificate) (*Challenge, error) {
 	}
 }
 
-func CalculateResponse(privateKey interface{}, challenge *Challenge) (*Response, error) {
+func CalculateResponse(privateKey any, challenge *Challenge) (*Response, error) {
 	switch privateKey := privateKey.(type) {
 	case *rsa.PrivateKey:
 		rsaChallenge := challenge.RSASignature
@@ -141,7 +145,7 @@ func CalculateResponse(privateKey interface{}, challenge *Challenge) (*Response,
 	}
 }
 
-func VerifyChallengeResponse(publicKey interface{}, challenge *Challenge, response *Response) error {
+func VerifyChallengeResponse(publicKey any, challenge *Challenge, response *Response) error {
 	switch publicKey := publicKey.(type) {
 	case *rsa.PublicKey:
 		if challenge.RSASignature == nil {
@@ -265,17 +269,33 @@ func Fingerprint(cert *x509.Certificate) string {
 }
 
 // MakeAgentID creates an agent ID from X.509 certificate data.
-func MakeAgentID(td spiffeid.TrustDomain, agentPathTemplate *agentpathtemplate.Template, cert *x509.Certificate) (spiffeid.ID, error) {
+func MakeAgentID(td spiffeid.TrustDomain, agentPathTemplate *agentpathtemplate.Template, cert *x509.Certificate, svidPathTrimmed string, sanSelectors map[string]string) (spiffeid.ID, error) {
 	agentPath, err := agentPathTemplate.Execute(agentPathTemplateData{
-		Certificate: cert,
-		PluginName:  PluginName,
-		Fingerprint: Fingerprint(cert),
+		TrustDomain:     td.Name(),
+		Certificate:     cert,
+		PluginName:      PluginName,
+		SerialNumberHex: SerialNumberHex(cert.SerialNumber),
+		Fingerprint:     Fingerprint(cert),
+		SVIDPathTrimmed: svidPathTrimmed,
+		URISanSelectors: sanSelectors,
 	})
 	if err != nil {
 		return spiffeid.ID{}, err
 	}
 
 	return idutil.AgentID(td, agentPath)
+}
+
+// SerialNumberHex returns a certificate serial number represented as lowercase hexadecimal with an even number of characters
+func SerialNumberHex(serialNumber *big.Int) string {
+	serialHex := fmt.Sprintf("%x", serialNumber)
+	if len(serialHex)%2 == 1 {
+		// Append leading 0 in cases where hexadecimal representation is odd number of characters
+		// in order to be more consistent with other tooling that displays certificate serial numbers.
+		serialHex = "0" + serialHex
+	}
+
+	return serialHex
 }
 
 func generateNonce() ([]byte, error) {

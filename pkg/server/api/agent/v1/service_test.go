@@ -29,6 +29,7 @@ import (
 	"github.com/spiffe/spire/test/fakes/fakeserverca"
 	"github.com/spiffe/spire/test/fakes/fakeservercatalog"
 	"github.com/spiffe/spire/test/fakes/fakeservernodeattestor"
+	"github.com/spiffe/spire/test/grpctest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/spiffe/spire/test/testkey"
 	"github.com/stretchr/testify/assert"
@@ -212,12 +213,11 @@ func TestCountAgents(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test := setupServiceTest(t, 0)
 			defer test.Cleanup()
 
-			for i := 0; i < int(tt.count); i++ {
+			for i := range int(tt.count) {
 				now := time.Now()
 				_, err := test.ds.CreateAttestedNode(ctx, &common.AttestedNode{
 					SpiffeId:            ids[i].String(),
@@ -265,6 +265,7 @@ func TestListAgents(t *testing.T) {
 		CertNotAfter:        notAfter,
 		NewCertNotAfter:     newNoAfter,
 		NewCertSerialNumber: "new badcafe",
+		CanReattest:         false,
 		Selectors: []*common.Selector{
 			{Type: "a", Value: "1"},
 			{Type: "b", Value: "2"},
@@ -283,6 +284,7 @@ func TestListAgents(t *testing.T) {
 		CertNotAfter:        notAfter,
 		NewCertNotAfter:     newNoAfter,
 		NewCertSerialNumber: "new deadbeef",
+		CanReattest:         false,
 		Selectors: []*common.Selector{
 			{Type: "a", Value: "1"},
 			{Type: "c", Value: "3"},
@@ -301,6 +303,7 @@ func TestListAgents(t *testing.T) {
 		CertNotAfter:        notAfter,
 		NewCertNotAfter:     newNoAfter,
 		NewCertSerialNumber: "",
+		CanReattest:         true,
 	}
 	_, err = test.ds.CreateAttestedNode(ctx, node3)
 	require.NoError(t, err)
@@ -347,6 +350,7 @@ func TestListAgents(t *testing.T) {
 						Id:                   api.ProtoFromID(node1ID),
 						AttestationType:      "t1",
 						Banned:               false,
+						CanReattest:          false,
 						X509SvidExpiresAt:    notAfter,
 						X509SvidSerialNumber: "badcafe",
 						Selectors: []*types.Selector{
@@ -358,6 +362,7 @@ func TestListAgents(t *testing.T) {
 						Id:                   api.ProtoFromID(node2ID),
 						AttestationType:      "t2",
 						Banned:               false,
+						CanReattest:          false,
 						X509SvidExpiresAt:    notAfter,
 						X509SvidSerialNumber: "deadbeef",
 						Selectors: []*types.Selector{
@@ -369,6 +374,7 @@ func TestListAgents(t *testing.T) {
 						Id:                   api.ProtoFromID(node3ID),
 						AttestationType:      "t3",
 						Banned:               true,
+						CanReattest:          true,
 						X509SvidExpiresAt:    notAfter,
 						X509SvidSerialNumber: "",
 					},
@@ -480,6 +486,57 @@ func TestListAgents(t *testing.T) {
 						telemetry.Status:   "success",
 						telemetry.Type:     "audit",
 						telemetry.ByBanned: "false",
+					},
+				},
+			},
+		},
+		{
+			name: "by can re-attest true",
+			req: &agentv1.ListAgentsRequest{
+				OutputMask: &types.AgentMask{},
+				Filter: &agentv1.ListAgentsRequest_Filter{
+					ByCanReattest: &wrapperspb.BoolValue{Value: true},
+				},
+			},
+			expectResp: &agentv1.ListAgentsResponse{
+				Agents: []*types.Agent{
+					{Id: api.ProtoFromID(node3ID)},
+				},
+			},
+			expectLogs: []spiretest.LogEntry{
+				{
+					Level:   logrus.InfoLevel,
+					Message: "API accessed",
+					Data: logrus.Fields{
+						telemetry.Status:        "success",
+						telemetry.Type:          "audit",
+						telemetry.ByCanReattest: "true",
+					},
+				},
+			},
+		},
+		{
+			name: "by can re-attest false",
+			req: &agentv1.ListAgentsRequest{
+				OutputMask: &types.AgentMask{},
+				Filter: &agentv1.ListAgentsRequest_Filter{
+					ByCanReattest: &wrapperspb.BoolValue{Value: false},
+				},
+			},
+			expectResp: &agentv1.ListAgentsResponse{
+				Agents: []*types.Agent{
+					{Id: api.ProtoFromID(node1ID)},
+					{Id: api.ProtoFromID(node2ID)},
+				},
+			},
+			expectLogs: []spiretest.LogEntry{
+				{
+					Level:   logrus.InfoLevel,
+					Message: "API accessed",
+					Data: logrus.Fields{
+						telemetry.Status:        "success",
+						telemetry.Type:          "audit",
+						telemetry.ByCanReattest: "false",
 					},
 				},
 			},
@@ -848,7 +905,6 @@ func TestListAgents(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test.logHook.Reset()
 			test.ds.SetNextError(tt.dsError)
@@ -884,7 +940,7 @@ func TestBanAgent(t *testing.T) {
 		{
 			name: "Ban agent succeeds",
 			reqID: &types.SPIFFEID{
-				TrustDomain: td.String(),
+				TrustDomain: td.Name(),
 				Path:        agentPath,
 			},
 			expectLogs: []spiretest.LogEntry{
@@ -962,7 +1018,7 @@ func TestBanAgent(t *testing.T) {
 		{
 			name: "Ban agent fails if ID is not a leaf ID",
 			reqID: &types.SPIFFEID{
-				TrustDomain: td.String(),
+				TrustDomain: td.Name(),
 			},
 			expectCode: codes.InvalidArgument,
 			expectMsg:  `invalid agent ID: "spiffe://example.org" is not an agent in trust domain "example.org"; path is empty`,
@@ -989,7 +1045,7 @@ func TestBanAgent(t *testing.T) {
 		{
 			name: "Ban agent fails if ID is not an agent SPIFFE ID",
 			reqID: &types.SPIFFEID{
-				TrustDomain: td.String(),
+				TrustDomain: td.Name(),
 				Path:        "/agent-1",
 			},
 			expectCode: codes.InvalidArgument,
@@ -1045,7 +1101,7 @@ func TestBanAgent(t *testing.T) {
 		{
 			name: "Ban agent fails if agent does not exists",
 			reqID: &types.SPIFFEID{
-				TrustDomain: td.String(),
+				TrustDomain: td.Name(),
 				Path:        "/spire/agent/agent-2",
 			},
 			expectCode: codes.NotFound,
@@ -1074,7 +1130,7 @@ func TestBanAgent(t *testing.T) {
 		{
 			name: "Ban agent fails if there is a datastore error",
 			reqID: &types.SPIFFEID{
-				TrustDomain: td.String(),
+				TrustDomain: td.Name(),
 				Path:        agentPath,
 			},
 			dsError:    errors.New("unknown datastore error"),
@@ -1103,7 +1159,6 @@ func TestBanAgent(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test := setupServiceTest(t, 0)
 			defer test.Cleanup()
@@ -1347,7 +1402,6 @@ func TestDeleteAgent(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test := setupServiceTest(t, 0)
 			defer test.Cleanup()
@@ -1427,12 +1481,14 @@ func TestGetAgent(t *testing.T) {
 		},
 		{
 			name: "success - with mask",
-			req: &agentv1.GetAgentRequest{Id: &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/agent-1"},
+			req: &agentv1.GetAgentRequest{
+				Id: &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/agent-1"},
 				OutputMask: &types.AgentMask{
 					AttestationType:      true,
 					X509SvidExpiresAt:    true,
 					X509SvidSerialNumber: true,
-				}},
+				},
+			},
 			agent: &types.Agent{
 				Id:                   expectedAgents[agent1].Id,
 				AttestationType:      expectedAgents[agent1].AttestationType,
@@ -1453,8 +1509,10 @@ func TestGetAgent(t *testing.T) {
 		},
 		{
 			name: "success - with all false mask",
-			req: &agentv1.GetAgentRequest{Id: &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/agent-1"},
-				OutputMask: &types.AgentMask{}},
+			req: &agentv1.GetAgentRequest{
+				Id:         &types.SPIFFEID{TrustDomain: "example.org", Path: "/spire/agent/agent-1"},
+				OutputMask: &types.AgentMask{},
+			},
 			agent: &types.Agent{
 				Id: expectedAgents[agent1].Id,
 			},
@@ -1575,7 +1633,6 @@ func TestGetAgent(t *testing.T) {
 			dsError: errors.New("datastore error"),
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test := setupServiceTest(t, 0)
 			test.createTestNodes(ctx, t)
@@ -1606,6 +1663,9 @@ func TestRenewAgent(t *testing.T) {
 		CertSerialNumber:    "6789",
 	}
 
+	reattestableNode := cloneAttestedNode(defaultNode)
+	reattestableNode.CanReattest = true
+
 	// Create a test CSR with empty template
 	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, testKey)
 	require.NoError(t, err)
@@ -1626,19 +1686,20 @@ func TestRenewAgent(t *testing.T) {
 
 		dsError        []error
 		createNode     *common.AttestedNode
-		agentTTL       time.Duration
+		agentSVIDTTL   time.Duration
 		expectLogs     []spiretest.LogEntry
 		failCallerID   bool
 		failSigning    bool
 		req            *agentv1.RenewAgentRequest
 		expectCode     codes.Code
 		expectMsg      string
+		expectDetail   proto.Message
 		rateLimiterErr error
 	}{
 		{
-			name:       "success",
-			createNode: cloneAttestedNode(defaultNode),
-			agentTTL:   42 * time.Minute,
+			name:         "success",
+			createNode:   cloneAttestedNode(defaultNode),
+			agentSVIDTTL: 42 * time.Minute,
 			expectLogs: []spiretest.LogEntry{
 				renewingMessage,
 				{
@@ -1775,7 +1836,8 @@ func TestRenewAgent(t *testing.T) {
 					Level:   logrus.ErrorLevel,
 					Message: "Invalid argument: failed to parse CSR",
 					Data: logrus.Fields{
-						logrus.ErrorKey: malformedError.Error()},
+						logrus.ErrorKey: malformedError.Error(),
+					},
 				},
 				{
 					Level:   logrus.InfoLevel,
@@ -1888,11 +1950,35 @@ func TestRenewAgent(t *testing.T) {
 			expectCode: codes.Internal,
 			expectMsg:  "failed to fetch agent: some error",
 		},
+		{
+			name:       "can reattest instead",
+			createNode: reattestableNode,
+			expectLogs: []spiretest.LogEntry{
+				{
+					Level:   logrus.InfoLevel,
+					Message: "API accessed",
+					Data: logrus.Fields{
+						telemetry.Status:        "error",
+						telemetry.Type:          "audit",
+						telemetry.Csr:           csrHash,
+						telemetry.StatusCode:    "PermissionDenied",
+						telemetry.StatusMessage: "agent must reattest instead of renew",
+					},
+				},
+			},
+			req: &agentv1.RenewAgentRequest{
+				Params: &agentv1.AgentX509SVIDParams{
+					Csr: csr,
+				},
+			},
+			expectCode:   codes.PermissionDenied,
+			expectMsg:    "agent must reattest instead of renew",
+			expectDetail: &types.PermissionDeniedDetails{Reason: types.PermissionDeniedDetails_AGENT_MUST_REATTEST},
+		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test
-			test := setupServiceTest(t, tt.agentTTL)
+			test := setupServiceTest(t, tt.agentSVIDTTL)
 			defer test.Cleanup()
 
 			if tt.createNode != nil {
@@ -1913,13 +1999,20 @@ func TestRenewAgent(t *testing.T) {
 			expiredAt := now.Add(test.ca.X509SVIDTTL())
 
 			// Verify non-default agent TTL if set
-			if tt.agentTTL != 0 {
-				expiredAt = now.Add(tt.agentTTL)
+			if tt.agentSVIDTTL != 0 {
+				expiredAt = now.Add(tt.agentSVIDTTL)
 			}
 
 			// Send param message
 			resp, err := test.client.RenewAgent(ctx, tt.req)
 			spiretest.RequireGRPCStatus(t, err, tt.expectCode, tt.expectMsg)
+			st := status.Convert(err)
+			if tt.expectDetail == nil {
+				require.Empty(t, st.Details())
+			} else {
+				require.Len(t, st.Details(), 1)
+				spiretest.RequireProtoEqual(t, tt.expectDetail, st.Details()[0].(proto.Message))
+			}
 
 			if tt.expectCode != codes.OK {
 				require.Nil(t, resp)
@@ -1955,6 +2048,14 @@ func TestRenewAgent(t *testing.T) {
 			spiretest.AssertLogs(t, test.logHook.AllEntries(), tt.expectLogs)
 		})
 	}
+}
+
+func TestPostStatus(t *testing.T) {
+	test := setupServiceTest(t, 0)
+
+	resp, err := test.client.PostStatus(context.Background(), &agentv1.PostStatusRequest{})
+	require.Nil(t, resp)
+	spiretest.RequireGRPCStatus(t, err, codes.Unimplemented, "unimplemented")
 }
 
 func TestCreateJoinToken(t *testing.T) {
@@ -2056,7 +2157,6 @@ func TestCreateJoinToken(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test := setupServiceTest(t, 0)
 			test.ds.SetNextError(tt.dsError)
@@ -2154,7 +2254,6 @@ func TestAttestAgent(t *testing.T) {
 		rateLimiterErr    error
 		dsError           []error
 	}{
-
 		{
 			name:       "empty request",
 			request:    &agentv1.AttestAgentRequest{},
@@ -2460,6 +2559,25 @@ func TestAttestAgent(t *testing.T) {
 			expectMsg:  "failed to attest: join token does not exist or has already been used",
 			expectLogs: []spiretest.LogEntry{
 				{
+					Level:   logrus.InfoLevel,
+					Message: "Agent attestation request completed",
+					Data: logrus.Fields{
+						telemetry.Address:          "",
+						telemetry.AgentID:          "spiffe://example.org/spire/agent/join_token/test_token",
+						telemetry.NodeAttestorType: "join_token",
+					},
+				},
+				{
+					Level:   logrus.InfoLevel,
+					Message: "API accessed",
+					Data: logrus.Fields{
+						telemetry.AgentID:          "spiffe://example.org/spire/agent/join_token/test_token",
+						telemetry.Status:           "success",
+						telemetry.Type:             "audit",
+						telemetry.NodeAttestorType: "join_token",
+					},
+				},
+				{
 					Level:   logrus.ErrorLevel,
 					Message: "Invalid argument: failed to attest: join token does not exist or has already been used",
 					Data: logrus.Fields{
@@ -2519,6 +2637,25 @@ func TestAttestAgent(t *testing.T) {
 				{Type: "test_type", Value: "result"},
 			},
 			expectLogs: []spiretest.LogEntry{
+				{
+					Level:   logrus.InfoLevel,
+					Message: "Agent attestation request completed",
+					Data: logrus.Fields{
+						telemetry.AgentID:          "spiffe://example.org/spire/agent/test_type/id_with_result",
+						telemetry.NodeAttestorType: "test_type",
+						telemetry.Address:          "",
+					},
+				},
+				{
+					Level:   logrus.InfoLevel,
+					Message: "API accessed",
+					Data: logrus.Fields{
+						telemetry.Status:           "success",
+						telemetry.Type:             "audit",
+						telemetry.AgentID:          "spiffe://example.org/spire/agent/test_type/id_with_result",
+						telemetry.NodeAttestorType: "test_type",
+					},
+				},
 				{
 					Level:   logrus.InfoLevel,
 					Message: "Agent attestation request completed",
@@ -2989,7 +3126,6 @@ func TestAttestAgent(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			test := setupServiceTest(t, 0)
@@ -3008,16 +3144,11 @@ func TestAttestAgent(t *testing.T) {
 						e.Data[telemetry.Address] = ""
 					}
 				}
-				if tt.retry {
-					// Prevent cases where audit logs from previous calls are pushed after log is reset
-					spiretest.AssertLastLogs(t, test.logHook.AllEntries(), tt.expectLogs)
-				} else {
-					spiretest.AssertLogs(t, test.logHook.AllEntries(), tt.expectLogs)
-				}
+
+				spiretest.AssertLogsAnyOrder(t, test.logHook.AllEntries(), tt.expectLogs)
 			}()
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 
 			test.setupAttestor(t)
 			test.setupJoinTokens(ctx, t)
@@ -3040,8 +3171,6 @@ func TestAttestAgent(t *testing.T) {
 				// make sure that the first request went well
 				require.NoError(t, err)
 				require.NotNil(t, result)
-				// clear entries from the previous run
-				test.logHook.Reset()
 
 				// attest once more
 				stream, err = test.client.AttestAgent(ctx)
@@ -3084,8 +3213,10 @@ func (s *serviceTest) Cleanup() {
 	}
 }
 
-func setupServiceTest(t *testing.T, agentTTL time.Duration) *serviceTest {
-	ca := fakeserverca.New(t, td, &fakeserverca.Options{})
+func setupServiceTest(t *testing.T, agentSVIDTTL time.Duration) *serviceTest {
+	ca := fakeserverca.New(t, td, &fakeserverca.Options{
+		AgentSVIDTTL: agentSVIDTTL,
+	})
 	ds := fakedatastore.New(t)
 	cat := fakeservercatalog.New()
 	clk := clock.NewMock(t)
@@ -3096,14 +3227,10 @@ func setupServiceTest(t *testing.T, agentTTL time.Duration) *serviceTest {
 		TrustDomain: td,
 		Clock:       clk,
 		Catalog:     cat,
-		AgentTTL:    agentTTL,
 	})
 
 	log, logHook := test.NewNullLogger()
 	log.Level = logrus.DebugLevel
-	registerFn := func(s *grpc.Server) {
-		agent.RegisterService(s, service)
-	}
 
 	rateLimiter := &fakeRateLimiter{}
 
@@ -3116,27 +3243,26 @@ func setupServiceTest(t *testing.T, agentTTL time.Duration) *serviceTest {
 		rateLimiter: rateLimiter,
 	}
 
-	ppMiddleware := middleware.Preprocess(func(ctx context.Context, fullMethod string, req interface{}) (context.Context, error) {
+	overrideContext := func(ctx context.Context) context.Context {
 		ctx = rpccontext.WithLogger(ctx, log)
 		ctx = rpccontext.WithRateLimiter(ctx, rateLimiter)
 		if test.withCallerID {
 			ctx = rpccontext.WithCallerID(ctx, agentID)
 		}
-		return ctx, nil
-	})
-	unaryInterceptor, streamInterceptor := middleware.Interceptors(middleware.Chain(
-		ppMiddleware,
-		// Add audit log with local tracking disabled
-		middleware.WithAuditLog(false),
-	))
+		return ctx
+	}
 
-	server := grpc.NewServer(
-		grpc.UnaryInterceptor(unaryInterceptor),
-		grpc.StreamInterceptor(streamInterceptor),
+	server := grpctest.StartServer(t, func(s grpc.ServiceRegistrar) {
+		agent.RegisterService(s, service)
+	},
+		grpctest.OverrideContext(overrideContext),
+		grpctest.Middleware(middleware.WithAuditLog(false)),
 	)
-	conn, done := spiretest.NewAPIServerWithMiddleware(t, registerFn, server)
-	test.done = done
+
+	conn := server.NewGRPCClient(t)
+
 	test.client = agentv1.NewAgentClient(conn)
+	test.done = server.Stop
 
 	return test
 }
@@ -3235,7 +3361,7 @@ func (s *serviceTest) assertAttestAgentResult(t *testing.T, expectedID spiffeid.
 	expiredAt := now.Add(s.ca.X509SVIDTTL())
 
 	require.NotNil(t, result.Svid)
-	expectedIDType := &types.SPIFFEID{TrustDomain: expectedID.TrustDomain().String(), Path: expectedID.Path()}
+	expectedIDType := &types.SPIFFEID{TrustDomain: expectedID.TrustDomain().Name(), Path: expectedID.Path()}
 	spiretest.AssertProtoEqual(t, expectedIDType, result.Svid.Id)
 	assert.Equal(t, expiredAt.Unix(), result.Svid.ExpiresAt)
 
@@ -3264,7 +3390,7 @@ type fakeRateLimiter struct {
 	err   error
 }
 
-func (f *fakeRateLimiter) RateLimit(ctx context.Context, count int) error {
+func (f *fakeRateLimiter) RateLimit(_ context.Context, count int) error {
 	if f.count != count {
 		return fmt.Errorf("rate limiter got %d but expected %d", count, f.count)
 	}
@@ -3310,7 +3436,8 @@ func attest(t *testing.T, stream agentv1.Agent_AttestAgentClient, request *agent
 			request = &agentv1.AttestAgentRequest{
 				Step: &agentv1.AttestAgentRequest_ChallengeResponse{
 					ChallengeResponse: challenge,
-				}}
+				},
+			}
 
 			continue
 		}

@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"testing"
 
-	legacyProto "github.com/golang/protobuf/proto" // nolint:staticcheck // deprecated library needed until WithDetails can take v2
-	"github.com/open-policy-agent/opa/storage/inmem"
+	"github.com/open-policy-agent/opa/v1/ast"
+	"github.com/open-policy-agent/opa/v1/storage/inmem"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/runtime/protoiface"
 )
 
 func TestWithAuthorizationPreprocess(t *testing.T) {
@@ -102,11 +103,12 @@ func TestWithAuthorizationPreprocess(t *testing.T) {
 
 	for _, tt := range []struct {
 		name            string
-		request         interface{}
+		request         any
 		fullMethod      string
 		peer            *peer.Peer
 		rego            string
 		agentAuthorizer middleware.AgentAuthorizer
+		entryFetcher    middleware.EntryFetcherFunc
 		adminIDs        []spiffeid.ID
 		authorizerErr   error
 		expectCode      codes.Code
@@ -229,7 +231,7 @@ func TestWithAuthorizationPreprocess(t *testing.T) {
 			}),
 			agentAuthorizer: &testAgentAuthorizer{
 				isAgent: false,
-				details: []legacyProto.Message{
+				details: []protoiface.MessageV1{
 					&types.PermissionDeniedDetails{
 						Reason: types.PermissionDeniedDetails_AGENT_BANNED,
 					},
@@ -306,18 +308,31 @@ func TestWithAuthorizationPreprocess(t *testing.T) {
 			rego:       simpleRego(map[string]bool{}),
 			expectMsg:  "no peer information available",
 		},
+		{
+			name:       "entry fetcher error is handled",
+			fullMethod: fakeFullMethod,
+			peer:       downstreamPeer,
+			rego: simpleRego(map[string]bool{
+				"allow_if_downstream": true,
+			}),
+			entryFetcher: func(ctx context.Context, id spiffeid.ID) ([]*types.Entry, error) {
+				return nil, errors.New("entry fetcher error")
+			},
+			expectCode: codes.Internal,
+			expectMsg:  "failed to fetch caller entries: entry fetcher error",
+		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			policyEngine, err := authpolicy.NewEngineFromRego(ctx, tt.rego, inmem.NewFromObject(map[string]interface{}{}))
+			policyEngine, err := authpolicy.NewEngineFromRego(ctx, tt.rego, inmem.NewFromObject(map[string]any{}), ast.RegoV1)
 			require.NoError(t, err, "failed to initialize policy engine")
 
 			// Set up an authorization middleware with one method.
 			if tt.agentAuthorizer == nil {
 				tt.agentAuthorizer = noAgentAuthorizer
 			}
-			m := middleware.WithAuthorization(policyEngine, entryFetcher, tt.agentAuthorizer, tt.adminIDs)
+
+			m := middleware.WithAuthorization(policyEngine, entryFetcherForTest(tt.entryFetcher), tt.agentAuthorizer, tt.adminIDs)
 
 			// Set up the incoming context with a logger and optionally a peer.
 			log, _ := test.NewNullLogger()
@@ -422,10 +437,10 @@ var (
 
 type testAgentAuthorizer struct {
 	isAgent bool
-	details []legacyProto.Message
+	details []protoiface.MessageV1
 }
 
-func (a *testAgentAuthorizer) AuthorizeAgent(ctx context.Context, agentID spiffeid.ID, agentSVID *x509.Certificate) error {
+func (a *testAgentAuthorizer) AuthorizeAgent(context.Context, spiffeid.ID, *x509.Certificate) error {
 	if a.isAgent {
 		return nil
 	}
@@ -439,6 +454,14 @@ func (a *testAgentAuthorizer) AuthorizeAgent(ctx context.Context, agentID spiffe
 	}
 
 	return st.Err()
+}
+
+func entryFetcherForTest(replace middleware.EntryFetcherFunc) middleware.EntryFetcherFunc {
+	if replace != nil {
+		return replace
+	}
+
+	return entryFetcher
 }
 
 func simpleRego(m map[string]bool) string {
@@ -467,7 +490,7 @@ func condCheckRego(cond string) string {
     }
     default allow = false
     
-    allow=true {
+    allow=true if {
         %s
     }
     `

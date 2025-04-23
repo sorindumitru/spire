@@ -68,7 +68,7 @@ func TestServerAPISource(t *testing.T) {
 	require.Equal(t, "KID", keySet1.Keys[0].KeyID)
 	require.Equal(t, ec256Pubkey, keySet1.Keys[0].Key)
 
-	// Wait another poll interval, ensure the bundle was refetched and that the
+	// Wait another poll interval, ensure the bundle was re-fetched and that the
 	// source reports no changes since nothing changed.
 	clock.Add(pollInterval)
 	clock.WaitForAfter(time.Minute, "failed to wait for the poll timer")
@@ -121,7 +121,7 @@ func (s *fakeServerAPIServer) GetBundleCount() int {
 	return count
 }
 
-func (s *fakeServerAPIServer) GetBundle(ctx context.Context, req *bundlev1.GetBundleRequest) (*types.Bundle, error) {
+func (s *fakeServerAPIServer) GetBundle(context.Context, *bundlev1.GetBundleRequest) (*types.Bundle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.getBundleCount++

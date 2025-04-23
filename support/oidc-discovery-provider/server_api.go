@@ -7,14 +7,13 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/sirupsen/logrus"
 	bundlev1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/bundle/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/common/util"
-	"github.com/zeebo/errs"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
-	"gopkg.in/square/go-jose.v2"
 )
 
 const (
@@ -49,9 +48,9 @@ func NewServerAPISource(config ServerAPISourceConfig) (*ServerAPISource, error) 
 		config.Clock = clock.New()
 	}
 
-	conn, err := util.GRPCDialContext(context.Background(), config.GRPCTarget)
+	conn, err := util.NewGRPCClient(config.GRPCTarget)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package unix
 
@@ -17,10 +16,11 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 	workloadattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/workloadattestor/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"github.com/spiffe/spire/pkg/common/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,8 +34,8 @@ func builtin(p *Plugin) catalog.BuiltIn {
 }
 
 type processInfo interface {
-	Uids() ([]int32, error)
-	Gids() ([]int32, error)
+	Uids() ([]uint32, error)
+	Gids() ([]uint32, error)
 	Groups() ([]string, error)
 	Exe() (string, error)
 	NamespacedExe() string
@@ -92,6 +92,16 @@ type Configuration struct {
 	WorkloadSizeLimit    int64 `hcl:"workload_size_limit"`
 }
 
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Configuration {
+	newConfig := new(Configuration)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("failed to decode configuration: %v", err)
+		return nil
+	}
+
+	return newConfig
+}
+
 type Plugin struct {
 	workloadattestorv1.UnsafeWorkloadAttestorServer
 	configv1.UnsafeConfigServer
@@ -120,7 +130,7 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 	p.log = log
 }
 
-func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestRequest) (*workloadattestorv1.AttestResponse, error) {
+func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest) (*workloadattestorv1.AttestResponse, error) {
 	config, err := p.getConfig()
 	if err != nil {
 		return nil, err
@@ -177,12 +187,15 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		selectorValues = append(selectorValues, makeSelectorValue("path", processPath))
 
 		if config.WorkloadSizeLimit >= 0 {
-			exePath := p.getNamespacedPath(proc)
-			sha256Digest, err := util.GetSHA256Digest(exePath, config.WorkloadSizeLimit)
+			exePath, err := p.getNamespacedPath(proc)
 			if err != nil {
 				return nil, status.Error(codes.Internal, err.Error())
 			}
 
+			sha256Digest, err := util.GetSHA256Digest(exePath, config.WorkloadSizeLimit)
+			if err != nil {
+				return nil, status.Error(codes.Internal, err.Error())
+			}
 			selectorValues = append(selectorValues, makeSelectorValue("sha256", sha256Digest))
 		}
 	}
@@ -192,13 +205,26 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 	}, nil
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config := new(Configuration)
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to decode configuration: %v", err)
+func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
-	p.setConfig(config)
+
+	p.mu.Lock()
+	p.config = newConfig
+	p.mu.Unlock()
+
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 func (p *Plugin) getConfig() (*Configuration, error) {
@@ -209,12 +235,6 @@ func (p *Plugin) getConfig() (*Configuration, error) {
 		return nil, status.Error(codes.FailedPrecondition, "not configured")
 	}
 	return config, nil
-}
-
-func (p *Plugin) setConfig(config *Configuration) {
-	p.mu.Lock()
-	p.config = config
-	p.mu.Unlock()
 }
 
 func (p *Plugin) getUID(proc processInfo) (string, error) {
@@ -236,7 +256,6 @@ func (p *Plugin) getUID(proc processInfo) (string, error) {
 func (p *Plugin) getUserName(uid string) (string, bool) {
 	u, err := p.hooks.lookupUserByID(uid)
 	if err != nil {
-		p.log.Warn("Failed to lookup user name by uid", "uid", uid, "error", err)
 		return "", false
 	}
 	return u.Username, true
@@ -261,7 +280,6 @@ func (p *Plugin) getGID(proc processInfo) (string, error) {
 func (p *Plugin) getGroupName(gid string) (string, bool) {
 	g, err := p.hooks.lookupGroupByID(gid)
 	if err != nil {
-		p.log.Warn("Failed to lookup group name by gid", "gid", gid, "error", err)
 		return "", false
 	}
 	return g.Name, true
@@ -276,8 +294,11 @@ func (p *Plugin) getPath(proc processInfo) (string, error) {
 	return path, nil
 }
 
-func (p *Plugin) getNamespacedPath(proc processInfo) string {
-	return proc.NamespacedExe()
+func (p *Plugin) getNamespacedPath(proc processInfo) (string, error) {
+	if runtime.GOOS == "linux" {
+		return proc.NamespacedExe(), nil
+	}
+	return proc.Exe()
 }
 
 func makeSelectorValue(kind, value string) string {

@@ -8,60 +8,14 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/proto/spire/common"
-	"github.com/zeebo/errs"
 	"google.golang.org/protobuf/proto"
 )
-
-type Bundle struct {
-	b              *common.Bundle
-	rootCAs        []*x509.Certificate
-	jwtSigningKeys map[string]crypto.PublicKey
-}
-
-func New(trustDomain spiffeid.TrustDomain) *Bundle {
-	return &Bundle{
-		b: &common.Bundle{
-			TrustDomainId: trustDomain.IDString(),
-		},
-		jwtSigningKeys: make(map[string]crypto.PublicKey),
-	}
-}
-
-func ParseBundle(bundleBytes []byte) (*Bundle, error) {
-	b := new(common.Bundle)
-	if err := proto.Unmarshal(bundleBytes, b); err != nil {
-		return nil, errs.New("unable to unmarshal bundle: %v", err)
-	}
-	return BundleFromProto(b)
-}
-
-func BundleFromProto(b *common.Bundle) (*Bundle, error) {
-	rootCAs, err := RootCAsFromBundleProto(b)
-	if err != nil {
-		return nil, err
-	}
-	jwtSigningKeys, err := JWTSigningKeysFromBundleProto(b)
-	if err != nil {
-		return nil, err
-	}
-	return &Bundle{
-		b:              b,
-		rootCAs:        rootCAs,
-		jwtSigningKeys: jwtSigningKeys,
-	}, nil
-}
-
-func BundleFromRootCA(trustDomain spiffeid.TrustDomain, rootCA *x509.Certificate) *Bundle {
-	return bundleFromRootCAs(trustDomain, rootCA)
-}
-
-func BundleFromRootCAs(trustDomain spiffeid.TrustDomain, rootCAs []*x509.Certificate) *Bundle {
-	return bundleFromRootCAs(trustDomain, rootCAs...)
-}
 
 func CommonBundleFromProto(b *types.Bundle) (*common.Bundle, error) {
 	if b == nil {
@@ -76,7 +30,8 @@ func CommonBundleFromProto(b *types.Bundle) (*common.Bundle, error) {
 	var rootCAs []*common.Certificate
 	for _, rootCA := range b.X509Authorities {
 		rootCAs = append(rootCAs, &common.Certificate{
-			DerBytes: rootCA.Asn1,
+			DerBytes:   rootCA.Asn1,
+			TaintedKey: rootCA.Tainted,
 		})
 	}
 
@@ -87,95 +42,72 @@ func CommonBundleFromProto(b *types.Bundle) (*common.Bundle, error) {
 		}
 
 		jwtKeys = append(jwtKeys, &common.PublicKey{
-			PkixBytes: key.PublicKey,
-			Kid:       key.KeyId,
-			NotAfter:  key.ExpiresAt,
+			PkixBytes:  key.PublicKey,
+			Kid:        key.KeyId,
+			NotAfter:   key.ExpiresAt,
+			TaintedKey: key.Tainted,
 		})
 	}
 
 	return &common.Bundle{
 		TrustDomainId:  td.IDString(),
 		RefreshHint:    b.RefreshHint,
+		SequenceNumber: b.SequenceNumber,
 		RootCas:        rootCAs,
 		JwtSigningKeys: jwtKeys,
 	}, nil
 }
 
-func bundleFromRootCAs(trustDomain spiffeid.TrustDomain, rootCAs ...*x509.Certificate) *Bundle {
-	b := New(trustDomain)
-	for _, rootCA := range rootCAs {
-		b.AppendRootCA(rootCA)
+func SPIFFEBundleToProto(b *spiffebundle.Bundle) (*common.Bundle, error) {
+	refreshHint, _ := b.RefreshHint()
+	s, _ := b.SequenceNumber()
+
+	bundle := &common.Bundle{
+		TrustDomainId:  b.TrustDomain().IDString(),
+		RefreshHint:    int64(refreshHint.Seconds()),
+		SequenceNumber: s,
 	}
-	return b
-}
-
-func (b *Bundle) Proto() *common.Bundle {
-	return cloneBundle(b.b)
-}
-
-func (b *Bundle) TrustDomainID() string {
-	return b.b.TrustDomainId
-}
-
-func (b *Bundle) EqualTo(other *Bundle) bool {
-	return proto.Equal(b.b, other.b)
-}
-
-func (b *Bundle) RootCAs() []*x509.Certificate {
-	return b.rootCAs
-}
-
-func (b *Bundle) JWTSigningKeys() map[string]crypto.PublicKey {
-	return b.jwtSigningKeys
-}
-
-// RefreshHint returns the bundle refresh hint.
-func (b *Bundle) RefreshHint() time.Duration {
-	return time.Second * time.Duration(b.b.RefreshHint)
-}
-
-// SetRefreshHint sets the bundle refresh hint to the given duration. It is
-// rounded up to the nearest second.
-func (b *Bundle) SetRefreshHint(d time.Duration) {
-	b.b.RefreshHint = int64((d + (time.Second - 1)) / time.Second)
-}
-
-func (b *Bundle) AppendRootCA(rootCA *x509.Certificate) {
-	b.b.RootCas = append(b.b.RootCas, &common.Certificate{
-		DerBytes: rootCA.Raw,
-	})
-	b.rootCAs = append(b.rootCAs, rootCA)
-}
-
-func (b *Bundle) AppendJWTSigningKey(kid string, key crypto.PublicKey) error {
-	if _, ok := b.jwtSigningKeys[kid]; ok {
-		return errs.New("JWT Signing Key %q already exists", kid)
+	for _, rootCA := range b.X509Authorities() {
+		bundle.RootCas = append(bundle.RootCas, &common.Certificate{
+			DerBytes: rootCA.Raw,
+		})
 	}
-	pkixBytes, err := x509.MarshalPKIXPublicKey(key)
+
+	for kid, key := range b.JWTAuthorities() {
+		pkixBytes, err := x509.MarshalPKIXPublicKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal public key: %w", err)
+		}
+		bundle.JwtSigningKeys = append(bundle.JwtSigningKeys, &common.PublicKey{
+			PkixBytes: pkixBytes,
+			Kid:       kid,
+		})
+	}
+
+	return bundle, nil
+}
+
+func SPIFFEBundleFromProto(b *common.Bundle) (*spiffebundle.Bundle, error) {
+	rootCAs, err := RootCAsFromBundleProto(b)
 	if err != nil {
-		return errs.Wrap(err)
+		return nil, err
 	}
-	b.b.JwtSigningKeys = append(b.b.JwtSigningKeys, &common.PublicKey{
-		Kid:       kid,
-		PkixBytes: pkixBytes,
-	})
-	b.jwtSigningKeys[kid] = key
-	return nil
-}
-
-func BundleProtoFromRootCADER(trustDomainID string, derBytes []byte) *common.Bundle {
-	return &common.Bundle{
-		TrustDomainId: trustDomainID,
-		RootCas:       []*common.Certificate{{DerBytes: derBytes}},
-	}
-}
-
-func BundleProtoFromRootCAsDER(trustDomainID string, derBytes []byte) (*common.Bundle, error) {
-	rootCAs, err := x509.ParseCertificates(derBytes)
+	jwtSigningKeys, err := JWTSigningKeysFromBundleProto(b)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
-	return BundleProtoFromRootCAs(trustDomainID, rootCAs), nil
+	td, err := spiffeid.TrustDomainFromString(b.TrustDomainId)
+	if err != nil {
+		return nil, err
+	}
+
+	bundle := spiffebundle.New(td)
+	bundle.SetX509Authorities(rootCAs)
+	bundle.SetJWTAuthorities(jwtSigningKeys)
+	bundle.SetRefreshHint(time.Second * time.Duration(b.RefreshHint))
+	bundle.SetSequenceNumber(b.SequenceNumber)
+
+	return bundle, nil
 }
 
 func BundleProtoFromRootCA(trustDomainID string, rootCA *x509.Certificate) *common.Bundle {
@@ -192,13 +124,6 @@ func BundleProtoFromRootCAs(trustDomainID string, rootCAs []*x509.Certificate) *
 		})
 	}
 	return b
-}
-
-func RootCAsDERFromBundleProto(b *common.Bundle) (derBytes []byte) {
-	for _, rootCA := range b.RootCas {
-		derBytes = append(derBytes, rootCA.DerBytes...)
-	}
-	return derBytes
 }
 
 func RootCAsFromBundleProto(b *common.Bundle) (out []*x509.Certificate, err error) {
@@ -253,7 +178,7 @@ func MergeBundles(a, b *common.Bundle) (*common.Bundle, bool) {
 }
 
 // PruneBundle removes the bundle RootCAs and JWT keys that expired before a given time
-// It returns an error if prunning results in a bundle with no CAs or keys
+// It returns an error if pruning results in a bundle with no CAs or keys
 func PruneBundle(bundle *common.Bundle, expiration time.Time, log logrus.FieldLogger) (*common.Bundle, bool, error) {
 	if bundle == nil {
 		return nil, false, errors.New("current bundle is nil")
@@ -313,6 +238,32 @@ pruneRootCA:
 	}
 
 	return newBundle, changed, nil
+}
+
+// FindX509Authorities search for all X.509 authorities with provided subjectKeyIDs
+func FindX509Authorities(bundle *spiffebundle.Bundle, subjectKeyIDs []string) ([]*x509.Certificate, error) {
+	var x509Authorities []*x509.Certificate
+	for _, subjectKeyID := range subjectKeyIDs {
+		x509Authority, err := getX509Authority(bundle, subjectKeyID)
+		if err != nil {
+			return nil, err
+		}
+
+		x509Authorities = append(x509Authorities, x509Authority)
+	}
+
+	return x509Authorities, nil
+}
+
+func getX509Authority(bundle *spiffebundle.Bundle, subjectKeyID string) (*x509.Certificate, error) {
+	for _, x509Authority := range bundle.X509Authorities() {
+		authoritySKID := x509util.SubjectKeyIDToString(x509Authority.SubjectKeyId)
+		if authoritySKID == subjectKeyID {
+			return x509Authority, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no X.509 authority found with SubjectKeyID %q", subjectKeyID)
 }
 
 func cloneBundle(b *common.Bundle) *common.Bundle {

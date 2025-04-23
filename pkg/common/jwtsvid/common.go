@@ -4,19 +4,18 @@ import (
 	"errors"
 	"time"
 
-	"github.com/zeebo/errs"
-	"gopkg.in/square/go-jose.v2/jwt"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 func GetTokenExpiry(token string) (time.Time, time.Time, error) {
-	tok, err := jwt.ParseSigned(token)
+	tok, err := jwt.ParseSigned(token, AllowedSignatureAlgorithms)
 	if err != nil {
-		return time.Time{}, time.Time{}, errs.Wrap(err)
+		return time.Time{}, time.Time{}, err
 	}
 
 	claims := jwt.Claims{}
 	if err := tok.UnsafeClaimsWithoutVerification(&claims); err != nil {
-		return time.Time{}, time.Time{}, errs.Wrap(err)
+		return time.Time{}, time.Time{}, err
 	}
 	if claims.IssuedAt == nil {
 		return time.Time{}, time.Time{}, errors.New("JWT missing iat claim")

@@ -1,26 +1,33 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
+
+	"github.com/spiffe/spire/pkg/common/diskcertmanager"
 	"github.com/spiffe/spire/pkg/common/log"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/version"
-	"github.com/zeebo/errs"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
 	versionFlag = flag.Bool("version", false, "print version")
 	configFlag  = flag.String("config", "oidc-discovery-provider.conf", "configuration file")
+	expandEnv   = flag.Bool("expandEnv", false, "expand environment variables in config file")
 )
 
 func main() {
@@ -31,23 +38,26 @@ func main() {
 		os.Exit(0)
 	}
 
-	if err := run(*configFlag); err != nil {
+	if err := run(*configFlag, *expandEnv); err != nil {
 		fmt.Fprintf(os.Stderr, "%+v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string) error {
-	config, err := LoadConfig(configPath)
+func run(configPath string, expandEnv bool) error {
+	config, err := LoadConfig(configPath, expandEnv)
 	if err != nil {
 		return err
 	}
 
 	log, err := log.NewLogger(log.WithLevel(config.LogLevel), log.WithFormat(config.LogFormat), log.WithOutputFile(config.LogPath))
 	if err != nil {
-		return errs.Wrap(err)
+		return err
 	}
 	defer log.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	source, err := newSource(log, config)
 	if err != nil {
@@ -60,36 +70,31 @@ func run(configPath string) error {
 		return err
 	}
 
-	var handler http.Handler = NewHandler(log, domainPolicy, source, config.AllowInsecureScheme, config.SetKeyUse)
+	var jwtIssuer *url.URL
+	if config.JWTIssuer != "" {
+		jwtIssuer, err = url.Parse(config.JWTIssuer)
+		if err != nil {
+			return err
+		}
+	}
+
+	var jwksURI *url.URL
+	if config.JWKSURI != "" {
+		jwksURI, err = url.Parse(config.JWKSURI)
+		if err != nil {
+			return err
+		}
+	}
+
+	var handler http.Handler = NewHandler(log, domainPolicy, source, config.AllowInsecureScheme, config.SetKeyUse, jwtIssuer, jwksURI, config.ServerPathPrefix)
 	if config.LogRequests {
 		log.Info("Logging all requests")
 		handler = logHandler(log, handler)
 	}
 
-	var listener net.Listener
-
-	switch {
-	case config.InsecureAddr != "":
-		listener, err = net.Listen("tcp", config.InsecureAddr)
-		if err != nil {
-			return err
-		}
-		log.WithField("address", config.InsecureAddr).Warn("Serving HTTP (insecure)")
-	case config.ListenSocketPath != "" || config.Experimental.ListenNamedPipeName != "":
-		listener, err = listenLocal(config)
-		if err != nil {
-			return err
-		}
-		log.WithFields(logrus.Fields{
-			telemetry.Network: listener.Addr().Network(),
-			telemetry.Address: listener.Addr().String(),
-		}).Info("Serving HTTP")
-	default:
-		listener, err = newACMEListener(log, config)
-		if err != nil {
-			return err
-		}
-		log.Info("Serving HTTPS via ACME")
+	listener, err := buildNetListener(ctx, config, log)
+	if err != nil {
+		return err
 	}
 
 	defer func() {
@@ -112,7 +117,52 @@ func run(configPath string) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	go func() {
+		<-ctx.Done()
+		if err := server.Shutdown(context.Background()); err != nil {
+			log.Error(err)
+		}
+	}()
+
 	return server.Serve(listener)
+}
+
+func buildNetListener(ctx context.Context, config *Config, log *log.Logger) (listener net.Listener, err error) {
+	switch {
+	case config.InsecureAddr != "":
+		listener, err = net.Listen("tcp", config.InsecureAddr)
+		if err != nil {
+			return nil, err
+		}
+		log.WithField("address", config.InsecureAddr).Warn("Serving HTTP (insecure)")
+	case config.ListenSocketPath != "" || config.Experimental.ListenNamedPipeName != "":
+		listener, err = listenLocal(config)
+		if err != nil {
+			return nil, err
+		}
+		log.WithFields(logrus.Fields{
+			telemetry.Network: listener.Addr().Network(),
+			telemetry.Address: listener.Addr().String(),
+		}).Info("Serving HTTP")
+	case config.ServingCertFile != nil:
+		listener, err = newListenerWithServingCert(ctx, log, config)
+		if err != nil {
+			return nil, err
+		}
+		log.WithFields(
+			logrus.Fields{
+				telemetry.CertFilePath: config.ServingCertFile.CertFilePath,
+				telemetry.Address:      config.ServingCertFile.KeyFilePath,
+			}).Info("Serving HTTPS using certificate loaded from disk")
+	default:
+		listener, err = newACMEListener(log, config)
+		if err != nil {
+			return nil, err
+		}
+		log.Info("Serving HTTPS via ACME")
+	}
+	return listener, nil
 }
 
 func newSource(log logrus.FieldLogger, config *Config) (JWKSSource, error) {
@@ -126,7 +176,7 @@ func newSource(log logrus.FieldLogger, config *Config) (JWKSSource, error) {
 	case config.WorkloadAPI != nil:
 		workloadAPIAddr, err := config.getWorkloadAPIAddr()
 		if err != nil {
-			return nil, errs.New(err.Error())
+			return nil, err
 		}
 		return NewWorkloadAPISource(WorkloadAPISourceConfig{
 			Log:          log,
@@ -136,8 +186,31 @@ func newSource(log logrus.FieldLogger, config *Config) (JWKSSource, error) {
 		})
 	default:
 		// This is defensive; LoadConfig should prevent this from happening.
-		return nil, errs.New("no source has been configured")
+		return nil, errors.New("no source has been configured")
 	}
+}
+
+func newListenerWithServingCert(ctx context.Context, log logrus.FieldLogger, config *Config) (net.Listener, error) {
+	certManager, err := diskcertmanager.New(&diskcertmanager.Config{
+		CertFilePath:     config.ServingCertFile.CertFilePath,
+		KeyFilePath:      config.ServingCertFile.KeyFilePath,
+		FileSyncInterval: config.ServingCertFile.FileSyncInterval,
+	}, nil, log)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		certManager.WatchFileChanges(ctx)
+	}()
+
+	tlsConfig := certManager.GetTLSConfig()
+
+	tcpListener, err := net.ListenTCP("tcp", config.ServingCertFile.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create listener using certificate from disk: %w", err)
+	}
+
+	return &tlsListener{TCPListener: tcpListener, conf: tlsConfig}, nil
 }
 
 func newACMEListener(log logrus.FieldLogger, config *Config) (net.Listener, error) {
@@ -168,7 +241,7 @@ func newACMEListener(log logrus.FieldLogger, config *Config) (net.Listener, erro
 		return nil, fmt.Errorf("failed to create an ACME listener: %w", err)
 	}
 
-	return &acmeListener{TCPListener: tcpListener, conf: tlsConfig}, nil
+	return &tlsListener{TCPListener: tcpListener, conf: tlsConfig}, nil
 }
 
 func logHandler(log logrus.FieldLogger, handler http.Handler) http.Handler {
@@ -177,7 +250,7 @@ func logHandler(log logrus.FieldLogger, handler http.Handler) http.Handler {
 			"remote-addr": r.RemoteAddr,
 			"method":      r.Method,
 			"url":         r.URL,
-			"user-agent":  r.UserAgent,
+			"user-agent":  r.UserAgent(),
 		}).Debug("Incoming request")
 		handler.ServeHTTP(w, r)
 	})
@@ -187,12 +260,12 @@ func logHandler(log logrus.FieldLogger, handler http.Handler) http.Handler {
 // golang.org/x/crypto/acme/autocert package. It wraps a normal TCP listener to
 // set a reasonable keepalive on the TCP connection in the same vein as the
 // net/http package.
-type acmeListener struct {
+type tlsListener struct {
 	*net.TCPListener
 	conf *tls.Config
 }
 
-func (ln *acmeListener) Accept() (net.Conn, error) {
+func (ln *tlsListener) Accept() (net.Conn, error) {
 	conn, err := ln.TCPListener.AcceptTCP()
 	if err != nil {
 		return nil, err

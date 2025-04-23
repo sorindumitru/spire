@@ -1,5 +1,4 @@
 //go:build darwin || freebsd || netbsd || openbsd
-// +build darwin freebsd netbsd openbsd
 
 package peertracker
 
@@ -8,20 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
+	"golang.org/x/sys/unix"
 )
 
 const (
 	bsdType = "bsd"
 )
 
-var (
-	safetyDelay = 250 * time.Millisecond
-)
+var safetyDelay = 250 * time.Millisecond
 
 type bsdTracker struct {
 	closer      func()
@@ -33,7 +31,7 @@ type bsdTracker struct {
 }
 
 func newTracker(log logrus.FieldLogger) (*bsdTracker, error) {
-	kqfd, err := syscall.Kqueue()
+	kqfd, err := unix.Kqueue()
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +58,7 @@ func (b *bsdTracker) Close() {
 	// kqueue file descriptor so the goroutine watching it
 	// will know that we are shutting down.
 	b.closer()
-	syscall.Close(b.kqfd)
+	unix.Close(b.kqfd)
 }
 
 func (b *bsdTracker) NewWatcher(info CallerInfo) (Watcher, error) {
@@ -94,21 +92,21 @@ func (b *bsdTracker) NewWatcher(info CallerInfo) (Watcher, error) {
 }
 
 func (b *bsdTracker) addKeventForWatcher(pid int) error {
-	kevent := syscall.Kevent_t{}
-	flags := syscall.EV_ADD | syscall.EV_RECEIPT | syscall.EV_ONESHOT
-	syscall.SetKevent(&kevent, pid, syscall.EVFILT_PROC, flags)
+	kevent := unix.Kevent_t{}
+	flags := unix.EV_ADD | unix.EV_RECEIPT | unix.EV_ONESHOT
+	unix.SetKevent(&kevent, pid, unix.EVFILT_PROC, flags)
 
-	kevent.Fflags = syscall.NOTE_EXIT
+	kevent.Fflags = unix.NOTE_EXIT
 
-	kevents := []syscall.Kevent_t{kevent}
-	_, err := syscall.Kevent(b.kqfd, kevents, nil, nil)
+	kevents := []unix.Kevent_t{kevent}
+	_, err := unix.Kevent(b.kqfd, kevents, nil, nil)
 	return err
 }
 
 func (b *bsdTracker) receiveKevents(kqfd int) {
 	for {
-		receive := make([]syscall.Kevent_t, 5)
-		num, err := syscall.Kevent(kqfd, nil, receive, nil)
+		receive := make([]unix.Kevent_t, 5)
+		num, err := unix.Kevent(kqfd, nil, receive, nil)
 		if err != nil {
 			// KQUEUE(2) outlines the conditions under which the Kevent call
 			// can return an error - they are as follows:
@@ -135,7 +133,7 @@ func (b *bsdTracker) receiveKevents(kqfd int) {
 				return
 			}
 
-			if errors.Is(err, syscall.EINTR) {
+			if errors.Is(err, unix.EINTR) {
 				continue
 			}
 
@@ -145,8 +143,12 @@ func (b *bsdTracker) receiveKevents(kqfd int) {
 
 		b.mtx.Lock()
 		for _, kevent := range receive[:num] {
-			if kevent.Filter == syscall.EVFILT_PROC && (kevent.Fflags&syscall.NOTE_EXIT) > 0 {
-				pid := int(kevent.Ident)
+			if kevent.Filter == unix.EVFILT_PROC && (kevent.Fflags&unix.NOTE_EXIT) > 0 {
+				pid, err := util.CheckedCast[int](kevent.Ident)
+				if err != nil {
+					b.log.WithError(err).WithField(telemetry.PID, kevent.Ident).Warn("Failed to cast PID from kevent")
+					continue
+				}
 				done, ok := b.watchedPIDs[pid]
 				if ok {
 					close(done)

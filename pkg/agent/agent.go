@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andres-erbsen/clock"
+	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	admin_api "github.com/spiffe/spire/pkg/agent/api"
 	node_attestor "github.com/spiffe/spire/pkg/agent/attestor/node"
@@ -21,16 +23,25 @@ import (
 	"github.com/spiffe/spire/pkg/agent/plugin/nodeattestor"
 	"github.com/spiffe/spire/pkg/agent/storage"
 	"github.com/spiffe/spire/pkg/agent/svid/store"
+	"github.com/spiffe/spire/pkg/common/backoff"
 	"github.com/spiffe/spire/pkg/common/diskutil"
 	"github.com/spiffe/spire/pkg/common/health"
+	"github.com/spiffe/spire/pkg/common/nodeutil"
 	"github.com/spiffe/spire/pkg/common/profiling"
+	"github.com/spiffe/spire/pkg/common/rotationutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/uptime"
 	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/pkg/common/version"
 	_ "golang.org/x/net/trace" // registers handlers on the DefaultServeMux
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+)
+
+const (
+	bootstrapBackoffInterval       = 5 * time.Second
+	bootstrapBackoffMaxElapsedTime = 1 * time.Minute
 )
 
 type Agent struct {
@@ -41,7 +52,10 @@ type Agent struct {
 // This method initializes the agent, including its plugins,
 // and then blocks on the main event loop.
 func (a *Agent) Run(ctx context.Context) error {
-	a.c.Log.Infof("Starting agent with data directory: %q", a.c.DataDir)
+	a.c.Log.WithFields(logrus.Fields{
+		telemetry.DataDir: a.c.DataDir,
+		telemetry.Version: version.Version(),
+	}).Info("Starting agent")
 	if err := diskutil.CreateDataDirectory(a.c.DataDir); err != nil {
 		return err
 	}
@@ -63,18 +77,19 @@ func (a *Agent) Run(ctx context.Context) error {
 		FileConfig:  a.c.Telemetry,
 		Logger:      a.c.Log.WithField(telemetry.SubsystemName, telemetry.Telemetry),
 		ServiceName: telemetry.SpireAgent,
+		TrustDomain: a.c.TrustDomain.Name(),
 	})
 	if err != nil {
 		return err
 	}
-	telemetry.EmitVersion(metrics)
+	telemetry.EmitStarted(metrics, a.c.TrustDomain)
 	uptime.ReportMetrics(ctx, metrics)
 
 	cat, err := catalog.Load(ctx, catalog.Config{
-		Log:          a.c.Log.WithField(telemetry.SubsystemName, telemetry.Catalog),
-		Metrics:      metrics,
-		TrustDomain:  a.c.TrustDomain,
-		PluginConfig: a.c.PluginConfigs,
+		Log:           a.c.Log.WithField(telemetry.SubsystemName, telemetry.Catalog),
+		Metrics:       metrics,
+		TrustDomain:   a.c.TrustDomain,
+		PluginConfigs: a.c.PluginConfigs,
 	})
 	if err != nil {
 		return err
@@ -88,12 +103,51 @@ func (a *Agent) Run(ctx context.Context) error {
 		nodeAttestor = cat.GetNodeAttestor()
 	}
 
-	as, err := a.attest(ctx, sto, cat, metrics, nodeAttestor)
-	if err != nil {
-		return err
+	var as *node_attestor.AttestationResult
+
+	if a.c.RetryBootstrap {
+		attBackoffClock := clock.New()
+		attBackoff := backoff.NewBackoff(
+			attBackoffClock,
+			bootstrapBackoffInterval,
+			backoff.WithMaxElapsedTime(bootstrapBackoffMaxElapsedTime),
+		)
+
+		for {
+			as, err = a.attest(ctx, sto, cat, metrics, nodeAttestor)
+			if err == nil {
+				break
+			}
+
+			if status.Code(err) == codes.PermissionDenied {
+				return err
+			}
+
+			nextDuration := attBackoff.NextBackOff()
+			if nextDuration == backoff.Stop {
+				return err
+			}
+
+			a.c.Log.WithFields(logrus.Fields{
+				telemetry.Error:         err,
+				telemetry.RetryInterval: nextDuration,
+			}).Warn("Failed to retrieve attestation result")
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-attBackoffClock.After(nextDuration):
+				continue
+			}
+		}
+	} else {
+		as, err = a.attest(ctx, sto, cat, metrics, nodeAttestor)
+		if err != nil {
+			return err
+		}
 	}
 
-	svidStoreCache := a.newSVIDStoreCache()
+	svidStoreCache := a.newSVIDStoreCache(metrics)
 
 	manager, err := a.newManager(ctx, sto, cat, metrics, as, svidStoreCache, nodeAttestor)
 	if err != nil {
@@ -118,11 +172,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		storeService.Run,
 		endpoints.ListenAndServe,
 		metrics.ListenAndServe,
-		util.SerialRun(a.waitForTestDial, healthChecker.ListenAndServe),
+		catalog.ReconfigureTask(a.c.Log.WithField(telemetry.SubsystemName, "reconfigurer"), cat),
+		healthChecker.ListenAndServe,
 	}
 
 	if a.c.AdminBindAddress != nil {
-		adminEndpoints := a.newAdminEndpoints(manager, workloadAttestor, a.c.AuthorizedDelegates)
+		adminEndpoints := a.newAdminEndpoints(metrics, manager, workloadAttestor, a.c.AuthorizedDelegates)
 		tasks = append(tasks, adminEndpoints.ListenAndServe)
 	}
 
@@ -206,40 +261,83 @@ func (a *Agent) attest(ctx context.Context, sto storage.Storage, cat catalog.Cat
 		Log:               a.c.Log.WithField(telemetry.SubsystemName, telemetry.Attestor),
 		ServerAddress:     a.c.ServerAddress,
 		NodeAttestor:      na,
+		TLSPolicy:         a.c.TLSPolicy,
 	}
 	return node_attestor.New(&config).Attest(ctx)
 }
 
 func (a *Agent) newManager(ctx context.Context, sto storage.Storage, cat catalog.Catalog, metrics telemetry.Metrics, as *node_attestor.AttestationResult, cache *storecache.Cache, na nodeattestor.NodeAttestor) (manager.Manager, error) {
 	config := &manager.Config{
-		SVID:             as.SVID,
-		SVIDKey:          as.Key,
-		Bundle:           as.Bundle,
-		Catalog:          cat,
-		TrustDomain:      a.c.TrustDomain,
-		ServerAddr:       a.c.ServerAddress,
-		Log:              a.c.Log.WithField(telemetry.SubsystemName, telemetry.Manager),
-		Metrics:          metrics,
-		WorkloadKeyType:  a.c.WorkloadKeyType,
-		Storage:          sto,
-		SyncInterval:     a.c.SyncInterval,
-		SVIDCacheMaxSize: a.c.X509SVIDCacheMaxSize,
-		SVIDStoreCache:   cache,
-		NodeAttestor:     na,
+		SVID:                     as.SVID,
+		SVIDKey:                  as.Key,
+		Bundle:                   as.Bundle,
+		Reattestable:             as.Reattestable,
+		Catalog:                  cat,
+		TrustDomain:              a.c.TrustDomain,
+		ServerAddr:               a.c.ServerAddress,
+		Log:                      a.c.Log.WithField(telemetry.SubsystemName, telemetry.Manager),
+		Metrics:                  metrics,
+		WorkloadKeyType:          a.c.WorkloadKeyType,
+		Storage:                  sto,
+		SyncInterval:             a.c.SyncInterval,
+		UseSyncAuthorizedEntries: a.c.UseSyncAuthorizedEntries,
+		X509SVIDCacheMaxSize:     a.c.X509SVIDCacheMaxSize,
+		JWTSVIDCacheMaxSize:      a.c.JWTSVIDCacheMaxSize,
+		SVIDStoreCache:           cache,
+		NodeAttestor:             na,
+		RotationStrategy:         rotationutil.NewRotationStrategy(a.c.AvailabilityTarget),
+		TLSPolicy:                a.c.TLSPolicy,
 	}
 
 	mgr := manager.New(config)
-	if err := mgr.Initialize(ctx); err != nil {
-		return nil, err
-	}
+	if a.c.RetryBootstrap {
+		initBackoffClock := clock.New()
+		initBackoff := backoff.NewBackoff(
+			initBackoffClock,
+			bootstrapBackoffInterval,
+			backoff.WithMaxElapsedTime(bootstrapBackoffMaxElapsedTime),
+		)
 
-	return mgr, nil
+		for {
+			err := mgr.Initialize(ctx)
+			if err == nil {
+				return mgr, nil
+			}
+
+			if nodeutil.ShouldAgentReattest(err) || nodeutil.ShouldAgentShutdown(err) {
+				return nil, err
+			}
+
+			nextDuration := initBackoff.NextBackOff()
+			if nextDuration == backoff.Stop {
+				return nil, err
+			}
+
+			a.c.Log.WithFields(logrus.Fields{
+				telemetry.Error:         err,
+				telemetry.RetryInterval: nextDuration,
+			}).Warn("Failed to initialize manager")
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-initBackoffClock.After(nextDuration):
+				continue
+			}
+		}
+	} else {
+		if err := mgr.Initialize(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}
 }
 
-func (a *Agent) newSVIDStoreCache() *storecache.Cache {
+func (a *Agent) newSVIDStoreCache(metrics telemetry.Metrics) *storecache.Cache {
 	config := &storecache.Config{
 		Log:         a.c.Log.WithField(telemetry.SubsystemName, "svid_store_cache"),
 		TrustDomain: a.c.TrustDomain,
+		Metrics:     metrics,
 	}
 
 	return storecache.New(config)
@@ -274,11 +372,12 @@ func (a *Agent) newEndpoints(metrics telemetry.Metrics, mgr manager.Manager, att
 	})
 }
 
-func (a *Agent) newAdminEndpoints(mgr manager.Manager, attestor workload_attestor.Attestor, authorizedDelegates []string) admin_api.Server {
+func (a *Agent) newAdminEndpoints(metrics telemetry.Metrics, mgr manager.Manager, attestor workload_attestor.Attestor, authorizedDelegates []string) admin_api.Server {
 	config := &admin_api.Config{
 		BindAddr:            a.c.AdminBindAddress,
 		Manager:             mgr,
-		Log:                 a.c.Log.WithField(telemetry.SubsystemName, telemetry.DebugAPI),
+		Log:                 a.c.Log,
+		Metrics:             metrics,
 		TrustDomain:         a.c.TrustDomain,
 		Uptime:              uptime.Uptime,
 		Attestor:            attestor,
@@ -286,14 +385,6 @@ func (a *Agent) newAdminEndpoints(mgr manager.Manager, attestor workload_attesto
 	}
 
 	return admin_api.New(config)
-}
-
-// waitForTestDial calls health.WaitForTestDial to wait for a connection to the
-// SPIRE Agent API socket. This function always returns nil, even if
-// health.WaitForTestDial exited due to a timeout.
-func (a *Agent) waitForTestDial(ctx context.Context) error {
-	health.WaitForTestDial(ctx, a.c.BindAddress)
-	return nil
 }
 
 // CheckHealth is used as a top-level health check for the agent.

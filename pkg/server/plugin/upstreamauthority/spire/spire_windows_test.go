@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package spireplugin
 
@@ -14,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-func configureCasesOS(t *testing.T) []configureCase {
+func configureCasesOS(*testing.T) []configureCase {
 	return []configureCase{
 		{
 			name:                     "success",

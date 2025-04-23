@@ -14,7 +14,7 @@ To support larger numbers of Agents and Workloads within a given deployment (ten
 
 To scale the SPIRE Server horizontally, be it for high availability or load distribution purposes, configure all servers in same trust domain to read and write to the same shared datastore.
 
-The datastore is where SPIRE Server persists dynamic configuration information such as registration entries and identity mapping policies. SQLite is bundled with SPIRE Server and it is the default datastore. A number of compatible SQL databases are supported, as well as one plugin for Kubernetes using Kubernetes CRDs. When scaling SPIRE servers horizontally, choose a datastore that fits your requirements and configure all SPIRE servers to use the selected datastore. For details please refer to the [datastore plugin configuration reference](https://github.com/spiffe/spire/blob/main/doc/plugin_server_datastore_sql.md).
+The datastore is where SPIRE Server persists dynamic configuration information such as registration entries and identity mapping policies. SQLite is bundled with SPIRE Server and is the default datastore. A number of compatible SQL databases are supported, as well as one plugin for Kubernetes using Kubernetes CRDs. When scaling SPIRE servers horizontally, choose a datastore that fits your requirements and configure all SPIRE servers to use the selected datastore. For details please refer to the [datastore plugin configuration reference](https://github.com/spiffe/spire/blob/main/doc/plugin_server_datastore_sql.md).
 
 In High Availability mode, each server maintains its own Certificate Authority, which may be either self-signed certificates or an intermediate certificate off of a shared root authority (i.e. when configured with an UpstreamAuthority).
 
@@ -62,7 +62,7 @@ Another use case is SPIFFE interoperability between organizations, such as betwe
 
 These multiple trust domain and interoperability use cases both require a well-defined, interoperable method for a Workload in one trust domain to authenticate a Workload in a different trust domain. Trust between the different trust domains is established by first authenticating the respective bundle endpoint, followed by retrieval of the foreign trust domain bundle via the authenticated endpoint.
 
-For additional detail on how this is achieved, refer to the following SPIFFE spec that describes the mechanism: <https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Trust_Domain_and_Bundle.md#5-spiffe-bundle-endpoint>
+For additional detail on how this is achieved, refer to the following SPIFFE spec that describes the mechanism: <https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Federation.md#4-spiffe-bundle-endpoint>
 
 For a tutorial on configuring Federated SPIRE, refer to: <https://github.com/spiffe/spire-tutorials/tree/main/docker-compose/federation>
 

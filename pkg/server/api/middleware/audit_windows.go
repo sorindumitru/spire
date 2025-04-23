@@ -1,15 +1,14 @@
 //go:build windows
-// +build windows
 
 package middleware
 
 import (
 	"fmt"
-	"syscall"
 
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
 	"golang.org/x/sys/windows"
 )
 
@@ -27,7 +26,11 @@ func setFields(p *process.Process, fields logrus.Fields) error {
 }
 
 func getUserSID(pID int32) (string, error) {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pID))
+	pidUint32, err := util.CheckedCast[uint32](pID)
+	if err != nil {
+		return "", fmt.Errorf("invalid value for PID: %w", err)
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pidUint32)
 	if err != nil {
 		return "", fmt.Errorf("failed to open process: %w", err)
 	}
@@ -38,7 +41,7 @@ func getUserSID(pID int32) (string, error) {
 	// Retrieve an access token to describe the security context of
 	// the process from which we obtained the handle.
 	var token windows.Token
-	err = windows.OpenProcessToken(h, syscall.TOKEN_QUERY, &token)
+	err = windows.OpenProcessToken(h, windows.TOKEN_QUERY, &token)
 	if err != nil {
 		return "", fmt.Errorf("failed to open the access token associated with the process: %w", err)
 	}

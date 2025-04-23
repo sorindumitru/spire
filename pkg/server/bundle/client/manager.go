@@ -2,11 +2,13 @@ package client
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 
 	"github.com/andres-erbsen/clock"
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/bundleutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
@@ -25,6 +27,11 @@ const (
 	// configs from the source and reconciles it against the current bundle
 	// updaters.
 	configRefreshInterval = time.Second * 10
+
+	// defaultRefreshInterval is how often the manager reloads the trust bundle
+	// for a trust domain if that trust domain does not specify a refresh hint in
+	// its current trust bundle.
+	defaultRefreshInterval = time.Minute * 5
 )
 
 type TrustDomainConfig struct {
@@ -261,31 +268,9 @@ func (m *Manager) runUpdater(ctx context.Context, trustDomain spiffeid.TrustDoma
 	timer := m.clock.Timer(time.Hour)
 	defer timer.Stop()
 
-	log := m.log.WithField("trust_domain", trustDomain)
+	log := m.log.WithField("trust_domain", trustDomain.Name())
 	for {
-		var nextRefresh time.Duration
-		log.Debug("Polling for bundle update")
-		localBundle, endpointBundle, err := updater.UpdateBundle(ctx)
-		if err != nil {
-			log.WithError(err).Error("Error updating bundle")
-		}
-
-		switch {
-		case endpointBundle != nil:
-			telemetry_server.IncrBundleManagerUpdateFederatedBundleCounter(m.metrics, trustDomain.String())
-			log.Info("Bundle refreshed")
-			nextRefresh = calculateNextUpdate(endpointBundle)
-		case localBundle != nil:
-			nextRefresh = calculateNextUpdate(localBundle)
-		default:
-			// We have no bundle to use to calculate the refresh hint. Since
-			// the endpoint cannot be reached without the local bundle (until
-			// we implement web auth), we can retry more aggressively. This
-			// refresh period determines how fast we'll respond to the local
-			// bundle being bootstrapped.
-			// TODO: reevaluate once we support web auth
-			nextRefresh = bundleutil.MinimumRefreshHint
-		}
+		nextRefresh := m.runUpdateOnce(ctx, log, trustDomain, updater)
 
 		log.WithFields(logrus.Fields{
 			"at": m.clock.Now().Add(nextRefresh).UTC().Format(time.RFC3339),
@@ -303,6 +288,40 @@ func (m *Manager) runUpdater(ctx context.Context, trustDomain spiffeid.TrustDoma
 			return
 		}
 	}
+}
+
+func (m *Manager) runUpdateOnce(ctx context.Context, log *logrus.Entry, trustDomain spiffeid.TrustDomain, updater BundleUpdater) time.Duration {
+	log.Debug("Polling for bundle update")
+
+	counter := telemetry_server.StartBundleManagerFetchFederatedBundleCall(m.metrics)
+	counter.AddLabel(telemetry.TrustDomainID, trustDomain.Name())
+	var err error
+	defer counter.Done(&err)
+
+	var localBundle, endpointBundle *spiffebundle.Bundle
+	localBundle, endpointBundle, err = updater.UpdateBundle(ctx)
+	if err != nil {
+		log.WithError(err).Error("Error updating bundle")
+	}
+
+	if endpointBundle != nil {
+		telemetry_server.IncrBundleManagerUpdateFederatedBundleCounter(m.metrics, trustDomain.Name())
+		log.Info("Bundle refreshed")
+
+		return calculateNextUpdate(endpointBundle)
+	}
+
+	if localBundle != nil {
+		return calculateNextUpdate(localBundle)
+	}
+
+	// We have no bundle to use to calculate the refresh hint. Since
+	// the endpoint cannot be reached without the local bundle (until
+	// we implement web auth), we can retry more aggressively. This
+	// refresh period determines how fast we'll respond to the local
+	// bundle being bootstrapped.
+	// TODO: reevaluate once we support web auth
+	return bundleutil.MinimumRefreshHint
 }
 
 func (m *Manager) notifyConfigRefreshed(ctx context.Context, nextRefresh time.Duration) {
@@ -323,14 +342,15 @@ func (m *Manager) notifyBundleRefreshed(ctx context.Context, nextRefresh time.Du
 	}
 }
 
-func calculateNextUpdate(b *bundleutil.Bundle) time.Duration {
+func calculateNextUpdate(b *spiffebundle.Bundle) time.Duration {
+	if _, ok := b.RefreshHint(); !ok {
+		return defaultRefreshInterval
+	}
 	return bundleutil.CalculateRefreshHint(b) / attemptsPerRefreshHint
 }
 
 func cloneTrustDomainConfigs(configs map[spiffeid.TrustDomain]TrustDomainConfig) map[spiffeid.TrustDomain]TrustDomainConfig {
 	clone := make(map[spiffeid.TrustDomain]TrustDomainConfig, len(configs))
-	for k, v := range configs {
-		clone[k] = v
-	}
+	maps.Copy(clone, configs)
 	return clone
 }

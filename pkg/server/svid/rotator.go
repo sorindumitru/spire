@@ -4,21 +4,25 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
-	"fmt"
 	"time"
 
 	"github.com/imkira/go-observer"
 	"github.com/sirupsen/logrus"
-	"github.com/spiffe/spire/pkg/common/idutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	telemetry_server "github.com/spiffe/spire/pkg/common/telemetry/server"
 	"github.com/spiffe/spire/pkg/server/ca"
 )
 
+var (
+	defaultBundleVerificationTicker = 30 * time.Second
+)
+
 type Rotator struct {
 	c *RotatorConfig
 
-	state observer.Property
+	state           observer.Property
+	isSVIDTainted   bool
+	taintedReceived chan bool
 }
 
 // State is the current SVID and key
@@ -44,17 +48,33 @@ func (r *Rotator) Interval() time.Duration {
 	return r.c.Interval
 }
 
+func (r *Rotator) triggerTaintedReceived(tainted bool) {
+	if r.taintedReceived != nil {
+		r.taintedReceived <- tainted
+	}
+}
+
 // Run starts a ticker which monitors the server SVID
 // for expiration and rotates the SVID as necessary.
 func (r *Rotator) Run(ctx context.Context) error {
 	t := r.c.Clock.Ticker(r.c.Interval)
 	defer t.Stop()
 
+	bundleVerificationTicker := r.c.Clock.Ticker(defaultBundleVerificationTicker)
+	defer bundleVerificationTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			r.c.Log.Debug("Stopping SVID rotator")
 			return nil
+		case taintedAuthorities := <-r.c.ServerCA.TaintedAuthorities():
+			isTainted := r.isX509AuthorityTainted(taintedAuthorities)
+			if isTainted {
+				r.triggerTaintedReceived(true)
+				r.c.Log.Info("Server SVID signed using a tainted authority, forcing rotation of the Server SVID")
+				r.isSVIDTainted = true
+			}
 		case <-t.C:
 			if r.shouldRotate() {
 				if err := r.rotateSVID(ctx); err != nil {
@@ -65,7 +85,7 @@ func (r *Rotator) Run(ctx context.Context) error {
 	}
 }
 
-// shouldRotate returns a boolean informing the caller of whether or not the
+// shouldRotate returns a boolean informing the caller of whether the
 // SVID should be rotated.
 func (r *Rotator) shouldRotate() bool {
 	s := r.state.Value().(State)
@@ -74,7 +94,31 @@ func (r *Rotator) shouldRotate() bool {
 		return true
 	}
 
-	return r.c.Clock.Now().After(certHalfLife(s.SVID[0]))
+	return r.c.Clock.Now().After(certHalfLife(s.SVID[0])) ||
+		r.isSVIDTainted
+}
+
+func (r *Rotator) isX509AuthorityTainted(taintedAuthorities []*x509.Certificate) bool {
+	svid := r.State().SVID
+
+	rootPool := x509.NewCertPool()
+	for _, taintedKey := range taintedAuthorities {
+		rootPool.AddCert(taintedKey)
+	}
+
+	intermediatePool := x509.NewCertPool()
+	for _, intermediateCA := range svid[1:] {
+		intermediatePool.AddCert(intermediateCA)
+	}
+
+	// Verify certificate chain, using tainted authority as root
+	_, err := svid[0].Verify(x509.VerifyOptions{
+		Intermediates: intermediatePool,
+		Roots:         rootPool,
+		CurrentTime:   r.c.Clock.Now(),
+	})
+
+	return err == nil
 }
 
 // rotateSVID cuts a new server SVID from the CA plugin and installs
@@ -89,14 +133,7 @@ func (r *Rotator) rotateSVID(ctx context.Context) (err error) {
 		return err
 	}
 
-	serverID, err := idutil.ServerID(r.c.TrustDomain)
-	if err != nil {
-		// this should never fail; it is purely defensive
-		return fmt.Errorf("unable to determine server ID: %w", err)
-	}
-
-	svid, err := r.c.ServerCA.SignX509SVID(ctx, ca.X509SVIDParams{
-		SpiffeID:  serverID,
+	svid, err := r.c.ServerCA.SignServerX509SVID(ctx, ca.ServerX509SVIDParams{
 		PublicKey: signer.Public(),
 	})
 	if err != nil {
@@ -112,6 +149,9 @@ func (r *Rotator) rotateSVID(ctx context.Context) (err error) {
 		SVID: svid,
 		Key:  signer,
 	})
+	// New SVID must not be tainted. Rotator is notified about tainted
+	// authorities only when the intermediate is already rotated.
+	r.isSVIDTainted = false
 
 	return nil
 }

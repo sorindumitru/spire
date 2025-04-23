@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package run
 
@@ -148,7 +147,7 @@ func TestParseFlagsGood(t *testing.T) {
 	assert.Equal(t, c.LogLevel, "INFO")
 }
 
-func mergeInputCasesOS(t *testing.T) []mergeInputCase {
+func mergeInputCasesOS(*testing.T) []mergeInputCase {
 	return []mergeInputCase{
 		{
 			msg: "named_pipe_name should be configurable by file",
@@ -161,7 +160,7 @@ func mergeInputCasesOS(t *testing.T) []mergeInputCase {
 			},
 		},
 		{
-			msg:       "named_pipe_name be configuable by CLI flag",
+			msg:       "named_pipe_name be configurable by CLI flag",
 			fileInput: func(c *Config) {},
 			cliFlags:  []string{"-namedPipeName=foo"},
 			test: func(t *testing.T, c *Config) {
@@ -181,7 +180,7 @@ func mergeInputCasesOS(t *testing.T) []mergeInputCase {
 	}
 }
 
-func newServerConfigCasesOS() []newServerConfigCase {
+func newServerConfigCasesOS(*testing.T) []newServerConfigCase {
 	return []newServerConfigCase{
 		{
 			msg: "named_pipe_name should be correctly configured",

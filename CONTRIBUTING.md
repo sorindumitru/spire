@@ -8,6 +8,10 @@ and
 [GOVERNANCE](https://github.com/spiffe/spiffe/blob/main/GOVERNANCE.md)
 from the SPIFFE project.
 
+As a general guideline, it is suggested to first create an issue summarizing the changes you would like to see to the project.
+The project maintainers regularly triage open issues to clarify the request, refine the scope, and determine the direction for the issue.
+Contributions that are tied to a triaged issue are more likely to be successfully merged into the project.
+
 ## Prerequisites
 
 For basic development you will need:
@@ -41,7 +45,7 @@ toolchain and other build related files are cached under the `.build` folder
 
 ### Development in Docker
 
-You can either build SPIRE on your host or in a Ubuntu docker container. In
+You can either build SPIRE on your host or in an Ubuntu docker container. In
 both cases you will use the same Makefile commands.
 
 To build SPIRE within a container, first build the development image:
@@ -101,14 +105,14 @@ Packages should be exported through interfaces. Interaction with packages must b
 interfaces
 
 Interfaces should be defined in their own file, named (in lowercase) after the name of the
-interface. eg. `foodata.go` implements `type FooData interface{}`
+interface. e.g. `foodata.go` implements `type FooData any`
 
 ### Metrics
 
 As much as possible, label names should be constants defined in the `telemetry` package. Additionally,
 specific metrics should be centrally defined in the `telemetry` package or its subpackages. Functions
 desiring metrics should delegate counter, gauge, timer, etc. creation to such packages.
-The metrics emitted by SPIRE are listed in the [telemetry document](doc/telemetry.md) and should be kept up to date.
+The metrics emitted by SPIRE are listed in the [telemetry document](doc/telemetry/telemetry.md) and should be kept up to date.
 
 In addition, metrics should be unit-tested where reasonable.
 
@@ -229,15 +233,21 @@ implementation can easily serve the needs for an entire suite of tests and
 the behavior is in a centralized location when it needs to be updated. Fakes
 are also less inclined to be impacted by changes to usage patterns.
 
-## Git hooks
+## Example [direnv][direnv_link] .envrc
 
-We have checked in a pre-commit hook which enforces `go fmt` styling. Please install it
-before sending a pull request. From the project root:
+We have committed a basic `.envrc.example`. If you use [direnv][direnv_link],
+copy it into `.envrc`, edit as desired, and enable it with `direnv allow`. The
+`.envrc` is `.gitignored`. Be aware that [source_env][source_env] is insecure
+so keep your customizations in `.envrc`.
 
-```shell
-$ ln -s .githooks/pre-commit .git/hooks/pre-commit
-```
+[direnv_link]: https://direnv.net/
+[source_env]: https://direnv.net/man/direnv-stdlib.1.html#codesourceenv-ltfileordirpathgtcode
+
+## Project Tool Versions
+
+This project uses a `.spire-tool-versions` file to centralize the versions of various tools used for
+development, linting, and other tasks.
 
 ## Reporting security vulnerabilities
 
-If you've found a vulnerability or a potential vulnerability in SPIRE please let us know at security@spiffe.io. We'll send a confirmation email to acknowledge your report, and we'll send an additional email when we've identified the issue positively or negatively.
+If you've found a vulnerability or a potential vulnerability in SPIRE please let us know at <security@spiffe.io>. We'll send a confirmation email to acknowledge your report, and we'll send an additional email when we've identified the issue positively or negatively.

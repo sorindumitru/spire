@@ -37,7 +37,7 @@ func (c *listCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintList)
 }
 
-func (c *listCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *listCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	trustDomainClient := serverClient.NewTrustDomainClient()
 
 	resp, err := trustDomainClient.ListFederationRelationships(ctx, &trustdomainv1.ListFederationRelationshipsRequest{})
@@ -47,7 +47,7 @@ func (c *listCommand) Run(ctx context.Context, env *commoncli.Env, serverClient 
 	return c.printer.PrintProto(resp)
 }
 
-func prettyPrintList(env *commoncli.Env, results ...interface{}) error {
+func prettyPrintList(env *commoncli.Env, results ...any) error {
 	listResp, ok := results[0].(*trustdomainv1.ListFederationRelationshipsResponse)
 	if !ok {
 		return cliprinter.ErrInternalCustomPrettyFunc

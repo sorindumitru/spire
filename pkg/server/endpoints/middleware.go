@@ -1,6 +1,7 @@
 package endpoints
 
 import (
+	"context"
 	"crypto/x509"
 
 	"github.com/sirupsen/logrus"
@@ -14,11 +15,10 @@ import (
 	"github.com/spiffe/spire/pkg/server/api/middleware"
 	"github.com/spiffe/spire/pkg/server/api/rpccontext"
 	"github.com/spiffe/spire/pkg/server/authpolicy"
-	"github.com/spiffe/spire/pkg/server/ca"
+	"github.com/spiffe/spire/pkg/server/ca/manager"
 	"github.com/spiffe/spire/pkg/server/datastore"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/clock"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -27,7 +27,7 @@ func Middleware(log logrus.FieldLogger, metrics telemetry.Metrics, ds datastore.
 	chain := []middleware.Middleware{
 		middleware.WithLogger(log),
 		middleware.WithMetrics(metrics),
-		middleware.WithAuthorization(policyEngine, EntryFetcher(ds), AgentAuthorizer(log, ds, clk), adminIDs),
+		middleware.WithAuthorization(policyEngine, EntryFetcher(ds), AgentAuthorizer(ds, clk), adminIDs),
 		middleware.WithRateLimits(RateLimits(rlConf), metrics),
 	}
 
@@ -53,11 +53,11 @@ func EntryFetcher(ds datastore.DataStore) middleware.EntryFetcher {
 	})
 }
 
-func UpstreamPublisher(manager *ca.Manager) bundle.UpstreamPublisher {
-	return bundle.UpstreamPublisherFunc(manager.PublishJWTKey)
+func UpstreamPublisher(jwtKeyPublisher manager.JwtKeyPublisher) bundle.UpstreamPublisher {
+	return bundle.UpstreamPublisherFunc(jwtKeyPublisher.PublishJWTKey)
 }
 
-func AgentAuthorizer(log logrus.FieldLogger, ds datastore.DataStore, clk clock.Clock) middleware.AgentAuthorizer {
+func AgentAuthorizer(ds datastore.DataStore, clk clock.Clock) middleware.AgentAuthorizer {
 	return middleware.AgentAuthorizerFunc(func(ctx context.Context, agentID spiffeid.ID, agentSVID *x509.Certificate) error {
 		id := agentID.String()
 		log := rpccontext.Logger(ctx)
@@ -152,6 +152,10 @@ func RateLimits(config RateLimitConfig) map[string]api.RateLimiter {
 		"/spire.api.server.entry.v1.Entry/BatchUpdateEntry":                              noLimit,
 		"/spire.api.server.entry.v1.Entry/BatchDeleteEntry":                              noLimit,
 		"/spire.api.server.entry.v1.Entry/GetAuthorizedEntries":                          noLimit,
+		"/spire.api.server.entry.v1.Entry/SyncAuthorizedEntries":                         noLimit,
+		"/spire.api.server.logger.v1.Logger/GetLogger":                                   noLimit,
+		"/spire.api.server.logger.v1.Logger/SetLogLevel":                                 noLimit,
+		"/spire.api.server.logger.v1.Logger/ResetLogLevel":                               noLimit,
 		"/spire.api.server.agent.v1.Agent/CountAgents":                                   noLimit,
 		"/spire.api.server.agent.v1.Agent/ListAgents":                                    noLimit,
 		"/spire.api.server.agent.v1.Agent/GetAgent":                                      noLimit,
@@ -166,6 +170,18 @@ func RateLimits(config RateLimitConfig) map[string]api.RateLimiter {
 		"/spire.api.server.trustdomain.v1.TrustDomain/BatchUpdateFederationRelationship": noLimit,
 		"/spire.api.server.trustdomain.v1.TrustDomain/BatchDeleteFederationRelationship": noLimit,
 		"/spire.api.server.trustdomain.v1.TrustDomain/RefreshBundle":                     noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/GetJWTAuthorityState":        noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/PrepareJWTAuthority":         noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/ActivateJWTAuthority":        noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/TaintJWTAuthority":           noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/RevokeJWTAuthority":          noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/GetX509AuthorityState":       noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/PrepareX509Authority":        noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/ActivateX509Authority":       noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/TaintX509Authority":          noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/TaintX509UpstreamAuthority":  noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/RevokeX509Authority":         noLimit,
+		"/spire.api.server.localauthority.v1.LocalAuthority/RevokeX509UpstreamAuthority": noLimit,
 		"/grpc.health.v1.Health/Check":                                                   noLimit,
 		"/grpc.health.v1.Health/Watch":                                                   noLimit,
 	}

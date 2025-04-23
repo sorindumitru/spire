@@ -91,7 +91,6 @@ func TestNewAuthenticatedClientCertAuth(t *testing.T) {
 			namespace: "test-ns",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			fakeVaultServer.CertAuthResponse = tt.response
 
@@ -176,7 +175,6 @@ func TestNewAuthenticatedClientTokenAuth(t *testing.T) {
 			expectMsgPrefix: "token is empty",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			fakeVaultServer.LookupSelfResponse = tt.response
 
@@ -244,7 +242,6 @@ func TestNewAuthenticatedClientAppRoleAuth(t *testing.T) {
 			namespace: "test-ns",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			fakeVaultServer.AppRoleAuthResponse = tt.response
 
@@ -308,7 +305,6 @@ func TestNewAuthenticatedClientK8sAuth(t *testing.T) {
 			namespace: "test-ns",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			fakeVaultServer.K8sAuthResponse = tt.response
 
@@ -521,7 +517,7 @@ func TestConfigureTLSWithTokenAuth(t *testing.T) {
 
 	testPool, err := testRootCAs()
 	require.NoError(t, err)
-	require.Equal(t, testPool.Subjects(), tcc.RootCAs.Subjects()) // nolint // these pools are not system pools so the use of Subjects() is ok for now
+	require.True(t, testPool.Equal(tcc.RootCAs))
 }
 
 func TestConfigureTLSWithAppRoleAuth(t *testing.T) {
@@ -543,7 +539,7 @@ func TestConfigureTLSWithAppRoleAuth(t *testing.T) {
 
 	testPool, err := testRootCAs()
 	require.NoError(t, err)
-	require.Equal(t, testPool.Subjects(), tcc.RootCAs.Subjects()) // nolint // these pools are not system pools so the use of Subjects() is ok for now
+	require.True(t, testPool.Equal(tcc.RootCAs))
 }
 
 func TestConfigureTLSInvalidCACert(t *testing.T) {
@@ -633,6 +629,7 @@ func TestSignIntermediate(t *testing.T) {
 	require.NoError(t, err)
 
 	testTTL := "0"
+	spiffeID := "spiffe://intermediate-spire"
 	csr, err := pemutil.LoadCertificateRequest(testReqCSR)
 	require.NoError(t, err)
 
@@ -641,6 +638,19 @@ func TestSignIntermediate(t *testing.T) {
 	require.NotNil(t, resp.UpstreamCACertPEM)
 	require.NotNil(t, resp.UpstreamCACertChainPEM)
 	require.NotNil(t, resp.CACertPEM)
+
+	cert, err := pemutil.ParseCertificate([]byte(resp.CACertPEM))
+	require.NoError(t, err)
+
+	hasURISAN := func(spiffeID string, cert *x509.Certificate) bool {
+		for _, uri := range cert.URIs {
+			if uri.String() == spiffeID {
+				return true
+			}
+		}
+		return false
+	}(spiffeID, cert)
+	require.True(t, hasURISAN)
 }
 
 func TestSignIntermediateErrorFromEndpoint(t *testing.T) {

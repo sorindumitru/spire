@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package run
 
@@ -44,7 +43,7 @@ func (c *agentConfig) validateOS() error {
 	return nil
 }
 
-func prepareEndpoints(c *agent.Config) error {
+func prepareEndpoints(*agent.Config) error {
 	// Nothing to do in this platform
 	return nil
 }

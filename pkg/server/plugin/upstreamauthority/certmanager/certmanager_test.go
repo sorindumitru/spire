@@ -12,6 +12,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/server/plugin/upstreamauthority"
 	cmapi "github.com/spiffe/spire/pkg/server/plugin/upstreamauthority/certmanager/internal/v1"
 	"github.com/spiffe/spire/proto/spire/common"
@@ -58,7 +59,7 @@ func Test_MintX509CA(t *testing.T) {
 		preferredTTL          time.Duration
 		updateCR              func(t *testing.T, cr *cmapi.CertificateRequest)
 		expectX509CA          []*x509.Certificate
-		expectX509Authorities []*x509.Certificate
+		expectX509Authorities []*x509certificate.X509Authority
 		expectCode            codes.Code
 		expectMsgPrefix       string
 	}{
@@ -120,14 +121,16 @@ func Test_MintX509CA(t *testing.T) {
 				cr.Status.Certificate = intermediatePEM
 				cr.Status.CA = rootPEM
 			},
-			expectX509CA:          []*x509.Certificate{intermediate},
-			expectX509Authorities: []*x509.Certificate{root},
+			expectX509CA: []*x509.Certificate{intermediate},
+			expectX509Authorities: []*x509certificate.X509Authority{
+				{Certificate: root},
+			},
 		},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			cmclient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			cmclient := fakeclient.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&cmapi.CertificateRequest{}).Build()
 			crCreated := make(chan struct{}, 1)
 			staleCRsDeleted := make(chan struct{}, 1)
 
@@ -144,7 +147,7 @@ func Test_MintX509CA(t *testing.T) {
 					},
 				},
 			}
-			config := &Config{
+			config := &Configuration{
 				IssuerName:  issuerName,
 				IssuerKind:  issuerKind,
 				IssuerGroup: issuerGroup,
@@ -207,7 +210,7 @@ func Test_Configure(t *testing.T) {
 		inpConfig          string
 		expectCode         codes.Code
 		expectMsgPrefix    string
-		expectConfig       *Config
+		expectConfig       *Configuration
 		expectConfigFile   string
 		overrideCoreConfig *catalog.CoreConfig
 		newClientErr       error
@@ -215,7 +218,7 @@ func Test_Configure(t *testing.T) {
 		"if config is malformed, expect error": {
 			inpConfig:       "MALFORMED",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "failed to decode configuration file:",
+			expectMsgPrefix: "plugin configuration is malformed",
 		},
 		"if config is missing an issuer_name, expect error": {
 			inpConfig: `
@@ -226,7 +229,7 @@ func Test_Configure(t *testing.T) {
 		`,
 			expectConfig:    nil,
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "configuration has empty issuer_name property",
+			expectMsgPrefix: "plugin configuration has empty issuer_name property",
 		},
 		"if config is missing a namespace, expect error": {
 			inpConfig: `
@@ -237,7 +240,7 @@ func Test_Configure(t *testing.T) {
 		`,
 			expectConfig:    nil,
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "configuration has empty namespace property",
+			expectMsgPrefix: "plugin configuration has empty namespace property",
 		},
 		"if config is fully populated, return config": {
 			inpConfig: `
@@ -247,7 +250,7 @@ func Test_Configure(t *testing.T) {
 		namespace = "my-namespace"
 		kube_config_file = "/path/to/config"
 		`,
-			expectConfig: &Config{
+			expectConfig: &Configuration{
 				IssuerName:         "my-issuer",
 				IssuerKind:         "my-kind",
 				IssuerGroup:        "my-group",
@@ -262,7 +265,7 @@ func Test_Configure(t *testing.T) {
 		namespace = "my-namespace"
 		kube_config_file = "/path/to/config"
 		`,
-			expectConfig: &Config{
+			expectConfig: &Configuration{
 				IssuerName:         "my-issuer",
 				IssuerKind:         "Issuer",
 				IssuerGroup:        "cert-manager.io",
@@ -279,7 +282,7 @@ func Test_Configure(t *testing.T) {
 		`,
 			overrideCoreConfig: &catalog.CoreConfig{},
 			expectCode:         codes.InvalidArgument,
-			expectMsgPrefix:    "trust_domain is required",
+			expectMsgPrefix:    "server core configuration must contain trust_domain",
 		},
 		"failed to create client": {
 			inpConfig: `
@@ -347,7 +350,7 @@ func TestPublishJWTKey(t *testing.T) {
 			},
 		},
 	}
-	config := &Config{
+	config := &Configuration{
 		IssuerName:  "test-issuer",
 		IssuerKind:  "Issuer",
 		IssuerGroup: "example.cert-manager.io",

@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package unix
 
@@ -9,21 +8,22 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/agent/plugin/workloadattestor"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/test/plugintest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 )
 
-var (
-	ctx = context.Background()
-)
+var ctx = context.Background()
 
 func TestPlugin(t *testing.T) {
 	spiretest.Run(t, new(Suite))
@@ -46,82 +46,73 @@ func (s *Suite) SetupTest() {
 }
 
 func (s *Suite) TestAttest() {
+	unreadableExePath := "/proc/10/unreadable-exe"
+	if runtime.GOOS != "linux" {
+		unreadableExePath = filepath.Join(s.dir, "unreadable-exe")
+	}
 	testCases := []struct {
 		name           string
+		trustDomain    string
 		pid            int
 		selectorValues []string
 		config         string
 		expectCode     codes.Code
 		expectMsg      string
-		expectLogs     []spiretest.LogEntry
 	}{
 		{
-			name:       "pid with no uids",
-			pid:        1,
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): UIDs lookup: no UIDs for process",
+			name:        "pid with no uids",
+			trustDomain: "example.org",
+			pid:         1,
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): UIDs lookup: no UIDs for process",
 		},
 		{
-			name:       "fail to get uids",
-			pid:        2,
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): UIDs lookup: unable to get UIDs for PID 2",
+			name:        "fail to get uids",
+			trustDomain: "example.org",
+			pid:         2,
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): UIDs lookup: unable to get UIDs for PID 2",
 		},
 		{
-			name: "user lookup fails",
-			pid:  3,
+			name:        "user lookup fails",
+			trustDomain: "example.org",
+			pid:         3,
 			selectorValues: []string{
 				"uid:1999",
 				"gid:2000",
 				"group:g2000",
 			},
 			expectCode: codes.OK,
-			expectLogs: []spiretest.LogEntry{
-				{
-					Level:   logrus.WarnLevel,
-					Message: "Failed to lookup user name by uid",
-					Data: logrus.Fields{
-						"uid":           "1999",
-						logrus.ErrorKey: "no user with UID 1999",
-					},
-				},
-			},
 		},
 		{
-			name:       "pid with no gids",
-			pid:        4,
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): GIDs lookup: no GIDs for process",
+			name:        "pid with no gids",
+			trustDomain: "example.org",
+			pid:         4,
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): GIDs lookup: no GIDs for process",
 		},
 		{
-			name:       "fail to get gids",
-			pid:        5,
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): GIDs lookup: unable to get GIDs for PID 5",
+			name:        "fail to get gids",
+			trustDomain: "example.org",
+			pid:         5,
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): GIDs lookup: unable to get GIDs for PID 5",
 		},
 		{
-			name: "group lookup fails",
-			pid:  6,
+			name:        "group lookup fails",
+			trustDomain: "example.org",
+			pid:         6,
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
 				"gid:2999",
 			},
 			expectCode: codes.OK,
-			expectLogs: []spiretest.LogEntry{
-				{
-					Level:   logrus.WarnLevel,
-					Message: "Failed to lookup group name by gid",
-					Data: logrus.Fields{
-						"gid":           "2999",
-						logrus.ErrorKey: "no group with GID 2999",
-					},
-				},
-			},
 		},
 		{
-			name: "primary user and gid",
-			pid:  7,
+			name:        "primary user and gid",
+			trustDomain: "example.org",
+			pid:         7,
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
@@ -131,8 +122,9 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.OK,
 		},
 		{
-			name: "effective user and gid",
-			pid:  8,
+			name:        "effective user and gid",
+			trustDomain: "example.org",
+			pid:         8,
 			selectorValues: []string{
 				"uid:1100",
 				"user:u1100",
@@ -142,30 +134,34 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.OK,
 		},
 		{
-			name:       "fail to get process binary path",
-			pid:        9,
-			config:     "discover_workload_path = true",
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): path lookup: unable to get EXE for PID 9",
+			name:        "fail to get process binary path",
+			trustDomain: "example.org",
+			pid:         9,
+			config:      "discover_workload_path = true",
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): path lookup: unable to get EXE for PID 9",
 		},
 		{
-			name:       "fail to hash process binary",
-			pid:        10,
-			config:     "discover_workload_path = true",
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): SHA256 digest: open /proc/10/unreadable-exe: no such file or directory",
+			name:        "fail to hash process binary",
+			trustDomain: "example.org",
+			pid:         10,
+			config:      "discover_workload_path = true",
+			expectCode:  codes.Internal,
+			expectMsg:   fmt.Sprintf("workloadattestor(unix): SHA256 digest: open %s: no such file or directory", unreadableExePath),
 		},
 		{
-			name:       "process binary exceeds size limits",
-			pid:        11,
-			config:     "discover_workload_path = true\nworkload_size_limit = 2",
-			expectCode: codes.Internal,
-			expectMsg:  fmt.Sprintf("workloadattestor(unix): SHA256 digest: workload %s exceeds size limit (4 > 2)", filepath.Join(s.dir, "exe")),
+			name:        "process binary exceeds size limits",
+			trustDomain: "example.org",
+			pid:         11,
+			config:      "discover_workload_path = true\nworkload_size_limit = 2",
+			expectCode:  codes.Internal,
+			expectMsg:   fmt.Sprintf("workloadattestor(unix): SHA256 digest: workload %s exceeds size limit (4 > 2)", filepath.Join(s.dir, "exe")),
 		},
 		{
-			name:   "success getting path and hashing process binary",
-			pid:    12,
-			config: "discover_workload_path = true",
+			name:        "success getting path and hashing process binary",
+			trustDomain: "example.org",
+			pid:         12,
+			config:      "discover_workload_path = true",
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
@@ -177,9 +173,10 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.OK,
 		},
 		{
-			name:   "success getting path and hashing process binary",
-			pid:    12,
-			config: "discover_workload_path = true",
+			name:        "success getting path and hashing process binary",
+			trustDomain: "example.org",
+			pid:         12,
+			config:      "discover_workload_path = true",
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
@@ -191,9 +188,10 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.OK,
 		},
 		{
-			name:   "success getting path, disabled hashing process binary",
-			pid:    12,
-			config: "discover_workload_path = true\nworkload_size_limit = -1",
+			name:        "success getting path, disabled hashing process binary",
+			trustDomain: "example.org",
+			pid:         12,
+			config:      "discover_workload_path = true\nworkload_size_limit = -1",
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
@@ -204,8 +202,9 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.OK,
 		},
 		{
-			name: "pid with supplementary gids",
-			pid:  13,
+			name:        "pid with supplementary gids",
+			trustDomain: "example.org",
+			pid:         13,
 			selectorValues: []string{
 				"uid:1000",
 				"user:u1000",
@@ -222,10 +221,11 @@ func (s *Suite) TestAttest() {
 			},
 		},
 		{
-			name:       "fail to get supplementary gids",
-			pid:        14,
-			expectCode: codes.Internal,
-			expectMsg:  "workloadattestor(unix): supplementary GIDs lookup: some error for PID 14",
+			name:        "fail to get supplementary gids",
+			trustDomain: "example.org",
+			pid:         14,
+			expectCode:  codes.Internal,
+			expectMsg:   "workloadattestor(unix): supplementary GIDs lookup: some error for PID 14",
 		},
 	}
 
@@ -233,11 +233,10 @@ func (s *Suite) TestAttest() {
 	s.writeFile("exe", []byte("data"))
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		s.T().Run(testCase.name, func(t *testing.T) {
 			defer s.logHook.Reset()
 
-			p := s.loadPlugin(t, testCase.config)
+			p := s.loadPlugin(t, testCase.trustDomain, testCase.config)
 			selectors, err := p.Attest(ctx, testCase.pid)
 			spiretest.RequireGRPCStatus(t, err, testCase.expectCode, testCase.expectMsg)
 			if testCase.expectCode != codes.OK {
@@ -254,21 +253,23 @@ func (s *Suite) TestAttest() {
 			}
 
 			require.Equal(t, testCase.selectorValues, selectorValues)
-			spiretest.AssertLogs(t, s.logHook.AllEntries(), testCase.expectLogs)
 		})
 	}
 }
 
 func (s *Suite) writeFile(path string, data []byte) {
-	s.Require().NoError(os.WriteFile(filepath.Join(s.dir, path), data, 0600))
+	s.Require().NoError(os.WriteFile(filepath.Join(s.dir, path), data, 0o600))
 }
 
-func (s *Suite) loadPlugin(t *testing.T, config string) workloadattestor.WorkloadAttestor {
+func (s *Suite) loadPlugin(t *testing.T, trustDomain string, config string) workloadattestor.WorkloadAttestor {
 	p := s.newPlugin()
 
 	v1 := new(workloadattestor.V1)
 	plugintest.Load(t, builtin(p), v1,
 		plugintest.Log(s.log),
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString(trustDomain),
+		}),
 		plugintest.Configure(config))
 	return v1
 }
@@ -288,35 +289,35 @@ type fakeProcess struct {
 	dir string
 }
 
-func (p fakeProcess) Uids() ([]int32, error) {
+func (p fakeProcess) Uids() ([]uint32, error) {
 	switch p.pid {
 	case 1:
-		return []int32{}, nil
+		return []uint32{}, nil
 	case 2:
 		return nil, fmt.Errorf("unable to get UIDs for PID %d", p.pid)
 	case 3:
-		return []int32{1999}, nil
+		return []uint32{1999}, nil
 	case 4, 5, 6, 7, 9, 10, 11, 12, 13, 14:
-		return []int32{1000}, nil
+		return []uint32{1000}, nil
 	case 8:
-		return []int32{1000, 1100}, nil
+		return []uint32{1000, 1100}, nil
 	default:
 		return nil, fmt.Errorf("unhandled uid test case %d", p.pid)
 	}
 }
 
-func (p fakeProcess) Gids() ([]int32, error) {
+func (p fakeProcess) Gids() ([]uint32, error) {
 	switch p.pid {
 	case 4:
-		return []int32{}, nil
+		return []uint32{}, nil
 	case 5:
 		return nil, fmt.Errorf("unable to get GIDs for PID %d", p.pid)
 	case 6:
-		return []int32{2999}, nil
+		return []uint32{2999}, nil
 	case 3, 7, 9, 10, 11, 12, 13, 14:
-		return []int32{2000}, nil
+		return []uint32{2000}, nil
 	case 8:
-		return []int32{2000, 2100}, nil
+		return []uint32{2000, 2100}, nil
 	default:
 		return nil, fmt.Errorf("unhandled gid test case %d", p.pid)
 	}

@@ -59,7 +59,7 @@ func (s *Suite) loadPlugin(t *testing.T) nodeattestor.NodeAttestor {
 	clientConfig := fmt.Sprintf(`
 		host_key_path = %q
 		host_cert_path = %q`, privateKeyPath, certificatePath)
-	sshclient, err := sshpop.NewClient(clientConfig)
+	sshclient, err := sshpop.NewClient("example.org", clientConfig)
 	require.NoError(t, err)
 	s.sshclient = sshclient
 
@@ -138,6 +138,6 @@ func (s *Suite) TestAttestFailure() {
 	})
 }
 
-func expectNoChallenge(ctx context.Context, challenge []byte) ([]byte, error) {
+func expectNoChallenge(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("challenge is not expected")
 }

@@ -129,7 +129,7 @@ func TestPerIPLimitGC(t *testing.T) {
 	require.NoError(t, m.RateLimit(tcpCallerContext("4.4.4.4"), 1))
 	require.Equal(t, 4, limiters.Count)
 
-	// Use all of the limiters but 2.2.2.2 and make sure the limiter count is stable.
+	// Use all the limiters but 2.2.2.2 and make sure the limiter count is stable.
 	require.NoError(t, m.RateLimit(tcpCallerContext("1.1.1.1"), 1))
 	require.NoError(t, m.RateLimit(tcpCallerContext("3.3.3.3"), 1))
 	require.NoError(t, m.RateLimit(tcpCallerContext("4.4.4.4"), 1))
@@ -264,7 +264,6 @@ func TestRateLimits(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			log, hook := test.NewNullLogger()
 			ctx := rpccontext.WithLogger(context.Background(), log)
@@ -273,7 +272,7 @@ func TestRateLimits(t *testing.T) {
 			}
 			serverInfo := &grpc.UnaryServerInfo{FullMethod: tt.method}
 
-			handler := func(ctx context.Context, _ interface{}) (interface{}, error) {
+			handler := func(ctx context.Context, _ any) (any, error) {
 				if tt.rateLimitCount > 0 {
 					if err := rpccontext.RateLimit(ctx, tt.rateLimitCount); err != nil {
 						return nil, err
@@ -297,7 +296,7 @@ func TestRateLimits(t *testing.T) {
 				),
 				// Install a middleware downstream so that we can test what
 				// happens in postprocess if the handler is never invoked.
-				middleware.Preprocess(func(ctx context.Context, fullMethod string, req interface{}) (context.Context, error) {
+				middleware.Preprocess(func(ctx context.Context, fullMethod string, req any) (context.Context, error) {
 					return ctx, tt.downstreamErr
 				}),
 			))
@@ -341,7 +340,7 @@ func (ls *FakeLimiters) newRawRateLimiter(limit rate.Limit, burst int) rawRateLi
 	}
 }
 
-func (ls *FakeLimiters) waitN(ctx context.Context, id, count int) error {
+func (ls *FakeLimiters) waitN(_ context.Context, id, count int) error {
 	ls.WaitNEvents = append(ls.WaitNEvents, WaitNEvent{
 		ID:    id,
 		Count: count,

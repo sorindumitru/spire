@@ -11,8 +11,12 @@ import (
 	"github.com/spiffe/spire/cmd/spire-server/cli/federation"
 	"github.com/spiffe/spire/cmd/spire-server/cli/healthcheck"
 	"github.com/spiffe/spire/cmd/spire-server/cli/jwt"
+	localauthority_jwt "github.com/spiffe/spire/cmd/spire-server/cli/localauthority/jwt"
+	localauthority_x509 "github.com/spiffe/spire/cmd/spire-server/cli/localauthority/x509"
+	"github.com/spiffe/spire/cmd/spire-server/cli/logger"
 	"github.com/spiffe/spire/cmd/spire-server/cli/run"
 	"github.com/spiffe/spire/cmd/spire-server/cli/token"
+	"github.com/spiffe/spire/cmd/spire-server/cli/upstreamauthority"
 	"github.com/spiffe/spire/cmd/spire-server/cli/validate"
 	"github.com/spiffe/spire/cmd/spire-server/cli/x509"
 	"github.com/spiffe/spire/pkg/common/log"
@@ -44,6 +48,9 @@ func (cc *CLI) Run(ctx context.Context, args []string) int {
 		},
 		"agent show": func() (cli.Command, error) {
 			return agent.NewShowCommand(), nil
+		},
+		"agent purge": func() (cli.Command, error) {
+			return agent.NewPurgeCommand(), nil
 		},
 		"bundle count": func() (cli.Command, error) {
 			return bundle.NewCountCommand(), nil
@@ -93,6 +100,15 @@ func (cc *CLI) Run(ctx context.Context, args []string) int {
 		"federation update": func() (cli.Command, error) {
 			return federation.NewUpdateCommand(), nil
 		},
+		"logger get": func() (cli.Command, error) {
+			return logger.NewGetCommand(), nil
+		},
+		"logger set": func() (cli.Command, error) {
+			return logger.NewSetCommand(), nil
+		},
+		"logger reset": func() (cli.Command, error) {
+			return logger.NewResetCommand(), nil
+		},
 		"run": func() (cli.Command, error) {
 			return run.NewRunCommand(ctx, cc.LogOptions, cc.AllowUnknownConfig), nil
 		},
@@ -110,6 +126,42 @@ func (cc *CLI) Run(ctx context.Context, args []string) int {
 		},
 		"validate": func() (cli.Command, error) {
 			return validate.NewValidateCommand(), nil
+		},
+		"localauthority x509 show": func() (cli.Command, error) {
+			return localauthority_x509.NewX509ShowCommand(), nil
+		},
+		"localauthority x509 prepare": func() (cli.Command, error) {
+			return localauthority_x509.NewX509PrepareCommand(), nil
+		},
+		"localauthority x509 activate": func() (cli.Command, error) {
+			return localauthority_x509.NewX509ActivateCommand(), nil
+		},
+		"localauthority x509 taint": func() (cli.Command, error) {
+			return localauthority_x509.NewX509TaintCommand(), nil
+		},
+		"localauthority x509 revoke": func() (cli.Command, error) {
+			return localauthority_x509.NewX509RevokeCommand(), nil
+		},
+		"localauthority jwt show": func() (cli.Command, error) {
+			return localauthority_jwt.NewJWTShowCommand(), nil
+		},
+		"localauthority jwt prepare": func() (cli.Command, error) {
+			return localauthority_jwt.NewJWTPrepareCommand(), nil
+		},
+		"localauthority jwt activate": func() (cli.Command, error) {
+			return localauthority_jwt.NewJWTActivateCommand(), nil
+		},
+		"localauthority jwt taint": func() (cli.Command, error) {
+			return localauthority_jwt.NewJWTTaintCommand(), nil
+		},
+		"localauthority jwt revoke": func() (cli.Command, error) {
+			return localauthority_jwt.NewJWTRevokeCommand(), nil
+		},
+		"upstreamauthority taint": func() (cli.Command, error) {
+			return upstreamauthority.NewTaintCommand(), nil
+		},
+		"upstreamauthority revoke": func() (cli.Command, error) {
+			return upstreamauthority.NewRevokeCommand(), nil
 		},
 	}
 

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestShowHelp(t *testing.T) {
@@ -61,7 +62,9 @@ func TestShow(t *testing.T) {
 			name: "List all entries (empty filter)",
 			expListReq: &entryv1.ListEntriesRequest{
 				PageSize: listEntriesRequestPageSize,
-				Filter:   &entryv1.ListEntriesRequest_Filter{},
+				Filter: &entryv1.ListEntriesRequest_Filter{
+					ByDownstream: wrapperspb.Bool(false),
+				},
 			},
 			fakeListResp: fakeRespAll,
 			expOutPretty: fmt.Sprintf("Found 4 entries\n%s%s%s%s",
@@ -103,7 +106,8 @@ func TestShow(t *testing.T) {
 			expListReq: &entryv1.ListEntriesRequest{
 				PageSize: listEntriesRequestPageSize,
 				Filter: &entryv1.ListEntriesRequest_Filter{
-					ByParentId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/father"},
+					ByParentId:   &types.SPIFFEID{TrustDomain: "example.org", Path: "/father"},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFather,
@@ -124,7 +128,8 @@ func TestShow(t *testing.T) {
 			expListReq: &entryv1.ListEntriesRequest{
 				PageSize: listEntriesRequestPageSize,
 				Filter: &entryv1.ListEntriesRequest_Filter{
-					BySpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/daughter"},
+					BySpiffeId:   &types.SPIFFEID{TrustDomain: "example.org", Path: "/daughter"},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespDaughter,
@@ -152,6 +157,7 @@ func TestShow(t *testing.T) {
 						},
 						Match: types.SelectorMatch_MATCH_SUPERSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFatherDaughter,
@@ -173,6 +179,7 @@ func TestShow(t *testing.T) {
 						},
 						Match: types.SelectorMatch_MATCH_EXACT,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFatherDaughter,
@@ -194,6 +201,7 @@ func TestShow(t *testing.T) {
 						},
 						Match: types.SelectorMatch_MATCH_SUPERSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFatherDaughter,
@@ -215,6 +223,7 @@ func TestShow(t *testing.T) {
 						},
 						Match: types.SelectorMatch_MATCH_SUBSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFatherDaughter,
@@ -236,6 +245,7 @@ func TestShow(t *testing.T) {
 						},
 						Match: types.SelectorMatch_MATCH_ANY,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespFatherDaughter,
@@ -260,7 +270,8 @@ func TestShow(t *testing.T) {
 			expListReq: &entryv1.ListEntriesRequest{
 				PageSize: listEntriesRequestPageSize,
 				Filter: &entryv1.ListEntriesRequest_Filter{
-					BySpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/daughter"},
+					BySpiffeId:   &types.SPIFFEID{TrustDomain: "example.org", Path: "/daughter"},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			serverErr: status.Error(codes.Internal, "internal server error"),
@@ -276,6 +287,7 @@ func TestShow(t *testing.T) {
 						TrustDomains: []string{"spiffe://domain.test"},
 						Match:        types.FederatesWithMatch_MATCH_SUPERSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespMotherDaughter,
@@ -294,6 +306,7 @@ func TestShow(t *testing.T) {
 						TrustDomains: []string{"spiffe://domain.test"},
 						Match:        types.FederatesWithMatch_MATCH_EXACT,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespMotherDaughter,
@@ -312,6 +325,7 @@ func TestShow(t *testing.T) {
 						TrustDomains: []string{"spiffe://domain.test"},
 						Match:        types.FederatesWithMatch_MATCH_ANY,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespMotherDaughter,
@@ -330,6 +344,7 @@ func TestShow(t *testing.T) {
 						TrustDomains: []string{"spiffe://domain.test"},
 						Match:        types.FederatesWithMatch_MATCH_SUPERSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespMotherDaughter,
@@ -348,6 +363,7 @@ func TestShow(t *testing.T) {
 						TrustDomains: []string{"spiffe://domain.test"},
 						Match:        types.FederatesWithMatch_MATCH_SUBSET,
 					},
+					ByDownstream: wrapperspb.Bool(false),
 				},
 			},
 			fakeListResp: fakeRespMotherDaughter,
@@ -399,12 +415,16 @@ func getEntries(count int) []*types.Entry {
 			SpiffeId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/son"},
 			Selectors: []*types.Selector{selectors[0]},
 			Id:        "00000000-0000-0000-0000-000000000000",
+			Hint:      "internal",
+			CreatedAt: 1547583197,
 		},
 		{
 			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/father"},
 			SpiffeId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/daughter"},
 			Selectors: []*types.Selector{selectors[0], selectors[1]},
 			Id:        "00000000-0000-0000-0000-000000000001",
+			Hint:      "external",
+			CreatedAt: 1547583197,
 		},
 		{
 			ParentId:      &types.SPIFFEID{TrustDomain: "example.org", Path: "/mother"},
@@ -412,6 +432,7 @@ func getEntries(count int) []*types.Entry {
 			Selectors:     []*types.Selector{selectors[1], selectors[2]},
 			Id:            "00000000-0000-0000-0000-000000000002",
 			FederatesWith: []string{"spiffe://domain.test"},
+			CreatedAt:     1547583197,
 		},
 		{
 			ParentId:  &types.SPIFFEID{TrustDomain: "example.org", Path: "/mother"},
@@ -419,11 +440,12 @@ func getEntries(count int) []*types.Entry {
 			Selectors: []*types.Selector{selectors[2]},
 			ExpiresAt: 1552410266,
 			Id:        "00000000-0000-0000-0000-000000000003",
+			CreatedAt: 1547583197,
 		},
 	}
 
 	e := []*types.Entry{}
-	for i := 0; i < count; i++ {
+	for i := range count {
 		e = append(e, entries[i])
 	}
 
@@ -440,6 +462,7 @@ Revision         : 0
 X509-SVID TTL    : default
 JWT-SVID TTL     : default
 Selector         : foo:bar
+Hint             : internal
 
 `
 	case 1:
@@ -451,6 +474,7 @@ X509-SVID TTL    : default
 JWT-SVID TTL     : default
 Selector         : bar:baz
 Selector         : foo:bar
+Hint             : external
 
 `
 	case 2:
@@ -502,7 +526,9 @@ func getJSONPrintedEntry(idx int) string {
       ],
       "x509_svid_ttl": 0,
       "federates_with": [],
+      "hint": "internal",
       "admin": false,
+      "created_at": "1547583197",
       "downstream": false,
       "expires_at": "0",
       "dns_names": [],
@@ -533,7 +559,9 @@ func getJSONPrintedEntry(idx int) string {
       ],
       "x509_svid_ttl": 0,
       "federates_with": [],
+      "hint": "external",
       "admin": false,
+      "created_at": "1547583197",
       "downstream": false,
       "expires_at": "0",
       "dns_names": [],
@@ -566,7 +594,9 @@ func getJSONPrintedEntry(idx int) string {
       "federates_with": [
         "spiffe://domain.test"
       ],
+      "hint": "",
       "admin": false,
+      "created_at": "1547583197",
       "downstream": false,
       "expires_at": "0",
       "dns_names": [],
@@ -593,7 +623,9 @@ func getJSONPrintedEntry(idx int) string {
       ],
       "x509_svid_ttl": 0,
       "federates_with": [],
+      "hint": "",
       "admin": false,
+      "created_at": "1547583197",
       "downstream": false,
       "expires_at": "1552410266",
       "dns_names": [],

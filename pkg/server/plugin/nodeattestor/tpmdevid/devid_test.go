@@ -1,5 +1,4 @@
 //go:build !darwin
-// +build !darwin
 
 package tpmdevid_test
 
@@ -13,7 +12,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/google/go-tpm/tpm2"
+	"github.com/google/go-tpm/legacy/tpm2"
 	"github.com/hashicorp/go-hclog"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
@@ -89,40 +88,40 @@ func TestConfigure(t *testing.T) {
 	}{
 		{
 			name:   "Configure fails if core config is not provided",
-			expErr: "rpc error: code = InvalidArgument desc = core configuration is missing",
+			expErr: "rpc error: code = InvalidArgument desc = server core configuration is required",
 		},
 		{
 			name:     "Configure fails if trust domain is empty",
-			expErr:   "rpc error: code = InvalidArgument desc = trust_domain is required",
+			expErr:   "rpc error: code = InvalidArgument desc = server core configuration must contain trust_domain",
 			coreConf: &configv1.CoreConfiguration{},
 		},
 		{
 			name:     "Configure fails if HCL config cannot be decoded",
-			expErr:   "rpc error: code = InvalidArgument desc = unable to decode configuration",
+			expErr:   "rpc error: code = InvalidArgument desc = plugin configuration is malformed",
 			coreConf: &configv1.CoreConfiguration{TrustDomain: "example.org"},
 			hclConf:  "not an HCL configuration",
 		},
 		{
 			name:     "Configure fails if devid_ca_path is not provided",
-			expErr:   "rpc error: code = InvalidArgument desc = invalid configuration: devid_ca_path is required",
+			expErr:   "rpc error: code = InvalidArgument desc = devid_ca_path is required",
 			coreConf: &configv1.CoreConfiguration{TrustDomain: "example.org"},
 		},
 		{
 			name:     "Configure fails if endorsement_ca_path is not provided",
-			expErr:   "rpc error: code = InvalidArgument desc = invalid configuration: endorsement_ca_path is required",
+			expErr:   "rpc error: code = InvalidArgument desc = endorsement_ca_path is required",
 			coreConf: &configv1.CoreConfiguration{TrustDomain: "example.org"},
 			hclConf:  `devid_ca_path = "non-existent/devid/bundle/path"`,
 		},
 		{
 			name:     "Configure fails if DevID trust bundle cannot be loaded",
-			expErr:   "rpc error: code = Internal desc = unable to load DevID trust bundle: open non-existent/devid/bundle/path:",
+			expErr:   "rpc error: code = InvalidArgument desc = unable to load DevID trust bundle: open non-existent/devid/bundle/path:",
 			coreConf: &configv1.CoreConfiguration{TrustDomain: "example.org"},
 			hclConf: `devid_ca_path = "non-existent/devid/bundle/path"
 					  endorsement_ca_path = "non-existent/endorsement/bundle/path"`,
 		},
 		{
 			name:     "Configure fails if endorsement trust bundle cannot be opened",
-			expErr:   "rpc error: code = Internal desc = unable to load endorsement trust bundle: open non-existent/endorsement/bundle/path:",
+			expErr:   "rpc error: code = InvalidArgument desc = unable to load endorsement trust bundle: open non-existent/endorsement/bundle/path:",
 			coreConf: &configv1.CoreConfiguration{TrustDomain: "example.org"},
 			hclConf: fmt.Sprintf(`devid_ca_path = %q
 								endorsement_ca_path = "non-existent/endorsement/bundle/path"`,
@@ -139,7 +138,6 @@ func TestConfigure(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := tpmdevid.New()
 			resp, err := plugin.Configure(context.Background(), &configv1.ConfigureRequest{
@@ -495,7 +493,6 @@ func TestAttestFailiures(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := loadPlugin(t, tt.hclConf)
 			result, err := plugin.Attest(context.Background(), tt.payload, tt.challengeFn)
@@ -612,7 +609,6 @@ func TestAttestSucceeds(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a TPM session to generate payload and challenge response data
 			session, err := tpmutil.NewSession(&tpmutil.SessionConfig{

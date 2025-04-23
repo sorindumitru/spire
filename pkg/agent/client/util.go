@@ -12,7 +12,7 @@ import (
 
 func spiffeIDFromProto(protoID *types.SPIFFEID) (string, error) {
 	if protoID == nil {
-		return "", errors.New("request must specify SPIFFE ID")
+		return "", errors.New("response missing SPIFFE ID")
 	}
 
 	td, err := spiffeid.TrustDomainFromString(protoID.TrustDomain)
@@ -80,5 +80,7 @@ func slicedEntryFromProto(e *types.Entry) (*common.RegistrationEntry, error) {
 		StoreSvid:      e.StoreSvid,
 		Admin:          e.Admin,
 		Downstream:     e.Downstream,
+		Hint:           e.Hint,
+		CreatedAt:      e.CreatedAt,
 	}, nil
 }

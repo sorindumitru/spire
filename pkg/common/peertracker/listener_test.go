@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package peertracker
 
@@ -148,6 +147,6 @@ func (p *ListenerTestSuite) TestAcceptFailsWhenUnderlyingAcceptFails() {
 }
 
 // returns an empty unix listener that will fail any call to Accept()
-func newFailingMockListenUnix(network string, laddr *net.UnixAddr) (*net.UnixListener, error) {
+func newFailingMockListenUnix(string, *net.UnixAddr) (*net.UnixListener, error) {
 	return &net.UnixListener{}, nil
 }

@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func (m *authorizationMiddleware) opaAuth(ctx context.Context, req interface{}, fullMethod string) (context.Context, bool, error) {
+func (m *authorizationMiddleware) opaAuth(ctx context.Context, req any, fullMethod string) (context.Context, bool, error) {
 	if m.authPolicyEngine == nil {
 		return ctx, false, errors.New("no policy engine object found")
 	}
@@ -39,7 +39,7 @@ func (m *authorizationMiddleware) opaAuth(ctx context.Context, req interface{}, 
 
 	ctx, allow, err := m.reconcileResult(ctx, result)
 	if err != nil {
-		return ctx, false, err
+		return nil, false, err
 	}
 
 	return ctx, allow, nil
@@ -71,7 +71,7 @@ func (m *authorizationMiddleware) reconcileResult(ctx context.Context, res authp
 	if res.AllowIfAdmin || res.AllowIfDownstream {
 		ctx, entries, err := WithCallerEntries(ctx, m.entryFetcher)
 		if err != nil {
-			return ctx, false, err
+			return nil, false, err
 		}
 
 		if res.AllowIfAdmin {

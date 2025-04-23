@@ -5,9 +5,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jinzhu/gorm"
+	"github.com/sirupsen/logrus"
+	"github.com/spiffe/spire/pkg/server/datastore/sqldriver/awsrds"
 
 	// gorm mysql `cloudsql` dialect, for GCP
 	// Cloud SQL Proxy
@@ -17,26 +20,53 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/mysql"
 )
 
-type mysqlDB struct{}
+type mysqlDB struct {
+	logger logrus.FieldLogger
+}
 
 const (
 	tlsConfigName = "spireCustomTLS"
 )
 
 func (my mysqlDB) connect(cfg *configuration, isReadOnly bool) (db *gorm.DB, version string, supportsCTE bool, err error) {
-	connString, err := configureConnection(cfg, isReadOnly)
+	mysqlConfig, err := configureConnection(cfg, isReadOnly)
 	if err != nil {
 		return nil, "", false, err
 	}
 
-	db, err = gorm.Open("mysql", connString)
-	if err != nil {
-		return nil, "", false, err
+	var errOpen error
+	switch {
+	case cfg.databaseTypeConfig.AWSMySQL != nil:
+		awsrdsConfig := &awsrds.Config{
+			Region:          cfg.databaseTypeConfig.AWSMySQL.Region,
+			AccessKeyID:     cfg.databaseTypeConfig.AWSMySQL.AccessKeyID,
+			SecretAccessKey: cfg.databaseTypeConfig.AWSMySQL.SecretAccessKey,
+			Endpoint:        mysqlConfig.Addr,
+			DbUser:          mysqlConfig.User,
+			DriverName:      awsrds.MySQLDriverName,
+			ConnString:      mysqlConfig.FormatDSN(),
+		}
+
+		dsn, err := awsrdsConfig.FormatDSN()
+		if err != nil {
+			return nil, "", false, err
+		}
+		db, errOpen = gorm.Open(awsrds.MySQLDriverName, dsn)
+	default:
+		db, errOpen = gorm.Open("mysql", mysqlConfig.FormatDSN())
+	}
+
+	if errOpen != nil {
+		return nil, "", false, errOpen
 	}
 
 	version, err = queryVersion(db, "SELECT VERSION()")
 	if err != nil {
 		return nil, "", false, err
+	}
+
+	if strings.HasPrefix(version, "5.7.") {
+		my.logger.Warn("MySQL 5.7 is no longer officially supported, and SPIRE does not guarantee compatibility with MySQL 5.7. Consider upgrading to a newer version of MySQL.")
 	}
 
 	supportsCTE, err = my.supportsCTE(db)
@@ -50,7 +80,7 @@ func (my mysqlDB) connect(cfg *configuration, isReadOnly bool) (db *gorm.DB, ver
 func (my mysqlDB) supportsCTE(gormDB *gorm.DB) (bool, error) {
 	db := gormDB.DB()
 	if db == nil {
-		return false, sqlError.New("unable to get raw database object")
+		return false, errors.New("unable to get raw database object")
 	}
 	var value int64
 	err := db.QueryRow("WITH a AS (SELECT 1 AS v) SELECT * FROM a;").Scan(&value)
@@ -60,7 +90,7 @@ func (my mysqlDB) supportsCTE(gormDB *gorm.DB) (bool, error) {
 	case my.isParseError(err):
 		return false, nil
 	default:
-		return false, sqlError.Wrap(err)
+		return false, err
 	}
 }
 
@@ -78,35 +108,34 @@ func (my mysqlDB) isConstraintViolation(err error) bool {
 
 // configureConnection modifies the connection string to support features that
 // normally require code changes, like custom Root CAs or client certificates
-func configureConnection(cfg *configuration, isReadOnly bool) (string, error) {
+func configureConnection(cfg *configuration, isReadOnly bool) (*mysql.Config, error) {
 	connectionString := getConnectionString(cfg, isReadOnly)
+	mysqlConfig, err := mysql.ParseDSN(connectionString)
+	if err != nil {
+		// the connection string should have already been validated by now
+		// (in validateMySQLConfig)
+		return nil, err
+	}
+
 	if !hasTLSConfig(cfg) {
 		// connection string doesn't have to be modified
-		return connectionString, nil
+		return mysqlConfig, nil
 	}
 
 	// MySQL still allows, and in some places requires, older TLS versions. For example, when built with yaSSL, it is limited to TLSv1 and TLSv1.1.
 	// TODO: consider making this more secure by default
 	tlsConf := tls.Config{} //nolint: gosec // see above
 
-	opts, err := mysql.ParseDSN(connectionString)
-	if err != nil {
-		// the connection string should have already been validated by now
-		// (in validateMySQLConfig)
-		return "", sqlError.Wrap(err)
-	}
-
 	// load and configure Root CA if it exists
 	if len(cfg.RootCAPath) > 0 {
 		rootCertPool := x509.NewCertPool()
 		pem, err := os.ReadFile(cfg.RootCAPath)
-
 		if err != nil {
-			return "", sqlError.New("invalid mysql config: cannot find Root CA defined in root_ca_path")
+			return nil, errors.New("invalid mysql config: cannot find Root CA defined in root_ca_path")
 		}
 
 		if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
-			return "", sqlError.New("invalid mysql config: failed to parse Root CA defined in root_ca_path")
+			return nil, errors.New("invalid mysql config: failed to parse Root CA defined in root_ca_path")
 		}
 		tlsConf.RootCAs = rootCertPool
 	}
@@ -116,7 +145,7 @@ func configureConnection(cfg *configuration, isReadOnly bool) (string, error) {
 		clientCert := make([]tls.Certificate, 0, 1)
 		certs, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientKeyPath)
 		if err != nil {
-			return "", sqlError.New("invalid mysql config: failed to load client certificate defined in client_cert_path and client_key_path")
+			return nil, errors.New("invalid mysql config: failed to load client certificate defined in client_cert_path and client_key_path")
 		}
 		clientCert = append(clientCert, certs)
 		tlsConf.Certificates = clientCert
@@ -124,13 +153,13 @@ func configureConnection(cfg *configuration, isReadOnly bool) (string, error) {
 
 	// register a custom TLS config that uses custom Root CAs with the MySQL driver
 	if err := mysql.RegisterTLSConfig(tlsConfigName, &tlsConf); err != nil {
-		return "", sqlError.New("failed to register mysql TLS config")
+		return nil, errors.New("failed to register mysql TLS config")
 	}
 
 	// instruct MySQL driver to use the custom TLS config
-	opts.TLSConfig = tlsConfigName
+	mysqlConfig.TLSConfig = tlsConfigName
 
-	return opts.FormatDSN(), nil
+	return mysqlConfig, nil
 }
 
 func hasTLSConfig(cfg *configuration) bool {
@@ -140,11 +169,11 @@ func hasTLSConfig(cfg *configuration) bool {
 func validateMySQLConfig(cfg *configuration, isReadOnly bool) error {
 	opts, err := mysql.ParseDSN(getConnectionString(cfg, isReadOnly))
 	if err != nil {
-		return sqlError.Wrap(err)
+		return newWrappedSQLError(err)
 	}
 
 	if !opts.ParseTime {
-		return sqlError.Wrap(errors.New("invalid mysql config: missing parseTime=true param in connection_string"))
+		return newSQLError("invalid mysql config: missing parseTime=true param in connection_string")
 	}
 
 	return nil

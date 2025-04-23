@@ -1,4 +1,4 @@
-// +build ignore
+//go:build ignore
 
 // This file is used during testing. It is built as an external binary
 // and called from the test suite in order to exercise various peer
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"syscall"
+	"time"
 )
 
 func main() {
@@ -22,7 +22,7 @@ func main() {
 	if socketPath == "" {
 		fmt.Fprintf(os.Stdout, "i'm alive!")
 
-		select {}
+		time.Sleep(1 * time.Minute)
 	}
 
 	if socketPath == "" {
@@ -48,20 +48,20 @@ func main() {
 	}
 
 	// Pass our fork the socket's file descriptor
-	procattr := &syscall.ProcAttr{
-		Files: []uintptr{
-			os.Stdin.Fd(),
-			fd.Fd(),
+	procattr := &os.ProcAttr{
+		Files: []*os.File{
+			os.Stdin,
+			fd,
 		},
 	}
 
-	pid, err := syscall.ForkExec(os.Args[0], []string{os.Args[0]}, procattr)
+	proc, err := os.StartProcess(os.Args[0], []string{os.Args[0]}, procattr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to produce grandchild: %v", err)
 		os.Exit(7)
 	}
 
 	// Inform our caller of the grandchild pid
-	fmt.Fprintf(os.Stdout, "%v", pid)
+	fmt.Fprintf(os.Stdout, "%v", proc.Pid)
 	os.Exit(0)
 }

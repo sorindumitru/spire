@@ -13,6 +13,7 @@ import (
 	"github.com/spiffe/spire/pkg/server/cache/entrycache"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/clock"
+	"github.com/spiffe/spire/test/fakes/fakedatastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +26,17 @@ var _ entrycache.Cache = (*staticEntryCache)(nil)
 
 type staticEntryCache struct {
 	entries map[spiffeid.ID][]*types.Entry
+}
+
+func (f *staticEntryCache) LookupAuthorizedEntries(agentID spiffeid.ID, _ map[string]struct{}) map[string]*types.Entry {
+	entries := f.entries[agentID]
+
+	entriesMap := make(map[string]*types.Entry)
+	for _, entry := range entries {
+		entriesMap[entry.GetId()] = entry
+	}
+
+	return entriesMap
 }
 
 func (sef *staticEntryCache) GetAuthorizedEntries(agentID spiffeid.ID) []*types.Entry {
@@ -41,12 +53,14 @@ func TestNewAuthorizedEntryFetcherWithFullCache(t *testing.T) {
 	ctx := context.Background()
 	log, _ := test.NewNullLogger()
 	clk := clock.NewMock(t)
+	ds := fakedatastore.New(t)
+
 	entries := make(map[spiffeid.ID][]*types.Entry)
 	buildCache := func(context.Context) (entrycache.Cache, error) {
 		return newStaticEntryCache(entries), nil
 	}
 
-	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, defaultCacheReloadInterval)
+	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, ds, defaultCacheReloadInterval, defaultPruneEventsOlderThan)
 	assert.NoError(t, err)
 	assert.NotNil(t, ef)
 }
@@ -55,12 +69,13 @@ func TestNewAuthorizedEntryFetcherWithFullCacheErrorBuildingCache(t *testing.T) 
 	ctx := context.Background()
 	log, _ := test.NewNullLogger()
 	clk := clock.NewMock(t)
+	ds := fakedatastore.New(t)
 
 	buildCache := func(context.Context) (entrycache.Cache, error) {
 		return nil, errors.New("some cache build error")
 	}
 
-	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, defaultCacheReloadInterval)
+	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, ds, defaultCacheReloadInterval, defaultPruneEventsOlderThan)
 	assert.Error(t, err)
 	assert.Nil(t, ef)
 }
@@ -69,6 +84,7 @@ func TestFetchRegistrationEntries(t *testing.T) {
 	ctx := context.Background()
 	log, _ := test.NewNullLogger()
 	clk := clock.NewMock(t)
+	ds := fakedatastore.New(t)
 	agentID := spiffeid.RequireFromPath(trustDomain, "/root")
 	expected := setupExpectedEntriesData(t, agentID)
 
@@ -80,7 +96,7 @@ func TestFetchRegistrationEntries(t *testing.T) {
 		return newStaticEntryCache(entries), nil
 	}
 
-	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCacheFn, log, clk, defaultCacheReloadInterval)
+	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCacheFn, log, clk, ds, defaultCacheReloadInterval, defaultPruneEventsOlderThan)
 	require.NoError(t, err)
 	require.NotNil(t, ef)
 
@@ -104,6 +120,7 @@ func TestRunRebuildCacheTask(t *testing.T) {
 
 	log, _ := test.NewNullLogger()
 	clk := clock.NewMock(t)
+	ds := fakedatastore.New(t)
 	agentID := spiffeid.RequireFromPath(trustDomain, "/root")
 	var expectedEntries []*types.Entry
 
@@ -138,7 +155,7 @@ func TestRunRebuildCacheTask(t *testing.T) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		// Wait for the test to provide the resultss
+		// Wait for the test to provide the results
 		select {
 		case result := <-resultCh:
 			return result.cache, result.err
@@ -149,7 +166,7 @@ func TestRunRebuildCacheTask(t *testing.T) {
 		}
 	}
 
-	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, defaultCacheReloadInterval)
+	ef, err := NewAuthorizedEntryFetcherWithFullCache(ctx, buildCache, log, clk, ds, defaultCacheReloadInterval, defaultPruneEventsOlderThan)
 	require.NoError(t, err)
 	require.NotNil(t, ef)
 
@@ -218,7 +235,7 @@ func TestRunRebuildCacheTask(t *testing.T) {
 func setupExpectedEntriesData(t *testing.T, agentID spiffeid.ID) []*types.Entry {
 	const numEntries = 2
 	entryIDs := make([]spiffeid.ID, numEntries)
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		entryIDs[i] = spiffeid.RequireFromPathf(trustDomain, "/%d", i)
 	}
 

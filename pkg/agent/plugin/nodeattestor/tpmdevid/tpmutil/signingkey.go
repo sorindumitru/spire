@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/go-tpm-tools/client"
-	"github.com/google/go-tpm/tpm2"
+	"github.com/google/go-tpm/legacy/tpm2"
 	"github.com/google/go-tpm/tpmutil"
 	"github.com/hashicorp/go-hclog"
 	"golang.org/x/crypto/cryptobyte"
@@ -62,7 +62,7 @@ func (k *SigningKey) Sign(data []byte) ([]byte, error) {
 // handle as object.
 func (k *SigningKey) Certify(object tpmutil.Handle, objectPassword string) ([]byte, []byte, error) {
 	// For some reason 'tpm2.Certify()' sometimes fails the first attempt and asks for retry.
-	// So, we retry some times in case of getting the RCRetry error.
+	// So, we retry in case of getting the RCRetry error.
 	// It seems that this issue has been reported: https://github.com/google/go-tpm/issues/59
 	var err error
 	for i := 1; i <= maxAttempts; i++ {

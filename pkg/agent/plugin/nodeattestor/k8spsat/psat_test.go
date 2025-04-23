@@ -7,31 +7,21 @@ import (
 	"path/filepath"
 	"testing"
 
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/agent/plugin/nodeattestor"
 	nodeattestortest "github.com/spiffe/spire/pkg/agent/plugin/nodeattestor/test"
-	"github.com/spiffe/spire/pkg/common/pemutil"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	sat_common "github.com/spiffe/spire/pkg/common/plugin/k8s"
 	"github.com/spiffe/spire/test/plugintest"
 	"github.com/spiffe/spire/test/spiretest"
+	"github.com/spiffe/spire/test/testkey"
 	"google.golang.org/grpc/codes"
-	jose "gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
-var sampleKeyPEM = []byte(`-----BEGIN RSA PRIVATE KEY-----
-MIIBywIBAAJhAMB4gbT09H2RKXaxbu6IV9C3WY+pvkGAbrlQRIHLHwV3Xt1HchjX
-c08v1VEoTBN2YTjhZJlDb/VUsNMJsmBFBBted5geRcbrDtXFlUJ8tQoQx1dWM4Aa
-xcdULJ83A9ICKwIDAQABAmBR1asInrIphYQEtHJ/NzdnRd3tqHV9cjch0dAfA5dA
-Ar4yBYOsrkaX37WqWSDnkYgN4FWYBWn7WxeotCtA5UQ3SM5hLld67rUqAm2dLrs1
-z8va6SwLzrPTu2+rmRgovFECMQDpbfPBRex7FY/xWu1pYv6X9XZ26SrC2Wc6RIpO
-38AhKGjTFEMAPJQlud4e2+4I3KkCMQDTFLUvBSXokw2NvcNiM9Kqo5zCnCIkgc+C
-hM3EzSh2jh4gZvRzPOhXYvNKgLx8+LMCMQDL4meXlpV45Fp3eu4GsJqi65jvP7VD
-v1P0hs0vGyvbSkpUo0vqNv9G/FNQLNR6FRECMFXEMz5wxA91OOuf8HTFg9Lr+fUl
-RcY5rJxm48kUZ12Mr3cQ/kCYvftL7HkYR/4rewIxANdritlIPu4VziaEhYZg7dvz
-pG3eEhiqPxE++QHpwU78O+F1GznOPBvpZOB3GfyjNQ==
------END RSA PRIVATE KEY-----`)
-
 var (
+	sampleKey     = testkey.MustRSA2048()
 	streamBuilder = nodeattestortest.ServerStream(pluginName)
 )
 
@@ -52,7 +42,8 @@ func (s *AttestorSuite) SetupTest() {
 func (s *AttestorSuite) TestAttestNotConfigured() {
 	na := s.loadPlugin()
 	err := na.Attest(context.Background(), streamBuilder.Build())
-	s.RequireGRPCStatus(err, codes.FailedPrecondition, "nodeattestor(k8s_psat): not configured")
+	s.T().Logf("failed: %s", err.Error())
+	s.RequireGRPCStatusContains(err, codes.FailedPrecondition, "nodeattestor(k8s_psat): not configured")
 }
 
 func (s *AttestorSuite) TestAttestNoToken() {
@@ -73,7 +64,7 @@ func (s *AttestorSuite) TestAttestSuccess() {
 
 	na := s.loadPluginWithTokenPath(s.writeValue("token", token))
 
-	err = na.Attest(context.Background(), streamBuilder.ExpectAndBuild([]byte(fmt.Sprintf(`{"cluster":"production","token":"%s"}`, token))))
+	err = na.Attest(context.Background(), streamBuilder.ExpectAndBuild(fmt.Appendf(nil, `{"cluster":"production","token":"%s"}`, token)))
 	s.Require().NoError(err)
 }
 
@@ -81,23 +72,43 @@ func (s *AttestorSuite) TestConfigure() {
 	var err error
 
 	// malformed configuration
-	s.loadPlugin(plugintest.CaptureConfigureError(&err), plugintest.Configure("malformed"))
+	s.loadPlugin(plugintest.CaptureConfigureError(&err),
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
+		plugintest.Configure("malformed"),
+	)
 	s.RequireGRPCStatusContains(err, codes.InvalidArgument, "unable to decode configuration")
 
 	// missing cluster
-	s.loadPlugin(plugintest.CaptureConfigureError(&err), plugintest.Configure(""))
-	s.RequireGRPCStatus(err, codes.InvalidArgument, "configuration missing cluster")
+	s.loadPlugin(plugintest.CaptureConfigureError(&err),
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
+		plugintest.Configure(""),
+	)
+	s.RequireGRPCStatus(err, codes.InvalidArgument, "missing required cluster block")
 
 	// success
-	s.loadPlugin(plugintest.CaptureConfigureError(&err), plugintest.Configure(`cluster = "production"`))
+	s.loadPlugin(plugintest.CaptureConfigureError(&err),
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
+		plugintest.Configure(`cluster = "production"`),
+	)
 	s.Require().NoError(err)
 }
 
 func (s *AttestorSuite) loadPluginWithTokenPath(tokenPath string) nodeattestor.NodeAttestor {
-	return s.loadPlugin(plugintest.Configuref(`
+	return s.loadPlugin(
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
+		plugintest.Configuref(`
 			cluster = "production"
 			token_path = %q
-	`, tokenPath))
+		`, tokenPath),
+	)
 }
 
 func (s *AttestorSuite) loadPlugin(options ...plugintest.Option) nodeattestor.NodeAttestor {
@@ -112,9 +123,9 @@ func (s *AttestorSuite) joinPath(path string) string {
 
 func (s *AttestorSuite) writeValue(path, data string) string {
 	valuePath := s.joinPath(path)
-	err := os.MkdirAll(filepath.Dir(valuePath), 0755)
+	err := os.MkdirAll(filepath.Dir(valuePath), 0o755)
 	s.Require().NoError(err)
-	err = os.WriteFile(valuePath, []byte(data), 0600)
+	err = os.WriteFile(valuePath, []byte(data), 0o600)
 	s.Require().NoError(err)
 	return valuePath
 }
@@ -136,7 +147,7 @@ func createPSAT(namespace, podName string) (string, error) {
 	builder = builder.Claims(claims)
 
 	// Serialize and return token
-	token, err := builder.CompactSerialize()
+	token, err := builder.Serialize()
 	if err != nil {
 		return "", err
 	}
@@ -145,16 +156,10 @@ func createPSAT(namespace, podName string) (string, error) {
 }
 
 func createSigner() (jose.Signer, error) {
-	sampleKey, err := pemutil.ParseRSAPrivateKey(sampleKeyPEM)
-	if err != nil {
-		return nil, err
-	}
-
 	sampleSigner, err := jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key:       sampleKey,
 	}, nil)
-
 	if err != nil {
 		return nil, err
 	}

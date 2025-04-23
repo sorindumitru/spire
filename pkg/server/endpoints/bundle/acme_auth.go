@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto"
 	"crypto/tls"
+	"fmt"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/version"
 	"github.com/spiffe/spire/pkg/server/endpoints/bundle/internal/autocert"
 	"github.com/spiffe/spire/pkg/server/plugin/keymanager"
-	"github.com/zeebo/errs"
 	"golang.org/x/crypto/acme"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -38,14 +38,14 @@ type ACMEConfig struct {
 	// Email is the email address of the account to register with ACME
 	Email string
 
-	// ToSAccepted is whether or not the terms of service have been accepted. If
+	// ToSAccepted is whether the terms of service have been accepted. If
 	// not true, and the provider requires acceptance, then certificate
 	// retrieval will fail.
 	ToSAccepted bool
 }
 
 func ACMEAuth(log logrus.FieldLogger, km keymanager.KeyManager, config ACMEConfig) ServerAuth {
-	// The acme client already defaulting to Let's Encrypt if the URL is unset
+	// The acme client already defaulting to Let's Encrypt if the URL is unset,
 	// but we want it populated for logging purposes.
 	if config.DirectoryURL == "" {
 		config.DirectoryURL = acme.LetsEncryptURL
@@ -122,7 +122,7 @@ func (ks *acmeKeyStore) NewPrivateKey(ctx context.Context, id string, keyType au
 	case autocert.EC256:
 		kmKeyType = keymanager.ECP256
 	default:
-		return nil, errs.New("unsupported key type: %d", keyType)
+		return nil, fmt.Errorf("unsupported key type: %d", keyType)
 	}
 
 	key, err := ks.km.GenerateKey(ctx, keyID, kmKeyType)

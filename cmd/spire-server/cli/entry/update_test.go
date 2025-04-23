@@ -10,6 +10,7 @@ import (
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestUpdateHelp(t *testing.T) {
@@ -44,12 +45,14 @@ func TestUpdate(t *testing.T) {
             "value": "key2:value"
           }
         ],
-		"x509_svid_ttl": 60,
+        "x509_svid_ttl": 60,
         "federates_with": [
           "spiffe://domaina.test",
           "spiffe://domainb.test"
         ],
+        "hint": "",
         "admin": false,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "1552410266",
         "dns_names": [
@@ -58,7 +61,7 @@ func TestUpdate(t *testing.T) {
         ],
         "revision_number": "0",
         "store_svid": true,
-		"jwt_svid_ttl":30
+        "jwt_svid_ttl": 30
       }`
 	entry0AdminJSON := `{
         "id": "entry-id",
@@ -80,12 +83,14 @@ func TestUpdate(t *testing.T) {
             "value": "alpha:2000"
           }
         ],
-		"x509_svid_ttl": 60,
+        "x509_svid_ttl": 60,
         "federates_with": [
           "spiffe://domaina.test",
           "spiffe://domainb.test"
         ],
+        "hint": "external",
         "admin": true,
+        "created_at": "1547583197",
         "downstream": true,
         "expires_at": "1552410266",
         "dns_names": [
@@ -94,7 +99,7 @@ func TestUpdate(t *testing.T) {
         ],
         "revision_number": "0",
         "store_svid": false,
-		"jwt_svid_ttl":30
+        "jwt_svid_ttl": 30
       }`
 	entry1JSON := `{
         "id": "entry-id-1",
@@ -112,15 +117,17 @@ func TestUpdate(t *testing.T) {
             "value": "uid:1111"
           }
         ],
-		"x509_svid_ttl": 200,
+        "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "external",
         "admin": true,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
         "revision_number": "0",
         "store_svid": false,
-		"jwt_svid_ttl": 300
+        "jwt_svid_ttl": 300
       }
     }`
 	entry2JSON := `{
@@ -139,15 +146,17 @@ func TestUpdate(t *testing.T) {
             "value": "uid:1111"
           }
         ],
-		"x509_svid_ttl": 200,
+        "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "",
         "admin": false,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
         "revision_number": "0",
         "store_svid": false,
-		"jwt_svid_ttl":300
+        "jwt_svid_ttl": 300
       }
     }`
 	entry3JSON := `{
@@ -170,15 +179,17 @@ func TestUpdate(t *testing.T) {
             "value": "key2:value"
           }
         ],
-		"x509_svid_ttl": 200,
+        "x509_svid_ttl": 200,
         "federates_with": [],
+        "hint": "",
         "admin": false,
+        "created_at": "1547583197",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
         "revision_number": "0",
         "store_svid": true,
-		"jwt_svid_ttl":300
+        "jwt_svid_ttl": 300
       }`
 	nonExistentEntryJSON := `{
         "id": "non-existent-id",
@@ -186,7 +197,7 @@ func TestUpdate(t *testing.T) {
           "trust_domain": "example.org",
           "path": "/workload"
         },
-		"jwt_svid_ttl": 0,
+        "jwt_svid_ttl": 0,
         "parent_id": {
           "trust_domain": "example.org",
           "path": "/parent"
@@ -198,13 +209,15 @@ func TestUpdate(t *testing.T) {
           }
         ],
         "federates_with": [],
+        "hint": "",
         "admin": false,
+        "created_at": "0",
         "downstream": false,
         "expires_at": "0",
         "dns_names": [],
         "revision_number": "0",
         "store_svid": false,
-		"x509_svid_ttl": 0
+        "x509_svid_ttl": 0
       }`
 
 	entry1 := &types.Entry{
@@ -222,9 +235,29 @@ func TestUpdate(t *testing.T) {
 		ExpiresAt:     1552410266,
 		DnsNames:      []string{"unu1000", "ung1000"},
 		Downstream:    true,
+		Hint:          "external",
 	}
 
-	entryStoreSvid := &types.Entry{
+	entry0Admin := &types.Entry{
+		Id:       "entry-id",
+		SpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/workload"},
+		ParentId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/parent"},
+		Selectors: []*types.Selector{
+			{Type: "zebra", Value: "zebra:2000"},
+			{Type: "alpha", Value: "alpha:2000"},
+		},
+		X509SvidTtl:   60,
+		JwtSvidTtl:    30,
+		FederatesWith: []string{"spiffe://domaina.test", "spiffe://domainb.test"},
+		Admin:         true,
+		ExpiresAt:     1552410266,
+		DnsNames:      []string{"unu1000", "ung1000"},
+		Downstream:    true,
+		Hint:          "external",
+		CreatedAt:     1547583197,
+	}
+
+	entryStoreSVID := &types.Entry{
 		Id:       "entry-id",
 		SpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/workload"},
 		ParentId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/parent"},
@@ -239,10 +272,14 @@ func TestUpdate(t *testing.T) {
 		DnsNames:      []string{"unu1000", "ung1000"},
 		StoreSvid:     true,
 	}
+
+	entryStoreSVIDResp := proto.Clone(entryStoreSVID).(*types.Entry)
+	entryStoreSVIDResp.CreatedAt = 1547583197
+
 	fakeRespOKFromCmd := &entryv1.BatchUpdateEntryResponse{
 		Results: []*entryv1.BatchUpdateEntryResponse_Result{
 			{
-				Entry: entry1,
+				Entry: entry0Admin,
 				Status: &types.Status{
 					Code:    int32(codes.OK),
 					Message: "OK",
@@ -259,6 +296,7 @@ func TestUpdate(t *testing.T) {
 		X509SvidTtl: 200,
 		JwtSvidTtl:  300,
 		Admin:       true,
+		Hint:        "external",
 	}
 
 	entry3 := &types.Entry{
@@ -283,35 +321,25 @@ func TestUpdate(t *testing.T) {
 		JwtSvidTtl:  300,
 	}
 
-	entry5 := &types.Entry{
-		Id:       "entry-id",
-		SpiffeId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/workload"},
-		ParentId: &types.SPIFFEID{TrustDomain: "example.org", Path: "/parent"},
-		Selectors: []*types.Selector{
-			{Type: "zebra", Value: "zebra:2000"},
-			{Type: "alpha", Value: "alpha:2000"},
-		},
-		X509SvidTtl:   60,
-		JwtSvidTtl:    0,
-		FederatesWith: []string{"spiffe://domaina.test", "spiffe://domainb.test"},
-		Admin:         true,
-		ExpiresAt:     1552410266,
-		DnsNames:      []string{"unu1000", "ung1000"},
-		Downstream:    true,
-	}
+	entry2Resp := proto.Clone(entry2).(*types.Entry)
+	entry2Resp.CreatedAt = 1547583197
+	entry3Resp := proto.Clone(entry3).(*types.Entry)
+	entry3Resp.CreatedAt = 1547583197
+	entry4Resp := proto.Clone(entry4).(*types.Entry)
+	entry4Resp.CreatedAt = 1547583197
 
 	fakeRespOKFromFile := &entryv1.BatchUpdateEntryResponse{
 		Results: []*entryv1.BatchUpdateEntryResponse_Result{
 			{
-				Entry:  entry2,
+				Entry:  entry2Resp,
 				Status: &types.Status{Code: int32(codes.OK), Message: "OK"},
 			},
 			{
-				Entry:  entry3,
+				Entry:  entry3Resp,
 				Status: &types.Status{Code: int32(codes.OK), Message: "OK"},
 			},
 			{
-				Entry:  entry4,
+				Entry:  entry4Resp,
 				Status: &types.Status{Code: int32(codes.OK), Message: "OK"},
 			},
 		},
@@ -371,30 +399,6 @@ func TestUpdate(t *testing.T) {
 			expErrJSON:   "Error: selector \"unix\" must be formatted as type:value\n",
 		},
 		{
-			name:         "Negative TTL",
-			args:         []string{"-entryID", "entry-id", "-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "-10"},
-			expErrPretty: "Error: a positive TTL is required\n",
-			expErrJSON:   "Error: a positive TTL is required\n",
-		},
-		{
-			name:         "Invalid TTL and X509SvidTtl",
-			args:         []string{"-entryID", "entry-id", "-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-x509SVIDTTL", "20"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-		},
-		{
-			name:         "Invalid TTL and JwtSvidTtl",
-			args:         []string{"-entryID", "entry-id", "-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-jwtSVIDTTL", "20"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-		},
-		{
-			name:         "Invalid TTL and both X509SvidTtl and JwtSvidTtl",
-			args:         []string{"-entryID", "entry-id", "-selector", "unix", "-parentID", "spiffe://example.org/parent", "-spiffeID", "spiffe://example.org/workload", "-ttl", "10", "-x509SVIDTTL", "20", "-jwtSVIDTTL", "30"},
-			expErrPretty: "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-			expErrJSON:   "Error: use x509SVIDTTL and jwtSVIDTTL flags or the deprecated ttl flag\n",
-		},
-		{
 			name: "Server error",
 			args: []string{"-entryID", "entry-id", "-spiffeID", "spiffe://example.org/workload", "-parentID", "spiffe://example.org/parent", "-selector", "unix:uid:1"},
 			expReq: &entryv1.BatchUpdateEntryRequest{Entries: []*types.Entry{
@@ -426,6 +430,7 @@ func TestUpdate(t *testing.T) {
 				"-dns", "unu1000",
 				"-dns", "ung1000",
 				"-downstream",
+				"-hint", "external",
 			},
 			expReq: &entryv1.BatchUpdateEntryRequest{
 				Entries: []*types.Entry{entry1},
@@ -446,56 +451,7 @@ FederatesWith    : spiffe://domainb.test
 DNS name         : unu1000
 DNS name         : ung1000
 Admin            : true
-
-`, time.Unix(1552410266, 0).UTC()),
-			expOutJSON: fmt.Sprintf(`{
-  "results": [
-    {
-      "status": {
-        "code": 0,
-        "message": "OK"
-      },
-      "entry": %s
-    }
-  ]
-}`, entry0AdminJSON),
-		},
-		{
-			name: "Update succeeds using deprecated command line arguments",
-			args: []string{
-				"-entryID", "entry-id",
-				"-spiffeID", "spiffe://example.org/workload",
-				"-parentID", "spiffe://example.org/parent",
-				"-selector", "zebra:zebra:2000",
-				"-selector", "alpha:alpha:2000",
-				"-ttl", "60",
-				"-federatesWith", "spiffe://domaina.test",
-				"-federatesWith", "spiffe://domainb.test",
-				"-admin",
-				"-entryExpiry", "1552410266",
-				"-dns", "unu1000",
-				"-dns", "ung1000",
-				"-downstream",
-			},
-			expReq: &entryv1.BatchUpdateEntryRequest{
-				Entries: []*types.Entry{entry5},
-			},
-			fakeResp: fakeRespOKFromCmd,
-			expOutPretty: fmt.Sprintf(`Entry ID         : entry-id
-SPIFFE ID        : spiffe://example.org/workload
-Parent ID        : spiffe://example.org/parent
-Revision         : 0
-Downstream       : true
-X509-SVID TTL    : 60
-JWT-SVID TTL     : 30
-Expiration time  : %s
-Selector         : zebra:zebra:2000
-Selector         : alpha:alpha:2000
-FederatesWith    : spiffe://domaina.test
-FederatesWith    : spiffe://domainb.test
-DNS name         : unu1000
-DNS name         : ung1000
-Admin            : true
+Hint             : external
 
 `, time.Unix(1552410266, 0).UTC()),
 			expOutJSON: fmt.Sprintf(`{
@@ -528,12 +484,12 @@ Admin            : true
 				"-storeSVID",
 			},
 			expReq: &entryv1.BatchUpdateEntryRequest{
-				Entries: []*types.Entry{entryStoreSvid},
+				Entries: []*types.Entry{entryStoreSVID},
 			},
 			fakeResp: &entryv1.BatchUpdateEntryResponse{
 				Results: []*entryv1.BatchUpdateEntryResponse_Result{
 					{
-						Entry: entryStoreSvid,
+						Entry: entryStoreSVIDResp,
 						Status: &types.Status{
 							Code:    int32(codes.OK),
 							Message: "OK",
@@ -586,6 +542,7 @@ X509-SVID TTL    : 200
 JWT-SVID TTL     : 300
 Selector         : unix:uid:1111
 Admin            : true
+Hint             : external
 
 Entry ID         : entry-id-2
 SPIFFE ID        : spiffe://example.org/Database

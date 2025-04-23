@@ -12,6 +12,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/health"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
 )
 
 type Config struct {
@@ -39,11 +40,14 @@ type Config struct {
 	// If true, the agent will bootstrap insecurely with the server
 	InsecureBootstrap bool
 
+	// If true, the agent retries bootstrap with backoff
+	RetryBootstrap bool
+
 	// HealthChecks provides the configuration for health monitoring
 	HealthChecks health.Config
 
 	// Configurations for agent plugins
-	PluginConfigs catalog.HCLPluginConfigMap
+	PluginConfigs catalog.PluginConfigs
 
 	Log logrus.FieldLogger
 
@@ -59,8 +63,15 @@ type Config struct {
 	// SyncInterval controls how often the agent sync synchronizer waits
 	SyncInterval time.Duration
 
-	// X509SVIDCacheMaxSize is a soft limit of max number of SVIDs that would be stored in cache
+	// UseSyncAuthorizedEntries controls if the new SyncAuthorizedEntries RPC
+	// is used to sync entries from the server.
+	UseSyncAuthorizedEntries bool
+
+	// X509SVIDCacheMaxSize is a soft limit of max number of X509-SVIDs that would be stored in cache
 	X509SVIDCacheMaxSize int
+
+	// JWTSVIDCacheMaxSize is a soft limit of max number of JWT-SVIDs that would be stored in cache
+	JWTSVIDCacheMaxSize int
 
 	// Trust domain and associated CA bundle
 	TrustDomain spiffeid.TrustDomain
@@ -90,6 +101,12 @@ type Config struct {
 	AllowedForeignJWTClaims []string
 
 	AuthorizedDelegates []string
+
+	// AvailabilityTarget controls how frequently rotate SVIDs
+	AvailabilityTarget time.Duration
+
+	// TLSPolicy determines the post-quantum-safe TLS policy to apply to all TLS connections.
+	TLSPolicy tlspolicy.Policy
 }
 
 func New(c *Config) *Agent {

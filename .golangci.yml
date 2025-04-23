@@ -2,33 +2,47 @@ run:
   # timeout for analysis, e.g. 30s, 5m, default is 1m
   timeout: 12m
 
-  skip-dirs:
+issues:
+  exclude-dirs:
     - testdata$
     - test/mock
-
-  skip-files:
-    - ".*\\.pb\\.go"
-    - support/k8s/k8s-workload-registrar/mode-crd/api/spiffeid/v1beta1/spiffeid_types.go
+  exclude-files:
+    - ".*\\.pb\\.go$"
+  exclude-rules:
+    - linters: [ gosec ]
+      path: "(.*_test\\.go$)|(^test/.*)"
+      text: "integer overflow conversion"
 
 linters:
   enable:
     - bodyclose
-    - depguard
+    - copyloopvar
     - durationcheck
     - errorlint
+    - exptostd
+    - gocritic
+    - gofmt
     - goimports
-    - revive
     - gosec
+    - intrange
     - misspell
     - nakedret
+    - nilnesserr
+    - nolintlint
+    - revive
     - unconvert
     - unparam
+    - wastedassign
     - whitespace
-    - gocritic
-    # nolintlint can be re-enabled after the rest of the linters have gained
-    # support for go1.18.
-    # - nolintlint
+
 linters-settings:
+  govet:
+    enable:
+      - sortslice
+      - unusedwrite
   revive:
     # minimal confidence for issues, default is 0.8
     confidence: 0.0
+    rules:
+      - name: unused-parameter
+        disabled: true

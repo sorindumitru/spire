@@ -21,13 +21,13 @@ This document is a configuration reference for SPIRE Agent. It includes informat
 | NodeAttestor     | [azure_msi](/doc/plugin_agent_nodeattestor_azure_msi.md)                | A node attestor which attests agent identity using an Azure MSI token                                                                            |
 | NodeAttestor     | [gcp_iit](/doc/plugin_agent_nodeattestor_gcp_iit.md)                    | A node attestor which attests agent identity using a GCP Instance Identity Token                                                                 |
 | NodeAttestor     | [join_token](/doc/plugin_agent_nodeattestor_jointoken.md)               | A node attestor which uses a server-generated join token                                                                                         |
-| NodeAttestor     | [k8s_sat](/doc/plugin_agent_nodeattestor_k8s_sat.md)                    | A node attestor which attests agent identity using a Kubernetes Service Account token                                                            |
 | NodeAttestor     | [k8s_psat](/doc/plugin_agent_nodeattestor_k8s_psat.md)                  | A node attestor which attests agent identity using a Kubernetes Projected Service Account token                                                  |
 | NodeAttestor     | [sshpop](/doc/plugin_agent_nodeattestor_sshpop.md)                      | A node attestor which attests agent identity using an existing ssh certificate                                                                   |
 | NodeAttestor     | [x509pop](/doc/plugin_agent_nodeattestor_x509pop.md)                    | A node attestor which attests agent identity using an existing X.509 certificate                                                                 |
 | WorkloadAttestor | [docker](/doc/plugin_agent_workloadattestor_docker.md)                  | A workload attestor which allows selectors based on docker constructs such `label` and `image_id`                                                |
 | WorkloadAttestor | [k8s](/doc/plugin_agent_workloadattestor_k8s.md)                        | A workload attestor which allows selectors based on Kubernetes constructs such `ns` (namespace) and `sa` (service account)                       |
 | WorkloadAttestor | [unix](/doc/plugin_agent_workloadattestor_unix.md)                      | A workload attestor which generates unix-based selectors like `uid` and `gid`                                                                    |
+| WorkloadAttestor | [systemd](/doc/plugin_agent_workloadattestor_systemd.md)                | A workload attestor which generates selectors based on systemd unit properties such as `Id` and `FragmentPath`                                   |
 | SVIDStore        | [aws_secretsmanager](/doc/plugin_agent_svidstore_aws_secretsmanager.md) | An SVIDstore which stores secrets in the AWS secrets manager with the resulting X509-SVIDs of the entries that the agent is entitled to.         |
 | SVIDStore        | [gcp_secretmanager](/doc/plugin_agent_svidstore_gcp_secretmanager.md)   | An SVIDStore which stores secrets in the Google Cloud Secret Manager with the resulting X509-SVIDs of the entries that the agent is entitled to. |
 
@@ -40,58 +40,70 @@ SPIRE configuration files may be represented in either HCL or JSON. Please see t
 If the -expandEnv flag is passed to SPIRE, `$VARIABLE` or `${VARIABLE}` style environment variables are expanded before parsing.
 This may be useful for templating configuration files, for example across different trust domains, or for inserting secrets like join tokens.
 
-| Configuration                     | Description                                                                                                                    | Default                          |
-|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
-| `admin_socket_path`               | Location to bind the admin API socket (disabled as default)                                                                    |                                  |
-| `allow_unauthenticated_verifiers` | Allow agent to release trust bundles to unauthenticated verifiers                                                              | false                            |
-| `allowed_foreign_jwt_claims`      | List of trusted claims to be returned when validating foreign JWTSVIDs                                                         |                                  |
-| `authorized_delegates`            | A SPIFFE ID list of the authorized delegates. See [Delegated Identity API](#delegated-identity-api) for more information       |                                  |
-| `data_dir`                        | A directory the agent can use for its runtime data                                                                             | $PWD                             |
-| `experimental`                    | The experimental options that are subject to change or removal (see below)                                                     |                                  |
-| `insecure_bootstrap`              | If true, the agent bootstraps without verifying the server's identity                                                          | false                            |
-| `join_token`                      | An optional token which has been generated by the SPIRE server                                                                 |                                  |
-| `log_file`                        | File to write logs to                                                                                                          |                                  |
-| `log_level`                       | Sets the logging level &lt;DEBUG&vert;INFO&vert;WARN&vert;ERROR&gt;                                                            | INFO                             |
-| `log_format`                      | Format of logs, &lt;text&vert;json&gt;                                                                                         | Text                             |
-| `profiling_enabled`               | If true, enables a [net/http/pprof](https://pkg.go.dev/net/http/pprof) endpoint                                                | false                            |
-| `profiling_freq`                  | Frequency of dumping profiling data to disk. Only enabled when `profiling_enabled` is `true` and `profiling_freq` > 0.         |                                  |
-| `profiling_names`                 | List of profile names that will be dumped to disk on each profiling tick, see [Profiling Names](#profiling-names)              |                                  |
-| `profiling_port`                  | Port number of the [net/http/pprof](https://pkg.go.dev/net/http/pprof) endpoint. Only used when `profiling_enabled` is `true`. |                                  |
-| `server_address`                  | DNS name or IP address of the SPIRE server                                                                                     |                                  |
-| `server_port`                     | Port number of the SPIRE server                                                                                                |                                  |
-| `socket_path`                     | Location to bind the SPIRE Agent API socket (Unix only)                                                                        | /tmp/spire-agent/public/api.sock |
-| `sds`                             | Optional SDS configuration section                                                                                             |                                  |
-| `trust_bundle_path`               | Path to the SPIRE server CA bundle                                                                                             |                                  |
-| `trust_bundle_url`                | URL to download the initial SPIRE server trust bundle                                                                          |                                  |
-| `trust_domain`                    | The trust domain that this agent belongs to (should be no more than 255 characters)                                            |                                  |
-| `workload_x509_svid_key_type`     | The workload X509 SVID key type &lt;rsa-2048&vert;ec-p256&gt;                                                                  | ec-p256                          |
+| Configuration                     | Description                                                                                                                                                                                                                                       | Default                          |
+|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
+| `admin_socket_path`               | Location to bind the admin API socket (disabled as default)                                                                                                                                                                                       |                                  |
+| `allow_unauthenticated_verifiers` | Allow agent to release trust bundles to unauthenticated verifiers                                                                                                                                                                                 | false                            |
+| `allowed_foreign_jwt_claims`      | List of trusted claims to be returned when validating foreign JWTSVIDs                                                                                                                                                                            |                                  |
+| `authorized_delegates`            | A SPIFFE ID list of the authorized delegates. See [Delegated Identity API](#delegated-identity-api) for more information                                                                                                                          |                                  |
+| `data_dir`                        | A directory the agent can use for its runtime data                                                                                                                                                                                                | $PWD                             |
+| `experimental`                    | The experimental options that are subject to change or removal (see below)                                                                                                                                                                        |                                  |
+| `insecure_bootstrap`              | If true, the agent bootstraps without verifying the server's identity                                                                                                                                                                             | false                            |
+| `retry_bootstrap`                 | If true, the agent retries bootstrap with backoff                                                                                                                                                                                                 | false                            |
+| `join_token`                      | An optional token which has been generated by the SPIRE server                                                                                                                                                                                    |                                  |
+| `log_file`                        | File to write logs to                                                                                                                                                                                                                             |                                  |
+| `log_level`                       | Sets the logging level &lt;DEBUG&vert;INFO&vert;WARN&vert;ERROR&gt;                                                                                                                                                                               | INFO                             |
+| `log_format`                      | Format of logs, &lt;text&vert;json&gt;                                                                                                                                                                                                            | Text                             |
+| `log_source_location`             | If true, logs include source file, line number, and method name fields (adds a bit of runtime cost)                                                                                                                                               | false                            |
+| `profiling_enabled`               | If true, enables a [net/http/pprof](https://pkg.go.dev/net/http/pprof) endpoint                                                                                                                                                                   | false                            |
+| `profiling_freq`                  | Frequency of dumping profiling data to disk. Only enabled when `profiling_enabled` is `true` and `profiling_freq` > 0.                                                                                                                            |                                  |
+| `profiling_names`                 | List of profile names that will be dumped to disk on each profiling tick, see [Profiling Names](#profiling-names)                                                                                                                                 |                                  |
+| `profiling_port`                  | Port number of the [net/http/pprof](https://pkg.go.dev/net/http/pprof) endpoint. Only used when `profiling_enabled` is `true`.                                                                                                                    |                                  |
+| `server_address`                  | DNS name or IP address of the SPIRE server                                                                                                                                                                                                        |                                  |
+| `server_port`                     | Port number of the SPIRE server                                                                                                                                                                                                                   |                                  |
+| `socket_path`                     | Location to bind the SPIRE Agent API socket (Unix only)                                                                                                                                                                                           | /tmp/spire-agent/public/api.sock |
+| `sds`                             | Optional SDS configuration section                                                                                                                                                                                                                |                                  |
+| `trust_bundle_path`               | Path to the SPIRE server CA bundle                                                                                                                                                                                                                |                                  |
+| `trust_bundle_url`                | URL to download the initial SPIRE server trust bundle                                                                                                                                                                                             |                                  |
+| `trust_bundle_unix_socket`        | Make the request specified via trust_bundle_url happen against the specified unix socket.                                                                                                                                                         |                                  |
+| `trust_bundle_format`             | Format of the initial trust bundle, pem or spiffe                                                                                                                                                                                                 | pem                              |
+| `trust_domain`                    | The trust domain that this agent belongs to (should be no more than 255 characters)                                                                                                                                                               |                                  |
+| `workload_x509_svid_key_type`     | The workload X509 SVID key type &lt;rsa-2048&vert;ec-p256&gt;                                                                                                                                                                                     | ec-p256                          |
+| `availability_target`             | The minimum amount of time desired to gracefully handle SPIRE Server or Agent downtime. This configurable influences how aggressively X509 SVIDs should be rotated. If set, must be at least 24h. See [Availability Target](#availability-target) |                                  |
+| `x509_svid_cache_max_size`        | Soft limit of max number of X509-SVIDs that would be stored in LRU cache                                                                                                                                                                          | 1000                             |
+| `jwt_svid_cache_max_size`         | Hard limit of max number of JWT-SVIDs that would be stored in LRU cache                                                                                                                                                                           | 1000                             |
 
-| experimental      | Description                                                     | Default                 |
-|:------------------|-----------------------------------------------------------------|-------------------------|
-| `named_pipe_name` | Pipe name to bind the SPIRE Agent API named pipe (Windows only) | \spire-agent\public\api |
+| experimental                  | Description                                                                          | Default                 |
+|:------------------------------|--------------------------------------------------------------------------------------|-------------------------|
+| `named_pipe_name`             | Pipe name to bind the SPIRE Agent API named pipe (Windows only)                      | \spire-agent\public\api |
+| `sync_interval`               | Sync interval with SPIRE server with exponential backoff                             | 5 sec                   |
+| `use_sync_authorized_entries` | Use SyncAuthorizedEntries API for periodically synchronization of authorized entries | true                    |
+| `require_pq_kem`              | Require use of a post-quantum-safe key exchange method for TLS handshakes            | false                   |
 
 ### Initial trust bundle configuration
 
-The agent needs an initial trust bundle in order to connect securely to the SPIRE server. There are three options:
+The agent needs an initial trust bundle in order to connect securely to the SPIRE server. There are four options:
 
 1. If the `trust_bundle_path` option is used, the agent will read the initial trust bundle from the file at that path. You need to copy or share the file before starting the SPIRE agent.
-2. If the `trust_bundle_url` option is used, the agent will read the initial trust bundle from the specified URL. **The URL must start with `https://` for security, and the server must have a valid certificate (verified with the system trust store).** This can be used to rapidly deploy SPIRE agents without having to manually share a file. Keep in mind the contents of the URL need to be kept up to date.
+2. If the `trust_bundle_url` option is used, the agent will read the initial trust bundle from the specified URL.
+    1. If trust_bundle_unix_socket is unset, **The URL must start with `https://` for security, and the server must have a valid certificate (verified with the system trust store).** This can be used to rapidly deploy SPIRE agents without having to manually share a file. Keep in mind the contents of the URL need to be kept up to date.
+    2. If trust_bundle_unix_socket is set, **The URL must start with `http://`.** This can be used along with a local service running on the socket to fetch up to date trust bundles via some site specific, secure meachanism.
 3. If the `insecure_bootstrap` option is set to `true`, then the agent will not use an initial trust bundle. It will connect to the SPIRE server without authenticating it. This is not a secure configuration, because a man-in-the-middle attacker could control the SPIRE infrastructure. It is included because it is a useful option for testing and development.
 
 Only one of these three options may be set at a time.
 
 ### SDS Configuration
 
-| Configuration                    | Description                                                                                      | Default |
-|----------------------------------|--------------------------------------------------------------------------------------------------|---------|
-| `default_svid_name`              | The TLS Certificate resource name to use for the default X509-SVID with Envoy SDS                | default |
-| `default_bundle_name`            | The Validation Context resource name to use for the default X.509 bundle with Envoy SDS          | ROOTCA  |
-| `default_all_bundles_name`       | The Validation Context resource name to use for all bundles (including federated) with Envoy SDS | ALL     |
-| `disable_spiffe_cert_validation` | Disable Envoy SDS custom validation                                                              | false   |
+| Configuration                    | Description                                                                                                                                                                         | Default |
+|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
+| `default_svid_name`              | The TLS Certificate resource name to use for the default X509-SVID with Envoy SDS                                                                                                   | default |
+| `default_bundle_name`            | The Validation Context resource name to use for the default X.509 bundle with Envoy SDS                                                                                             | ROOTCA  |
+| `default_all_bundles_name`       | The Validation Context resource name to use for all bundles (including federated) with Envoy SDS                                                                                    | ALL     |
+| `disable_spiffe_cert_validation` | Disable Envoy SDS custom validation                                                                                                                                                 | false   |
 
 ### Profiling Names
 
-These are the available profiles that can be set in the `profiling_freq` configuration value:
+These are the available profiles that can be set in the `profiling_names` configuration value:
 
 - `goroutine`
 - `threadcreate`
@@ -100,6 +112,15 @@ These are the available profiles that can be set in the `profiling_freq` configu
 - `mutex`
 - `trace`
 - `cpu`
+
+### Availability Target
+
+_Note: The `availability_target` only affects the agent SVIDs and workload X509-SVIDs, but not JWT-SVIDs._
+
+If the `availability_target` is set, the agent will rotate an X509 SVID when its remaining lifetime reaches the `availability_target`.
+
+To guarantee the `availability_target`, grace period (`SVID lifetime - availability_target`) must be at least 12h.
+If not satisfied, the agent will rotate the SVID by the default rotation strategy (1/2 of lifetime).
 
 ## Plugin configuration
 
@@ -118,22 +139,69 @@ plugins {
 
 The following configuration options are available to configure a plugin:
 
-| Configuration   | Description                                                                   |
-|-----------------|-------------------------------------------------------------------------------|
-| plugin_cmd      | Path to the plugin implementation binary (optional, not needed for built-ins) |
-| plugin_checksum | An optional sha256 of the plugin binary  (optional, not needed for built-ins) |
-| enabled         | Enable or disable the plugin (enabled by default)                             |
-| plugin_data     | Plugin-specific data                                                          |
+| Configuration    | Description                                                                            |
+|------------------|----------------------------------------------------------------------------------------|
+| plugin_cmd       | Path to the plugin implementation binary (optional, not needed for built-ins)          |
+| plugin_checksum  | An optional sha256 of the plugin binary  (optional, not needed for built-ins)          |
+| enabled          | Enable or disable the plugin (enabled by default)                                      |
+| plugin_data      | Plugin-specific data (mutually exclusive with `plugin_data_file`)                      |
+| plugin_data_file | Path to a file containing plugin-specific data (mutually exclusive with `plugin_data`) |
 
-Please see the [built-in plugins](#built-in-plugins) section for information on plugins that are available out-of-the-box.
+Please see the [built-in plugins](#built-in-plugins) section below for information on plugins that are available out-of-the-box.
+
+### Examples
+
+#### Built-in Plugin with Static Configuration
+
+```hcl
+plugins {
+    SomeType "some_plugin" {
+        plugin_data = {
+            option1 = "foo"
+            option2 = 3
+        }
+    }
+}
+```
+
+#### External Plugin with Dynamic Configuration
+
+In the `agent.conf`, declare the plugin using the `plugin_data_file` option to source the plugin configuration from file.
+
+```hcl
+plugins {
+    SomeType "some_plugin" {
+        plugin_cmd = "./path/to/plugin"
+        plugin_checksum = "4e1243bd22c66e76c2ba9eddc1f91394e57f9f83"
+        plugin_data_file = "some_plugin.conf"
+    }
+}
+```
+
+And then in `some_plugin.conf` you place the plugin configuration:
+
+```hcl
+option1 = "foo"
+option2 = 3
+```
+
+### Reconfiguring plugins (Posix only)
+
+Plugins that use dynamic configuration sources (i.e. `plugin_data_file`) can be reconfigured at runtime by sending a `SIGUSR1` signal to SPIRE Agent. This is true for both built-in and external plugins.
+
+SPIRE Agent, upon receipt of the signal, does the following:
+
+1. Reloads the plugin data
+2. Compares the plugin data to the previous data
+3. If changed, the plugin is reconfigured with the new data
 
 ## Telemetry configuration
 
-Please see the [Telemetry Configuration](./telemetry_config.md) guide for more information about configuring SPIRE Agent to emit telemetry.
+Please see the [Telemetry Configuration](./telemetry/telemetry_config.md) guide for more information about configuring SPIRE Agent to emit telemetry.
 
 ## Health check configuration
 
-The agent can expose additional endpoint that can be used for health checking. It is enabled by setting `listener_enabled = true`. Currently it exposes 2 paths: one for liveness (is agent up) and one for readiness (is agent ready to serve requests). By default, health checking endpoint will listen on localhost:80, unless configured otherwise.
+The agent can expose additional endpoint that can be used for health checking. It is enabled by setting `listener_enabled = true`. Currently, it exposes 2 paths: one for liveness (is agent up) and one for readiness (is agent ready to serve requests). By default, health checking endpoint will listen on localhost:80, unless configured otherwise.
 
 ```hcl
 health_checks {
@@ -149,7 +217,7 @@ health_checks {
 
 ### `spire-agent run`
 
-All of the configuration file above options have identical command-line counterparts. In addition,
+All the configuration file above options have identical command-line counterparts. In addition,
 the following flags are available:
 
 | Command                          | Action                                                                              | Default               |
@@ -305,7 +373,31 @@ plugins {
 
 ## Delegated Identity API
 
-The Delegated Identity API allows an authorized (i.e. delegated) workload to obtain SVIDs and bundles on behalf of workloads that cannot be attested by SPIRE Agent directly. The authorized workload does so by providing SPIRE Agent the selectors that would normally be obtained during workload attestation. The Delegated Identity API is served over the admin API endpoint.
+The Delegated Identity API allows an authorized (i.e. delegated) workload to obtain SVIDs and bundles on behalf of workloads that cannot be attested by SPIRE Agent directly.
+
+The Delegated Identity API is served over the SPIRE Agent's admin API endpoint.
+
+Note that this explicitly and by-design grants the authorized delegate workload the ability to impersonate any of the other workloads it can obtain SVIDs for. Any workload authorized to use the
+Delegated Identity API becomes a "trusted delegate" of the SPIRE Agent, and may impersonate and act on behalf of all workload SVIDs it obtains from the SPIRE Agent.
+
+The trusted delegate workload itself is attested by the SPIRE Agent first, and the delegate's SPIFFE ID is checked against an allowlist of authorized delegates.
+
+Once these requirements are met, the trusted delegate workload can obtain SVIDS for any workloads in the scope of the SPIRE Agent instance it is interacting with.
+
+There are two ways the trusted delegate workload can request SVIDs for other workloads from the SPIRE Agent:
+
+1. By attesting the other workload itself, building a set of selectors, and then providing SPIRE Agent those selectors over the Delegated Identity API.
+  In this approach, the trusted delegate workload is entirely responsible for attesting the other workload and building the attested selectors.
+  When those selectors are presented to the SPIRE Agent, the SPIRE Agent will simply return SVIDs for any workload registration entries that match the provided selectors.
+  No other checks or attestations will be performed by the SPIRE Agent.
+
+1. By obtaining a PID for the other workload, and providing that PID to the SPIRE Agent over the Delegated Identity API.
+   In this approach, the SPIRE Agent will do attestation for the provided PID, build the attested selectors, and return SVIDs for any workload registration entries that match the selectors the SPIRE Agent attested from that PID.
+   This differs from the previous approach in that the SPIRE Agent itself (not the trusted delegate) handles the attestation of the other workload.
+   On most platforms PIDs are not stable identifiers, so the trusted delegate workload **must** ensure that the PID it provides to the SPIRE Agent
+   via the Delegated Identity API for attestation is not recycled between the time a trusted delegate makes an Delegate Identity API request, and obtains a Delegate Identity API response.
+   How this is accomplished is platform-dependent and the responsibility of the trusted delegate (e.g. by using pidfds on Linux).
+   Attestation results obtained via the Delegated Identity API for a PID are valid until the process referred to by the PID terminates, or is re-attested - whichever comes first.
 
 To enable the Delegated Identity API, configure the admin API endpoint address and the list of SPIFFE IDs for authorized delegates. For example:
 
@@ -344,13 +436,13 @@ agent {
 SPIRE agent has support for the [Envoy](https://envoyproxy.io) [Secret Discovery Service](https://www.envoyproxy.io/docs/envoy/latest/configuration/security/secret) (SDS).
 SDS is served over the same Unix domain socket as the Workload API. Envoy processes connecting to SDS are attested as workloads.
 
-[`auth.TlsCertificate`](https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/auth/cert.proto#envoy-api-msg-auth-tlscertificate)
+[`tlsv3.TlsCertificate`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/common.proto#extensions-transport-sockets-tls-v3-tlscertificate)
 resources containing X509-SVIDs can be fetched using the SPIFFE ID of the workload as the resource name
-(e.g. `spiffe://example.org/database`). Alternatively, if the default name "default" is used, the `auth.TlsCertificate`
+(e.g. `spiffe://example.org/database`). Alternatively, if the default name "default" is used, the `tlsv3.TlsCertificate`
 containing the default X509-SVID for the workload (i.e. Envoy) is fetched.
 The default name is configurable (see `default_svid_name` under [SDS Configuration](#sds-configuration)).
 
-[`auth.CertificateValidationContext`](https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/auth/cert.proto#auth-certificatevalidationcontext)
+[`tlsv3.CertificateValidationContext`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/common.proto#extensions-transport-sockets-tls-v3-certificatevalidationcontext)
 resources containing trusted CA certificates can be fetched using the SPIFFE ID
 of the desired trust domain as the resource name (e.g. `spiffe://example.org`).
 In addition, two other special resource names are available. The first, which

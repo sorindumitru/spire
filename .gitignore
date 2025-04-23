@@ -1,6 +1,7 @@
-.build*
+.build
 .cache
 .data
+.envrc
 .glide
 .tmp
 .DS_Store
@@ -19,11 +20,9 @@ svid.*.pem
 # within the respective main packages.
 /spire-server
 /spire-agent
-/k8s-workload-registrar
 /oidc-discovery-provider
 cmd/spire-server/spire-server
 cmd/spire-agent/spire-agent
-support/k8s/k8s-workload-registrar/k8s-workload-registrar
 support/oidc-discovery-provider/oidc-discovery-provider
 tools/spire-plugingen/spire-plugingen
 
@@ -38,3 +37,7 @@ tools/spire-plugingen/spire-plugingen
 # oci artifacts
 *-image.tar
 oci/
+
+# Go workspace files
+go.work
+go.work.sum

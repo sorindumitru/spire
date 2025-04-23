@@ -1,10 +1,8 @@
 //go:build windows
-// +build windows
 
 package util
 
 import (
-	"context"
 	"errors"
 	"net"
 
@@ -15,9 +13,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func GRPCDialContext(ctx context.Context, target string, options ...grpc.DialOption) (*grpc.ClientConn, error) {
+func NewGRPCClient(target string, options ...grpc.DialOption) (*grpc.ClientConn, error) {
 	options = append(options, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(winio.DialPipeContext))
-	return grpc.DialContext(ctx, target, options...)
+	return grpc.NewClient(target, options...)
 }
 
 func GetWorkloadAPIClientOption(addr net.Addr) (workloadapi.ClientOption, error) {

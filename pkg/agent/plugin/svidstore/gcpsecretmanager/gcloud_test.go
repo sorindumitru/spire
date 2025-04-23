@@ -87,9 +87,9 @@ func TestConfigure(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 
+		trustDomain     spiffeid.TrustDomain
 		customConfig    string
 		newClientErr    error
-		trustDomain     spiffeid.TrustDomain
 		expectCode      codes.Code
 		expectMsgPrefix string
 		expectFilePath  string
@@ -98,32 +98,35 @@ func TestConfigure(t *testing.T) {
 	}{
 		{
 			name:           "success",
+			trustDomain:    trustDomain,
 			expectFilePath: "someFile",
 			expectConfig:   &Configuration{ServiceAccountFile: "someFile"},
-			trustDomain:    trustDomain,
 			expectTD:       tdHash,
 		},
 		{
 			name:         "no config file",
-			expectConfig: &Configuration{ServiceAccountFile: ""},
 			trustDomain:  trustDomain,
+			expectConfig: &Configuration{ServiceAccountFile: ""},
 			expectTD:     tdHash,
 		},
 		{
 			name:            "malformed configuration",
+			trustDomain:     trustDomain,
 			customConfig:    "{no a config}",
 			expectCode:      codes.InvalidArgument,
 			expectMsgPrefix: "unable to decode configuration:",
 		},
 		{
 			name:            "failed to create client",
+			trustDomain:     trustDomain,
 			expectConfig:    &Configuration{ServiceAccountFile: "someFile"},
 			newClientErr:    errors.New("oh! no"),
 			expectCode:      codes.Internal,
 			expectMsgPrefix: "failed to create secretmanager client: oh! no",
 		},
 		{
-			name: "contains unused keys",
+			name:        "contains unused keys",
+			trustDomain: trustDomain,
 			customConfig: `
 service_account_file = "some_file"
 invalid1 = "something"
@@ -458,6 +461,97 @@ func TestPutX509SVID(t *testing.T) {
 			},
 		},
 		{
+			name: "Add payload and create regional secret",
+			req: &svidstore.X509SVID{
+				SVID: successReq.SVID,
+				Metadata: []string{
+					"name:secret1",
+					"projectid:project1",
+					"regions:europe-north1",
+				},
+				FederatedBundles: successReq.FederatedBundles,
+			},
+			expectCreateSecretReq: &secretmanagerpb.CreateSecretRequest{
+				Parent:   "projects/project1",
+				SecretId: "secret1",
+				Secret: &secretmanagerpb.Secret{
+					Replication: &secretmanagerpb.Replication{
+						Replication: &secretmanagerpb.Replication_UserManaged_{
+							UserManaged: &secretmanagerpb.Replication_UserManaged{
+								Replicas: []*secretmanagerpb.Replication_UserManaged_Replica{
+									{
+										Location: "europe-north1",
+									},
+								},
+							},
+						},
+					},
+					Labels: map[string]string{
+						"spire-svid": tdHash,
+					},
+				},
+			},
+			expectGetSecretReq: &secretmanagerpb.GetSecretRequest{
+				Name: "projects/project1/secrets/secret1",
+			},
+			expectAddSecretVersionReq: &secretmanagerpb.AddSecretVersionRequest{
+				Parent: "projects/project1/secrets/secret1",
+				Payload: &secretmanagerpb.SecretPayload{
+					Data: payload,
+				},
+			},
+			clientConfig: &clientConfig{
+				getSecretErr: status.Error(codes.NotFound, "secret not found"),
+			},
+		},
+		{
+			name: "Add payload and create secret in multiple regions",
+			req: &svidstore.X509SVID{
+				SVID: successReq.SVID,
+				Metadata: []string{
+					"name:secret1",
+					"projectid:project1",
+					"regions:europe-north1,europe-west1",
+				},
+				FederatedBundles: successReq.FederatedBundles,
+			},
+			expectCreateSecretReq: &secretmanagerpb.CreateSecretRequest{
+				Parent:   "projects/project1",
+				SecretId: "secret1",
+				Secret: &secretmanagerpb.Secret{
+					Replication: &secretmanagerpb.Replication{
+						Replication: &secretmanagerpb.Replication_UserManaged_{
+							UserManaged: &secretmanagerpb.Replication_UserManaged{
+								Replicas: []*secretmanagerpb.Replication_UserManaged_Replica{
+									{
+										Location: "europe-north1",
+									},
+									{
+										Location: "europe-west1",
+									},
+								},
+							},
+						},
+					},
+					Labels: map[string]string{
+						"spire-svid": tdHash,
+					},
+				},
+			},
+			expectGetSecretReq: &secretmanagerpb.GetSecretRequest{
+				Name: "projects/project1/secrets/secret1",
+			},
+			expectAddSecretVersionReq: &secretmanagerpb.AddSecretVersionRequest{
+				Parent: "projects/project1/secrets/secret1",
+				Payload: &secretmanagerpb.SecretPayload{
+					Data: payload,
+				},
+			},
+			clientConfig: &clientConfig{
+				getSecretErr: status.Error(codes.NotFound, "secret not found"),
+			},
+		},
+		{
 			name: "Add IAM policy when creating",
 			req: &svidstore.X509SVID{
 				SVID: successReq.SVID,
@@ -691,7 +785,6 @@ func TestPutX509SVID(t *testing.T) {
 			expectMsgPrefix: "svidstore(gcp_secretmanager): failed to add secret version: rpc error: code = DeadlineExceeded desc = some error",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -868,7 +961,7 @@ func TestDeleteX509SVID(t *testing.T) {
 			err = ss.DeleteX509SVID(ctx, tt.metadata)
 			spiretest.RequireGRPCStatus(t, err, tt.expectCode, tt.expectMsgPrefix)
 
-			// Validate what is send to gcp
+			// Validate what is sent to gcp
 			spiretest.AssertProtoEqual(t, tt.expectDeleteSecretReq, client.deleteSecretReq)
 			spiretest.AssertProtoEqual(t, tt.expectGetSecretReq, client.getSecretReq)
 		})
@@ -904,7 +997,7 @@ func (c *fakeClient) newClient(context.Context, string) (secretManagerClient, er
 	return c, nil
 }
 
-func (c *fakeClient) AddSecretVersion(ctx context.Context, req *secretmanagerpb.AddSecretVersionRequest, opts ...gax.CallOption) (*secretmanagerpb.SecretVersion, error) {
+func (c *fakeClient) AddSecretVersion(_ context.Context, req *secretmanagerpb.AddSecretVersionRequest, _ ...gax.CallOption) (*secretmanagerpb.SecretVersion, error) {
 	if c.c.addSecretVersionErr != nil {
 		return nil, c.c.addSecretVersionErr
 	}
@@ -917,7 +1010,7 @@ func (c *fakeClient) AddSecretVersion(ctx context.Context, req *secretmanagerpb.
 	}, nil
 }
 
-func (c *fakeClient) CreateSecret(ctx context.Context, req *secretmanagerpb.CreateSecretRequest, opts ...gax.CallOption) (*secretmanagerpb.Secret, error) {
+func (c *fakeClient) CreateSecret(_ context.Context, req *secretmanagerpb.CreateSecretRequest, _ ...gax.CallOption) (*secretmanagerpb.Secret, error) {
 	if c.c.createSecretErr != nil {
 		return nil, c.c.createSecretErr
 	}
@@ -929,7 +1022,7 @@ func (c *fakeClient) CreateSecret(ctx context.Context, req *secretmanagerpb.Crea
 	}, nil
 }
 
-func (c *fakeClient) GetSecret(ctx context.Context, req *secretmanagerpb.GetSecretRequest, opts ...gax.CallOption) (*secretmanagerpb.Secret, error) {
+func (c *fakeClient) GetSecret(_ context.Context, req *secretmanagerpb.GetSecretRequest, _ ...gax.CallOption) (*secretmanagerpb.Secret, error) {
 	c.getSecretReq = req
 
 	if c.c.getSecretErr != nil {
@@ -950,7 +1043,7 @@ func (c *fakeClient) GetSecret(ctx context.Context, req *secretmanagerpb.GetSecr
 	return resp, nil
 }
 
-func (c *fakeClient) DeleteSecret(ctx context.Context, req *secretmanagerpb.DeleteSecretRequest, opts ...gax.CallOption) error {
+func (c *fakeClient) DeleteSecret(_ context.Context, req *secretmanagerpb.DeleteSecretRequest, _ ...gax.CallOption) error {
 	c.deleteSecretReq = req
 
 	return c.c.deleteSecretErr
@@ -960,7 +1053,7 @@ func (c *fakeClient) Close() error {
 	return nil
 }
 
-func (c *fakeClient) GetIamPolicy(ctx context.Context, req *iampb.GetIamPolicyRequest, opts ...gax.CallOption) (*iampb.Policy, error) {
+func (c *fakeClient) GetIamPolicy(_ context.Context, req *iampb.GetIamPolicyRequest, _ ...gax.CallOption) (*iampb.Policy, error) {
 	if c.c.getIamPolicyErr != nil {
 		return nil, c.c.getIamPolicyErr
 	}
@@ -979,7 +1072,7 @@ func (c *fakeClient) GetIamPolicy(ctx context.Context, req *iampb.GetIamPolicyRe
 	}, nil
 }
 
-func (c *fakeClient) SetIamPolicy(ctx context.Context, req *iampb.SetIamPolicyRequest, opts ...gax.CallOption) (*iampb.Policy, error) {
+func (c *fakeClient) SetIamPolicy(_ context.Context, req *iampb.SetIamPolicyRequest, _ ...gax.CallOption) (*iampb.Policy, error) {
 	if c.c.setIamPolicyErr != nil {
 		return nil, c.c.setIamPolicyErr
 	}

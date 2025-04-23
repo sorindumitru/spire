@@ -13,6 +13,9 @@ import (
 
 // AuthorizedEntryFetcher is the interface to fetch authorized entries
 type AuthorizedEntryFetcher interface {
+	// LookupAuthorizedEntries fetches the entries in entryIDs that the
+	// specified SPIFFE ID is authorized for
+	LookupAuthorizedEntries(ctx context.Context, id spiffeid.ID, entryIDs map[string]struct{}) (map[string]*types.Entry, error)
 	// FetchAuthorizedEntries fetches the entries that the specified
 	// SPIFFE ID is authorized for
 	FetchAuthorizedEntries(ctx context.Context, id spiffeid.ID) ([]*types.Entry, error)
@@ -47,5 +50,6 @@ func AttestedNodeToProto(node *common.AttestedNode, selectors []*types.Selector)
 		X509SvidExpiresAt:    node.CertNotAfter,
 		Selectors:            selectors,
 		Banned:               nodeutil.IsAgentBanned(node),
+		CanReattest:          node.CanReattest,
 	}, nil
 }

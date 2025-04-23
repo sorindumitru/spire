@@ -8,13 +8,12 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	agentv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/agent/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/common/errorutil"
-	"github.com/spiffe/spire/pkg/common/fflag"
 	"github.com/spiffe/spire/pkg/common/idutil"
 	"github.com/spiffe/spire/pkg/common/nodeutil"
 	"github.com/spiffe/spire/pkg/common/selector"
@@ -40,7 +39,6 @@ type Config struct {
 	Clock       clock.Clock
 	DataStore   datastore.DataStore
 	ServerCA    ca.ServerCA
-	AgentTTL    time.Duration
 	TrustDomain spiffeid.TrustDomain
 }
 
@@ -48,34 +46,68 @@ type Config struct {
 type Service struct {
 	agentv1.UnsafeAgentServer
 
-	cat      catalog.Catalog
-	clk      clock.Clock
-	ds       datastore.DataStore
-	ca       ca.ServerCA
-	td       spiffeid.TrustDomain
-	agentTTL time.Duration
+	cat catalog.Catalog
+	clk clock.Clock
+	ds  datastore.DataStore
+	ca  ca.ServerCA
+	td  spiffeid.TrustDomain
 }
 
 // New creates a new agent service
 func New(config Config) *Service {
 	return &Service{
-		cat:      config.Catalog,
-		clk:      config.Clock,
-		ds:       config.DataStore,
-		ca:       config.ServerCA,
-		td:       config.TrustDomain,
-		agentTTL: config.AgentTTL,
+		cat: config.Catalog,
+		clk: config.Clock,
+		ds:  config.DataStore,
+		ca:  config.ServerCA,
+		td:  config.TrustDomain,
 	}
 }
 
 // RegisterService registers the agent service on the gRPC server/
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	agentv1.RegisterAgentServer(s, service)
 }
 
 // CountAgents returns the total number of agents.
 func (s *Service) CountAgents(ctx context.Context, req *agentv1.CountAgentsRequest) (*agentv1.CountAgentsResponse, error) {
-	count, err := s.ds.CountAttestedNodes(ctx)
+	log := rpccontext.Logger(ctx)
+
+	countReq := &datastore.CountAttestedNodesRequest{}
+
+	// Parse proto filter into datastore request
+	if req.Filter != nil {
+		filter := req.Filter
+		rpccontext.AddRPCAuditFields(ctx, fieldsFromCountAgentsRequest(filter))
+
+		if filter.ByBanned != nil {
+			countReq.ByBanned = &req.Filter.ByBanned.Value
+		}
+		if filter.ByCanReattest != nil {
+			countReq.ByCanReattest = &req.Filter.ByCanReattest.Value
+		}
+
+		if filter.ByAttestationType != "" {
+			countReq.ByAttestationType = filter.ByAttestationType
+		}
+
+		if filter.ByExpiresBefore != "" {
+			countReq.ByExpiresBefore, _ = time.Parse("2006-01-02 15:04:05 -0700 -07", filter.ByExpiresBefore)
+		}
+
+		if filter.BySelectorMatch != nil {
+			selectors, err := api.SelectorsFromProto(filter.BySelectorMatch.Selectors)
+			if err != nil {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "failed to parse selectors", err)
+			}
+			countReq.BySelectorMatch = &datastore.BySelectors{
+				Match:     datastore.MatchBehavior(filter.BySelectorMatch.Match),
+				Selectors: selectors,
+			}
+		}
+	}
+
+	count, err := s.ds.CountAttestedNodes(ctx, countReq)
 	if err != nil {
 		log := rpccontext.Logger(ctx)
 		return nil, api.MakeErr(log, codes.Internal, "failed to count agents", err)
@@ -97,15 +129,22 @@ func (s *Service) ListAgents(ctx context.Context, req *agentv1.ListAgentsRequest
 	// Parse proto filter into datastore request
 	if req.Filter != nil {
 		filter := req.Filter
-		rpccontext.AddRPCAuditFields(ctx, fieldsFromFilterRequest(filter))
+		rpccontext.AddRPCAuditFields(ctx, fieldsFromListAgentsRequest(filter))
 
-		var byBanned *bool
 		if filter.ByBanned != nil {
-			byBanned = &filter.ByBanned.Value
+			listReq.ByBanned = &req.Filter.ByBanned.Value
+		}
+		if filter.ByCanReattest != nil {
+			listReq.ByCanReattest = &req.Filter.ByCanReattest.Value
 		}
 
-		listReq.ByAttestationType = filter.ByAttestationType
-		listReq.ByBanned = byBanned
+		if filter.ByAttestationType != "" {
+			listReq.ByAttestationType = filter.ByAttestationType
+		}
+
+		if filter.ByExpiresBefore != "" {
+			listReq.ByExpiresBefore, _ = time.Parse("2006-01-02 15:04:05 -0700 -07", filter.ByExpiresBefore)
+		}
 
 		if filter.BySelectorMatch != nil {
 			selectors, err := api.SelectorsFromProto(filter.BySelectorMatch.Selectors)
@@ -395,8 +434,8 @@ func (s *Service) RenewAgent(ctx context.Context, req *agentv1.RenewAgentRequest
 	}
 
 	// Agent attempted to renew when it should've been reattesting
-	if attestedNode.CanReattest && fflag.IsSet(fflag.FlagReattestToRenew) {
-		return nil, errorutil.PermissionDenied(types.PermissionDeniedDetails_AGENT_MUST_REATTEST, "agent can't renew SVID, must reattest")
+	if attestedNode.CanReattest {
+		return nil, errorutil.PermissionDenied(types.PermissionDeniedDetails_AGENT_MUST_REATTEST, "agent must reattest instead of renew")
 	}
 
 	log.Info("Renewing agent SVID")
@@ -435,6 +474,11 @@ func (s *Service) RenewAgent(ctx context.Context, req *agentv1.RenewAgentRequest
 			CertChain: x509util.RawCertsFromCertificates(agentSVID),
 		},
 	}, nil
+}
+
+// PostStatus post agent status
+func (s *Service) PostStatus(context.Context, *agentv1.PostStatusRequest) (*agentv1.PostStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "unimplemented")
 }
 
 // CreateJoinToken returns a new JoinToken for an agent.
@@ -533,13 +577,9 @@ func (s *Service) signSvid(ctx context.Context, agentID spiffeid.ID, csr []byte,
 	}
 
 	// Sign a new X509 SVID
-	x509Svid, err := s.ca.SignX509SVID(ctx, ca.X509SVIDParams{
-		SpiffeID:  agentID,
+	x509Svid, err := s.ca.SignAgentX509SVID(ctx, ca.AgentX509SVIDParams{
+		SPIFFEID:  agentID,
 		PublicKey: parsedCsr.PublicKey,
-
-		// If agent TTL is unset, CA will fall back to the default
-		// X509-SVID TTL which is the desired behavior
-		TTL: s.agentTTL,
 	})
 	if err != nil {
 		return nil, api.MakeErr(log, codes.Internal, "failed to sign X509 SVID", err)
@@ -642,6 +682,10 @@ func applyMask(a *types.Agent, mask *types.AgentMask) {
 	if !mask.Banned {
 		a.Banned = false
 	}
+
+	if !mask.CanReattest {
+		a.CanReattest = false
+	}
 }
 
 func validateAttestAgentParams(params *agentv1.AttestAgentRequest_Params) error {
@@ -680,7 +724,7 @@ func getAttestAgentResponse(spiffeID spiffeid.ID, certificates []*x509.Certifica
 	}
 }
 
-func fieldsFromFilterRequest(filter *agentv1.ListAgentsRequest_Filter) logrus.Fields {
+func fieldsFromListAgentsRequest(filter *agentv1.ListAgentsRequest_Filter) logrus.Fields {
 	fields := logrus.Fields{}
 
 	if filter.ByAttestationType != "" {
@@ -689,6 +733,33 @@ func fieldsFromFilterRequest(filter *agentv1.ListAgentsRequest_Filter) logrus.Fi
 
 	if filter.ByBanned != nil {
 		fields[telemetry.ByBanned] = filter.ByBanned.Value
+	}
+
+	if filter.ByCanReattest != nil {
+		fields[telemetry.ByCanReattest] = filter.ByCanReattest.Value
+	}
+
+	if filter.BySelectorMatch != nil {
+		fields[telemetry.BySelectorMatch] = filter.BySelectorMatch.Match.String()
+		fields[telemetry.BySelectors] = api.SelectorFieldFromProto(filter.BySelectorMatch.Selectors)
+	}
+
+	return fields
+}
+
+func fieldsFromCountAgentsRequest(filter *agentv1.CountAgentsRequest_Filter) logrus.Fields {
+	fields := logrus.Fields{}
+
+	if filter.ByAttestationType != "" {
+		fields[telemetry.NodeAttestorType] = filter.ByAttestationType
+	}
+
+	if filter.ByBanned != nil {
+		fields[telemetry.ByBanned] = filter.ByBanned.Value
+	}
+
+	if filter.ByCanReattest != nil {
+		fields[telemetry.ByCanReattest] = filter.ByCanReattest.Value
 	}
 
 	if filter.BySelectorMatch != nil {

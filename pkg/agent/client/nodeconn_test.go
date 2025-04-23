@@ -1,7 +1,8 @@
 package client
 
 import (
-	"context"
+	"crypto"
+	"crypto/x509"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,14 +29,14 @@ func newTestConn(t *testing.T) *grpc.ClientConn {
 	client := newClient(&Config{
 		Addr:          "unix:///foo",
 		Log:           log,
-		KeysAndBundle: keysAndBundle,
+		KeysAndBundle: emptyKeysAndBundle,
 		TrustDomain:   trustDomain,
 	})
-	client.dialContext = func(ctx context.Context, addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	client.dialOpts = []grpc.DialOption{
 		// make a normal grpc dial but without any of the provided options that may cause it to fail
-		return grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
-	conn, err := client.dial(context.Background())
+	conn, err := client.newServerGRPCClient()
 	require.NoError(t, err)
 	return conn
 }
@@ -62,7 +63,7 @@ func TestNewNodeMany(t *testing.T) {
 	firstRelease := false
 
 	go func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			nodeConn.AddRef()
 			if !firstRelease {
 				nodeConn.Release()
@@ -73,7 +74,7 @@ func TestNewNodeMany(t *testing.T) {
 	}()
 
 	go func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			nodeConn.Release()
 		}
 		close(waitForReleases)
@@ -85,4 +86,8 @@ func TestNewNodeMany(t *testing.T) {
 	// should error since we already closed
 	err := conn.Close()
 	require.Equal(t, codes.Canceled, status.Code(err))
+}
+
+func emptyKeysAndBundle() ([]*x509.Certificate, crypto.Signer, []*x509.Certificate) {
+	return nil, nil, nil
 }

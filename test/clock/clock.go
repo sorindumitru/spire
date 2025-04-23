@@ -20,10 +20,16 @@ type Mock struct {
 	tickerC     chan time.Duration
 	tickerCount atomic.Int32
 	sleepC      chan time.Duration
+	afterHook   func(time.Duration) <-chan time.Time
 }
 
 // NewMock creates a mock clock which can be precisely controlled
 func NewMock(t testing.TB) *Mock {
+	return NewMockAt(t, time.Now())
+}
+
+// NewMockAt creates a mock clock which can be precisely controlled at a specific time.
+func NewMockAt(t testing.TB, now time.Time) *Mock {
 	m := &Mock{
 		Mock:    clock.NewMock(),
 		t:       t,
@@ -40,8 +46,12 @@ func NewMock(t testing.TB) *Mock {
 	//
 	// TODO: plumb the clock into the TLS configs. (Clock).Now should be passed to "crypto/tls".(Config).Time
 	// and then this can be removed as a clock could be use with a zero value at that point.
-	m.Set(time.Now().Truncate(time.Second))
+	m.Set(now.Truncate(time.Second))
 	return m
+}
+
+func (m *Mock) SetAfterHook(h func(time.Duration) <-chan time.Time) {
+	m.afterHook = h
 }
 
 func (m *Mock) TimerCh() <-chan time.Duration {
@@ -53,7 +63,7 @@ func (m *Mock) WaitForAfterCh() <-chan time.Duration {
 }
 
 // WaitForTimer waits up to the specified timeout for Timer to be called on the clock.
-func (m *Mock) WaitForTimer(timeout time.Duration, format string, args ...interface{}) {
+func (m *Mock) WaitForTimer(timeout time.Duration, format string, args ...any) {
 	select {
 	case <-m.timerC:
 	case <-time.After(timeout):
@@ -62,7 +72,7 @@ func (m *Mock) WaitForTimer(timeout time.Duration, format string, args ...interf
 }
 
 // WaitForAfter waits up to the specified timeout for After to be called on the clock.
-func (m *Mock) WaitForAfter(timeout time.Duration, format string, args ...interface{}) {
+func (m *Mock) WaitForAfter(timeout time.Duration, format string, args ...any) {
 	select {
 	case <-m.afterC:
 	case <-time.After(timeout):
@@ -71,17 +81,17 @@ func (m *Mock) WaitForAfter(timeout time.Duration, format string, args ...interf
 }
 
 // WaitForTicker waits up to the specified timeout for a Ticker to be created from the clock.
-func (m *Mock) WaitForTicker(timeout time.Duration, format string, args ...interface{}) {
+func (m *Mock) WaitForTicker(timeout time.Duration, format string, args ...any) {
 	m.WaitForTickerMulti(timeout, 1, format, args...)
 }
 
-func (m *Mock) WaitForTickerMulti(timeout time.Duration, count int, format string, args ...interface{}) {
+func (m *Mock) WaitForTickerMulti(timeout time.Duration, count int32, format string, args ...any) {
 	deadlineChan := time.After(timeout)
 	for {
 		select {
 		case <-m.tickerC:
-			if m.tickerCount.Load() >= int32(count) {
-				m.tickerCount.Add(-1 * int32(count))
+			if m.tickerCount.Load() >= count {
+				m.tickerCount.Add(-1 * count)
 				return
 			}
 		case <-deadlineChan:
@@ -91,7 +101,7 @@ func (m *Mock) WaitForTickerMulti(timeout time.Duration, count int, format strin
 }
 
 // WaitForSleep waits up to the specified timeout for a sleep to begin using the clock.
-func (m *Mock) WaitForSleep(timeout time.Duration, format string, args ...interface{}) {
+func (m *Mock) WaitForSleep(timeout time.Duration, format string, args ...any) {
 	select {
 	case <-m.sleepC:
 	case <-time.After(timeout):
@@ -112,6 +122,9 @@ func (m *Mock) Timer(d time.Duration) *clock.Timer {
 
 // After waits for the duration to elapse and then sends the current time on the returned channel.
 func (m *Mock) After(d time.Duration) <-chan time.Time {
+	if m.afterHook != nil {
+		return m.afterHook(d)
+	}
 	c := m.Mock.After(d)
 	select {
 	case m.afterC <- d:

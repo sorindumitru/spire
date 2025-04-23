@@ -9,17 +9,17 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/spire/pkg/common/bundleutil"
-	"github.com/zeebo/errs"
 )
 
 type Getter interface {
-	GetBundle(ctx context.Context) (*bundleutil.Bundle, error)
+	GetBundle(ctx context.Context) (*spiffebundle.Bundle, error)
 }
 
-type GetterFunc func(ctx context.Context) (*bundleutil.Bundle, error)
+type GetterFunc func(ctx context.Context) (*spiffebundle.Bundle, error)
 
-func (fn GetterFunc) GetBundle(ctx context.Context) (*bundleutil.Bundle, error) {
+func (fn GetterFunc) GetBundle(ctx context.Context) (*spiffebundle.Bundle, error) {
 	return fn(ctx)
 }
 
@@ -28,10 +28,11 @@ type ServerAuth interface {
 }
 
 type ServerConfig struct {
-	Log        logrus.FieldLogger
-	Address    string
-	Getter     Getter
-	ServerAuth ServerAuth
+	Log         logrus.FieldLogger
+	Address     string
+	Getter      Getter
+	ServerAuth  ServerAuth
+	RefreshHint time.Duration
 
 	// test hooks
 	listen func(network, address string) (net.Listener, error)
@@ -55,7 +56,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// it gives us the ability to use/inspect an ephemeral port during testing.
 	listener, err := s.c.listen("tcp", s.c.Address)
 	if err != nil {
-		return errs.Wrap(err)
+		return err
 	}
 
 	// Set up the TLS config, setting TLS 1.2 as the minimum.
@@ -70,7 +71,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- errs.Wrap(server.ServeTLS(listener, "", ""))
+		errCh <- server.ServeTLS(listener, "", "")
 	}()
 
 	select {
@@ -99,11 +100,9 @@ func (s *Server) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	refreshHint := bundleutil.CalculateRefreshHint(b)
-
 	// TODO: bundle sequence number?
 	opts := []bundleutil.MarshalOption{
-		bundleutil.OverrideRefreshHint(refreshHint),
+		bundleutil.OverrideRefreshHint(s.c.RefreshHint),
 	}
 
 	jsonBytes, err := bundleutil.Marshal(b, opts...)

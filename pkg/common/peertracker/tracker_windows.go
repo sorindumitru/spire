@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package peertracker
 
@@ -10,6 +9,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
 	"golang.org/x/sys/windows"
 )
 
@@ -72,7 +72,7 @@ func (t *windowsTracker) newWindowsWatcher(info CallerInfo, log logrus.FieldLogg
 
 	// This is a mitigation for attacks that leverage opening a
 	// named pipe through the local SMB server that set the PID
-	// attribute to 0xFEFF (65279). We wanto to prevent abusing
+	// attribute to 0xFEFF (65279). We want to to prevent abusing
 	// the fact that Windows reuses PID values and an attacker could
 	// cycle through process creation until it has a suitable process
 	// meeting the security check requirements from SMB server.
@@ -87,7 +87,11 @@ func (t *windowsTracker) newWindowsWatcher(info CallerInfo, log logrus.FieldLogg
 	if err != nil {
 		return nil, fmt.Errorf("error getting process id from handle: %w", err)
 	}
-	if int32(pid) != info.PID {
+	pidInt32, err := util.CheckedCast[int32](pid)
+	if err != nil {
+		return nil, fmt.Errorf("invalid value for process ID: %w", err)
+	}
+	if pidInt32 != info.PID {
 		return nil, errors.New("process ID does not match with the caller")
 	}
 
@@ -209,5 +213,9 @@ func (s *systemCall) GetProcessID(h windows.Handle) (uint32, error) {
 }
 
 func (s *systemCall) OpenProcess(pid int32) (handle windows.Handle, err error) {
-	return windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	pidUint32, err := util.CheckedCast[uint32](pid)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value for PID: %w", err)
+	}
+	return windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pidUint32)
 }

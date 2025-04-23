@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
-	"github.com/sirupsen/logrus/hooks/test"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,7 @@ func TestServerEnabled(t *testing.T) {
 }
 
 func TestCheckerListeners(t *testing.T) {
-	log, _ := test.NewNullLogger()
+	log, _ := logtest.NewNullLogger()
 	config := Config{
 		ListenerEnabled: true,
 		BindAddress:     "localhost",
@@ -39,7 +38,7 @@ func TestCheckerListeners(t *testing.T) {
 
 	servableChecker := NewChecker(config, log)
 
-	fooCheker := &fakeCheckable{
+	fooChecker := &fakeCheckable{
 		state: State{
 			Live:         true,
 			Ready:        true,
@@ -47,7 +46,7 @@ func TestCheckerListeners(t *testing.T) {
 			LiveDetails:  healthDetails{},
 		},
 	}
-	err := servableChecker.AddCheck("foo", fooCheker)
+	err := servableChecker.AddCheck("foo", fooChecker)
 	require.NoError(t, err)
 
 	barChecker := &fakeCheckable{
@@ -71,8 +70,7 @@ func TestCheckerListeners(t *testing.T) {
 	waitFor := make(chan struct{}, 1)
 	finalChecker.cache.hooks.statusUpdated = waitFor
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 
 	go func() {
 		_ = servableChecker.ListenAndServe(ctx)
@@ -107,18 +105,14 @@ func TestCheckerListeners(t *testing.T) {
 		require.JSONEq(t, "{\"bar\":{},\"foo\":{}}\n", string(actual))
 	})
 
-	fooCheker.state.Live = false
-	fooCheker.state.LiveDetails = healthDetails{Err: "live fails"}
+	fooChecker.state.Live = false
+	fooChecker.state.LiveDetails = healthDetails{Err: "live fails"}
 
 	barChecker.state.Ready = false
 	barChecker.state.ReadyDetails = healthDetails{Err: "ready fails"}
 
 	clk.Add(readyCheckInterval)
-	select {
-	case <-waitFor:
-	case <-ctx.Done():
-		require.Fail(t, "unable to get updates")
-	}
+	<-waitFor
 
 	t.Run("live fails", func(t *testing.T) {
 		resp, err := http.Get("http://localhost:12345/live")

@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
@@ -31,7 +31,7 @@ type authorizationMiddleware struct {
 	adminIDs         map[spiffeid.ID]struct{}
 }
 
-func (m *authorizationMiddleware) Preprocess(ctx context.Context, methodName string, req interface{}) (context.Context, error) {
+func (m *authorizationMiddleware) Preprocess(ctx context.Context, methodName string, req any) (context.Context, error) {
 	ctx, err := callerContextFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func (m *authorizationMiddleware) Preprocess(ctx context.Context, methodName str
 	}
 
 	var deniedDetails *types.PermissionDeniedDetails
-	ctx, allow, err := m.opaAuth(ctx, req, methodName)
+	authCtx, allow, err := m.opaAuth(ctx, req, methodName)
 	if err != nil {
 		statusErr := status.Convert(err)
 		if statusErr.Code() != codes.PermissionDenied {
@@ -67,7 +67,7 @@ func (m *authorizationMiddleware) Preprocess(ctx context.Context, methodName str
 		deniedDetails = deniedDetailsFromStatus(statusErr)
 	}
 	if allow {
-		return ctx, nil
+		return authCtx, nil
 	}
 
 	st := status.Newf(codes.PermissionDenied, "authorization denied for method %s", methodName)
@@ -83,7 +83,7 @@ func (m *authorizationMiddleware) Preprocess(ctx context.Context, methodName str
 	return nil, deniedErr
 }
 
-func (m *authorizationMiddleware) Postprocess(ctx context.Context, methodName string, handlerInvoked bool, rpcErr error) {
+func (m *authorizationMiddleware) Postprocess(context.Context, string, bool, error) {
 	// Intentionally empty.
 }
 

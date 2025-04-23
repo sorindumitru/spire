@@ -1,10 +1,8 @@
 //go:build !windows
-// +build !windows
 
 package endpoints
 
 import (
-	"context"
 	"net"
 	"path/filepath"
 	"testing"
@@ -19,6 +17,6 @@ func getTestAddr(t *testing.T) net.Addr {
 	}
 }
 
-func testRemoteCaller(ctx context.Context, t *testing.T, target string) {
+func testRemoteCaller(*testing.T, string) {
 	// No testing for UDS endpoints
 }

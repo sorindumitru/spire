@@ -2,11 +2,9 @@ package util
 
 import (
 	"context"
-	"crypto"
 	"crypto/x509"
 	"flag"
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
@@ -14,10 +12,13 @@ import (
 	agentv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/agent/v1"
 	bundlev1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/bundle/v1"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
+	localauthorityv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/localauthority/v1"
+	loggerv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/logger/v1"
 	svidv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/svid/v1"
 	trustdomainv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/trustdomain/v1"
 	api_types "github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	common_cli "github.com/spiffe/spire/pkg/common/cli"
+	"github.com/spiffe/spire/pkg/common/jwtutil"
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -31,13 +32,12 @@ const (
 	FormatSPIFFE         = "spiffe"
 )
 
-func Dial(addr net.Addr) (*grpc.ClientConn, error) {
-	return grpc.Dial(addr.String(),
+func NewGRPCClient(addr string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(
+		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(dialer),
-		grpc.WithBlock(),
-		grpc.FailOnNonTempDialError(true),
-		grpc.WithReturnConnectionError())
+	)
 }
 
 type ServerClient interface {
@@ -45,13 +45,15 @@ type ServerClient interface {
 	NewAgentClient() agentv1.AgentClient
 	NewBundleClient() bundlev1.BundleClient
 	NewEntryClient() entryv1.EntryClient
+	NewLoggerClient() loggerv1.LoggerClient
 	NewSVIDClient() svidv1.SVIDClient
 	NewTrustDomainClient() trustdomainv1.TrustDomainClient
+	NewLocalAuthorityClient() localauthorityv1.LocalAuthorityClient
 	NewHealthClient() grpc_health_v1.HealthClient
 }
 
-func NewServerClient(addr net.Addr) (ServerClient, error) {
-	conn, err := Dial(addr)
+func NewServerClient(addr string) (ServerClient, error) {
+	conn, err := NewGRPCClient(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +80,10 @@ func (c *serverClient) NewEntryClient() entryv1.EntryClient {
 	return entryv1.NewEntryClient(c.conn)
 }
 
+func (c *serverClient) NewLoggerClient() loggerv1.LoggerClient {
+	return loggerv1.NewLoggerClient(c.conn)
+}
+
 func (c *serverClient) NewSVIDClient() svidv1.SVIDClient {
 	return svidv1.NewSVIDClient(c.conn)
 }
@@ -88,6 +94,10 @@ func (c *serverClient) NewTrustDomainClient() trustdomainv1.TrustDomainClient {
 
 func (c *serverClient) NewHealthClient() grpc_health_v1.HealthClient {
 	return grpc_health_v1.NewHealthClient(c.conn)
+}
+
+func (c *serverClient) NewLocalAuthorityClient() localauthorityv1.LocalAuthorityClient {
+	return localauthorityv1.NewLocalAuthorityClient(c.conn)
 }
 
 // Pluralizer concatenates `singular` to `msg` when `val` is one, and
@@ -145,12 +155,7 @@ func (a *Adapter) Run(args []string) int {
 		return 1
 	}
 
-	addr, err := a.getAddr()
-	if err != nil {
-		fmt.Fprintln(a.env.Stderr, "Error: "+err.Error())
-		return 1
-	}
-
+	addr := a.getGRPCAddr()
 	client, err := NewServerClient(addr)
 	if err != nil {
 		fmt.Fprintln(a.env.Stderr, "Error: "+err.Error())
@@ -236,11 +241,11 @@ func bundleProtoFromX509Authorities(trustDomain string, rootCAs []*x509.Certific
 // protoFromSpiffeBundle converts a bundle from the given *spiffebundle.Bundle to *api_types.Bundle
 func protoFromSpiffeBundle(bundle *spiffebundle.Bundle) (*api_types.Bundle, error) {
 	resp := &api_types.Bundle{
-		TrustDomain:     bundle.TrustDomain().String(),
+		TrustDomain:     bundle.TrustDomain().Name(),
 		X509Authorities: protoFromX509Certificates(bundle.X509Authorities()),
 	}
 
-	jwtAuthorities, err := protoFromJWTKeys(bundle.JWTAuthorities())
+	jwtAuthorities, err := jwtutil.ProtoFromJWTKeys(bundle.JWTAuthorities())
 	if err != nil {
 		return nil, err
 	}
@@ -267,22 +272,4 @@ func protoFromX509Certificates(certs []*x509.Certificate) []*api_types.X509Certi
 	}
 
 	return resp
-}
-
-// protoFromJWTKeys converts JWT keys from the given map[string]crypto.PublicKey to []*types.JWTKey
-func protoFromJWTKeys(keys map[string]crypto.PublicKey) ([]*api_types.JWTKey, error) {
-	var resp []*api_types.JWTKey
-
-	for kid, key := range keys {
-		pkixBytes, err := x509.MarshalPKIXPublicKey(key)
-		if err != nil {
-			return nil, err
-		}
-		resp = append(resp, &api_types.JWTKey{
-			PublicKey: pkixBytes,
-			KeyId:     kid,
-		})
-	}
-
-	return resp, nil
 }

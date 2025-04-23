@@ -8,6 +8,7 @@ import (
 	plugintypes "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/types"
 	"github.com/spiffe/spire/pkg/common/coretypes/jwtkey"
 	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
+	"github.com/spiffe/spire/proto/spire/common"
 )
 
 func ToPluginFromAPIProto(pb *apitypes.Bundle) (*plugintypes.Bundle, error) {
@@ -30,10 +31,39 @@ func ToPluginFromAPIProto(pb *apitypes.Bundle) (*plugintypes.Bundle, error) {
 	}
 
 	return &plugintypes.Bundle{
-		TrustDomain:     td.String(),
+		TrustDomain:     td.Name(),
 		RefreshHint:     pb.RefreshHint,
 		SequenceNumber:  pb.SequenceNumber,
 		JwtAuthorities:  jwtAuthorities,
 		X509Authorities: x509Authorities,
+	}, nil
+}
+
+func ToPluginProtoFromCommon(b *common.Bundle) (*plugintypes.Bundle, error) {
+	if b == nil {
+		return nil, nil
+	}
+
+	td, err := spiffeid.TrustDomainFromString(b.TrustDomainId)
+	if err != nil {
+		return nil, err
+	}
+
+	x509Authorities, err := x509certificate.ToPluginFromCommonProtos(b.RootCas)
+	if err != nil {
+		return nil, fmt.Errorf("invalid X.509 authority: %w", err)
+	}
+
+	jwtAuthorities, err := jwtkey.ToPluginFromCommonProtos(b.JwtSigningKeys)
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT authority: %w", err)
+	}
+
+	return &plugintypes.Bundle{
+		TrustDomain:     td.Name(),
+		RefreshHint:     b.RefreshHint,
+		SequenceNumber:  b.SequenceNumber,
+		X509Authorities: x509Authorities,
+		JwtAuthorities:  jwtAuthorities,
 	}, nil
 }

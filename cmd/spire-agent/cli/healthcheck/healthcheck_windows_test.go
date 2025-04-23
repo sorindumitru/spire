@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package healthcheck
 
@@ -22,7 +21,7 @@ var (
 `
 	socketAddrArg         = "-namedPipeName"
 	socketAddrUnavailable = "doesnotexist"
-	unavailableErr        = "Failed to check health: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing open \\\\\\\\.\\\\pipe\\\\doesnotexist: The system cannot find the file specified.\"\nAgent is unhealthy: unable to determine health\n"
+	unavailableErr        = "Failed to check health: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: open \\\\\\\\.\\\\pipe\\\\doesnotexist: The system cannot find the file specified.\"\nAgent is unhealthy: unable to determine health\n"
 )
 
 func startGRPCSocketServer(t *testing.T, registerFn func(srv *grpc.Server)) string {

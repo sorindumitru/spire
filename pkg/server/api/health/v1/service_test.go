@@ -14,6 +14,7 @@ import (
 	"github.com/spiffe/spire/pkg/server/api/rpccontext"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/fakes/fakedatastore"
+	"github.com/spiffe/spire/test/grpctest"
 	"github.com/spiffe/spire/test/spiretest"
 
 	"google.golang.org/grpc"
@@ -21,9 +22,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
-var (
-	td = spiffeid.RequireTrustDomainFromString("example.org")
-)
+var td = spiffeid.RequireTrustDomainFromString("example.org")
 
 func TestServiceCheck(t *testing.T) {
 	for _, tt := range []struct {
@@ -85,7 +84,6 @@ func TestServiceCheck(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			log, logHook := test.NewNullLogger()
 
@@ -103,15 +101,15 @@ func TestServiceCheck(t *testing.T) {
 				DataStore:   ds,
 			})
 
-			conn, done := spiretest.NewAPIServer(t,
-				func(s *grpc.Server) {
-					health.RegisterService(s, service)
-				},
-				func(ctx context.Context) context.Context {
+			server := grpctest.StartServer(t, func(s grpc.ServiceRegistrar) {
+				health.RegisterService(s, service)
+			},
+				grpctest.OverrideContext(func(ctx context.Context) context.Context {
 					return rpccontext.WithLogger(ctx, log)
-				},
+				}),
 			)
-			defer done()
+
+			conn := server.NewGRPCClient(t)
 
 			client := grpc_health_v1.NewHealthClient(conn)
 			resp, err := client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{

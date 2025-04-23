@@ -27,14 +27,17 @@ func TestEntryIteratorDS(t *testing.T) {
 		assert.NoError(t, it.Err())
 	})
 
-	const numEntries = 10
+	// Create some entries.
+	// Set listEntriesRequestPageSize to 10 so that unit tests don't have to generate a huge number of entries in-memory.
+	listEntriesRequestPageSize = 10
+	numEntries := int(listEntriesRequestPageSize) + 1
 	const parentID = "spiffe://example.org/parent"
 	const spiffeIDPrefix = "spiffe://example.org/entry"
 	selectors := []*common.Selector{
 		{Type: "doesn't", Value: "matter"},
 	}
 	entriesToCreate := make([]*common.RegistrationEntry, numEntries)
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		entriesToCreate[i] = &common.RegistrationEntry{
 			ParentId:  parentID,
 			SpiffeId:  spiffeIDPrefix + strconv.Itoa(i),
@@ -50,10 +53,11 @@ func TestEntryIteratorDS(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	t.Run("existing entries", func(t *testing.T) {
+	t.Run("existing entries - multiple pages", func(t *testing.T) {
 		it := makeEntryIteratorDS(ds)
 		var entries []*types.Entry
-		for i := 0; i < numEntries; i++ {
+
+		for range numEntries {
 			assert.True(t, it.Next(ctx))
 			require.NoError(t, it.Err())
 
@@ -69,6 +73,10 @@ func TestEntryIteratorDS(t *testing.T) {
 
 	t.Run("datastore error", func(t *testing.T) {
 		it := makeEntryIteratorDS(ds)
+		for range listEntriesRequestPageSize {
+			assert.True(t, it.Next(ctx))
+			require.NoError(t, it.Err())
+		}
 		dsErr := errors.New("some datastore error")
 		ds.SetNextError(dsErr)
 		assert.False(t, it.Next(ctx))
@@ -97,7 +105,7 @@ func TestAgentIteratorDS(t *testing.T) {
 
 	expectedSelectors := api.ProtoFromSelectors(selectors)
 	expectedAgents := make([]Agent, numAgents)
-	for i := 0; i < numAgents; i++ {
+	for i := range numAgents {
 		iterStr := strconv.Itoa(i)
 		agentID, err := spiffeid.FromString("spiffe://example.org/spire/agent/agent" + iterStr)
 		require.NoError(t, err)
@@ -121,7 +129,7 @@ func TestAgentIteratorDS(t *testing.T) {
 	t.Run("multiple pages", func(t *testing.T) {
 		it := makeAgentIteratorDS(ds)
 		agents := make([]Agent, numAgents)
-		for i := 0; i < numAgents; i++ {
+		for i := range numAgents {
 			assert.True(t, it.Next(ctx))
 			assert.NoError(t, it.Err())
 			agents[i] = it.Agent()

@@ -3,6 +3,9 @@ package entry
 import (
 	"context"
 	"errors"
+	"io"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -19,39 +22,109 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const defaultEntryPageSize = 500
+
 // Config defines the service configuration.
 type Config struct {
-	TrustDomain  spiffeid.TrustDomain
-	EntryFetcher api.AuthorizedEntryFetcher
-	DataStore    datastore.DataStore
+	TrustDomain   spiffeid.TrustDomain
+	EntryFetcher  api.AuthorizedEntryFetcher
+	DataStore     datastore.DataStore
+	EntryPageSize int
 }
 
 // Service defines the v1 entry service.
 type Service struct {
 	entryv1.UnsafeEntryServer
 
-	td spiffeid.TrustDomain
-	ds datastore.DataStore
-	ef api.AuthorizedEntryFetcher
+	td            spiffeid.TrustDomain
+	ds            datastore.DataStore
+	ef            api.AuthorizedEntryFetcher
+	entryPageSize int
 }
 
 // New creates a new v1 entry service.
 func New(config Config) *Service {
+	if config.EntryPageSize == 0 {
+		config.EntryPageSize = defaultEntryPageSize
+	}
 	return &Service{
-		td: config.TrustDomain,
-		ds: config.DataStore,
-		ef: config.EntryFetcher,
+		td:            config.TrustDomain,
+		ds:            config.DataStore,
+		ef:            config.EntryFetcher,
+		entryPageSize: config.EntryPageSize,
 	}
 }
 
 // RegisterService registers the entry service on the gRPC server.
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	entryv1.RegisterEntryServer(s, service)
 }
 
 // CountEntries returns the total number of entries.
 func (s *Service) CountEntries(ctx context.Context, req *entryv1.CountEntriesRequest) (*entryv1.CountEntriesResponse, error) {
-	count, err := s.ds.CountRegistrationEntries(ctx)
+	log := rpccontext.Logger(ctx)
+	countReq := &datastore.CountRegistrationEntriesRequest{}
+
+	if req.Filter != nil {
+		rpccontext.AddRPCAuditFields(ctx, fieldsFromCountEntryFilter(ctx, s.td, req.Filter))
+		if req.Filter.ByHint != nil {
+			countReq.ByHint = req.Filter.ByHint.GetValue()
+		}
+
+		if req.Filter.ByParentId != nil {
+			parentID, err := api.TrustDomainMemberIDFromProto(ctx, s.td, req.Filter.ByParentId)
+			if err != nil {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "malformed parent ID filter", err)
+			}
+			countReq.ByParentID = parentID.String()
+		}
+
+		if req.Filter.BySpiffeId != nil {
+			spiffeID, err := api.TrustDomainWorkloadIDFromProto(ctx, s.td, req.Filter.BySpiffeId)
+			if err != nil {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "malformed SPIFFE ID filter", err)
+			}
+			countReq.BySpiffeID = spiffeID.String()
+		}
+
+		if req.Filter.BySelectors != nil {
+			dsSelectors, err := api.SelectorsFromProto(req.Filter.BySelectors.Selectors)
+			if err != nil {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "malformed selectors filter", err)
+			}
+			if len(dsSelectors) == 0 {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "malformed selectors filter", errors.New("empty selector set"))
+			}
+			countReq.BySelectors = &datastore.BySelectors{
+				Match:     datastore.MatchBehavior(req.Filter.BySelectors.Match),
+				Selectors: dsSelectors,
+			}
+		}
+
+		if req.Filter.ByFederatesWith != nil {
+			trustDomains := make([]string, 0, len(req.Filter.ByFederatesWith.TrustDomains))
+			for _, tdStr := range req.Filter.ByFederatesWith.TrustDomains {
+				td, err := spiffeid.TrustDomainFromString(tdStr)
+				if err != nil {
+					return nil, api.MakeErr(log, codes.InvalidArgument, "malformed federates with filter", err)
+				}
+				trustDomains = append(trustDomains, td.IDString())
+			}
+			if len(trustDomains) == 0 {
+				return nil, api.MakeErr(log, codes.InvalidArgument, "malformed federates with filter", errors.New("empty trust domain set"))
+			}
+			countReq.ByFederatesWith = &datastore.ByFederatesWith{
+				Match:        datastore.MatchBehavior(req.Filter.ByFederatesWith.Match),
+				TrustDomains: trustDomains,
+			}
+		}
+
+		if req.Filter.ByDownstream != nil {
+			countReq.ByDownstream = &req.Filter.ByDownstream.Value
+		}
+	}
+
+	count, err := s.ds.CountRegistrationEntries(ctx, countReq)
 	if err != nil {
 		log := rpccontext.Logger(ctx)
 		return nil, api.MakeErr(log, codes.Internal, "failed to count entries", err)
@@ -76,6 +149,10 @@ func (s *Service) ListEntries(ctx context.Context, req *entryv1.ListEntriesReque
 
 	if req.Filter != nil {
 		rpccontext.AddRPCAuditFields(ctx, fieldsFromListEntryFilter(ctx, s.td, req.Filter))
+
+		if req.Filter.ByHint != nil {
+			listReq.ByHint = req.Filter.ByHint.GetValue()
+		}
 
 		if req.Filter.ByParentId != nil {
 			parentID, err := api.TrustDomainMemberIDFromProto(ctx, s.td, req.Filter.ByParentId)
@@ -123,6 +200,10 @@ func (s *Service) ListEntries(ctx context.Context, req *entryv1.ListEntriesReque
 				Match:        datastore.MatchBehavior(req.Filter.ByFederatesWith.Match),
 				TrustDomains: trustDomains,
 			}
+		}
+
+		if req.Filter.ByDownstream != nil {
+			listReq.ByDownstream = &req.Filter.ByDownstream.Value
 		}
 	}
 
@@ -210,8 +291,12 @@ func (s *Service) createEntry(ctx context.Context, e *types.Entry, outputMask *t
 	regEntry, existing, err := s.ds.CreateOrReturnRegistrationEntry(ctx, cEntry)
 	switch {
 	case err != nil:
+		statusCode := status.Code(err)
+		if statusCode == codes.Unknown {
+			statusCode = codes.Internal
+		}
 		return &entryv1.BatchCreateEntryResponse_Result{
-			Status: api.MakeStatus(log, codes.Internal, "failed to create entry", err),
+			Status: api.MakeStatus(log, statusCode, "failed to create entry", err),
 		}
 	case existing:
 		resultStatus = api.CreateStatus(codes.AlreadyExists, "similar entry already exists")
@@ -318,6 +403,161 @@ func (s *Service) GetAuthorizedEntries(ctx context.Context, req *entryv1.GetAuth
 	return resp, nil
 }
 
+// SyncAuthorizedEntries returns the list of entries authorized for the caller ID in the context.
+func (s *Service) SyncAuthorizedEntries(stream entryv1.Entry_SyncAuthorizedEntriesServer) (err error) {
+	ctx := stream.Context()
+	log := rpccontext.Logger(ctx)
+
+	// Emit "success" auditing if we succeed.
+	defer func() {
+		if err == nil {
+			rpccontext.AuditRPC(ctx)
+		}
+	}()
+
+	entries, err := s.fetchEntries(ctx, log)
+	if err != nil {
+		return err
+	}
+
+	return SyncAuthorizedEntries(stream, entries, s.entryPageSize)
+}
+
+func SyncAuthorizedEntries(stream entryv1.Entry_SyncAuthorizedEntriesServer, entries []*types.Entry, entryPageSize int) (err error) {
+	// Receive the initial request with the output mask.
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+
+	// There is no reason we couldn't support filtering by ID on the initial
+	// response but there doesn't seem to be a reason to. For now, fail if
+	// the initial request has IDs set.
+	if len(req.Ids) > 0 {
+		return status.Error(codes.InvalidArgument, "specifying IDs on initial request is not supported")
+	}
+
+	// The revision number should probably have never been included in the
+	// entry mask. In any case, it is required to allow the caller to determine
+	// if it needs to ask for the full entry, so disallow masking here.
+	if req.OutputMask != nil && !req.OutputMask.RevisionNumber {
+		return status.Error(codes.InvalidArgument, "revision number cannot be masked")
+	}
+
+	// Apply output mask to entries. The output mask field will be
+	// intentionally ignored on subsequent requests.
+	for i, entry := range entries {
+		applyMask(entry, req.OutputMask)
+		entries[i] = entry
+	}
+
+	// If the number of entries is less than or equal to the entry page size,
+	// then just send the full list back. Otherwise, we'll send a sparse list
+	// and then stream back full entries as requested.
+	if len(entries) <= entryPageSize {
+		return stream.Send(&entryv1.SyncAuthorizedEntriesResponse{
+			Entries: entries,
+		})
+	}
+
+	// Prepopulate the entry page used in the response with empty entry structs.
+	// These will be reused for each sparse entry response.
+	entryRevisions := make([]*entryv1.EntryRevision, entryPageSize)
+	for i := range entryRevisions {
+		entryRevisions[i] = &entryv1.EntryRevision{}
+	}
+	for i := 0; i < len(entries); {
+		more := false
+		n := len(entries) - i
+		if n > entryPageSize {
+			n = entryPageSize
+			more = true
+		}
+		for j, entry := range entries[i : i+n] {
+			entryRevisions[j].Id = entry.Id
+			entryRevisions[j].RevisionNumber = entry.RevisionNumber
+			entryRevisions[j].CreatedAt = entry.CreatedAt
+		}
+
+		if err := stream.Send(&entryv1.SyncAuthorizedEntriesResponse{
+			EntryRevisions: entryRevisions[:n],
+			More:           more,
+		}); err != nil {
+			return err
+		}
+		i += n
+	}
+
+	// Now wait for the client to request IDs that they need the full copy of.
+	// Each request is treated independently. Entries are paged back fully
+	// before the next request is received, using the More field as a flag to
+	// signal to the caller when all requested entries have been streamed back.
+	resp := &entryv1.SyncAuthorizedEntriesResponse{}
+	entriesSorted := false
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			// EOF is normal and happens when the server processes the
+			// CloseSend sent by the client. If the client closes the stream
+			// before that point, then Canceled is expected. Either way, these
+			// conditions are normal and not an error.
+			if errors.Is(err, io.EOF) || status.Code(err) == codes.Canceled {
+				return nil
+			}
+			return err
+		}
+
+		if !entriesSorted {
+			// Sort the entries by ID for efficient lookups. This is done
+			// lazily since we only need these lookups if full copies are
+			// being requested.
+			sortEntriesByID(entries)
+			entriesSorted = true
+		}
+
+		// Sort the requested IDs for efficient lookups into the sorted entry
+		// list. Agents SHOULD already send the list sorted, but we need to
+		// make sure they are sorted for correctness of the search loop below.
+		// The go stdlib sorting algorithm performs well on pre-sorted data.
+		slices.Sort(req.Ids)
+
+		// Page back the requested entries. The slice for the entries in the response
+		// is reused to reduce memory pressure. Since both the entries and
+		// requested IDs are sorted, we can reduce the amount of entries we
+		// need to search as we iteratively move through the requested IDs.
+		resp.Entries = resp.Entries[:0]
+		entriesToSearch := entries
+		for _, id := range req.Ids {
+			i, found := sort.Find(len(entriesToSearch), func(i int) int {
+				return strings.Compare(id, entriesToSearch[i].Id)
+			})
+			if found {
+				if len(resp.Entries) == entryPageSize {
+					// Adding the entry just found will exceed our page size.
+					// Ship the pageful of entries first and signal that there
+					// is more to follow.
+					resp.More = true
+					if err := stream.Send(resp); err != nil {
+						return err
+					}
+					resp.Entries = resp.Entries[:0]
+				}
+				resp.Entries = append(resp.Entries, entriesToSearch[i])
+			}
+			entriesToSearch = entriesToSearch[i:]
+			if len(entriesToSearch) == 0 {
+				break
+			}
+		}
+		// The response is either empty or contains a partial page. Either way
+		// we need to send what we have and signal there is no more to follow.
+		resp.More = false
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+}
+
 // fetchEntries fetches authorized entries using caller ID from context
 func (s *Service) fetchEntries(ctx context.Context, log logrus.FieldLogger) ([]*types.Entry, error) {
 	callerID, ok := rpccontext.CallerID(ctx)
@@ -385,6 +625,14 @@ func applyMask(e *types.Entry, mask *types.EntryMask) {
 	if !mask.JwtSvidTtl {
 		e.JwtSvidTtl = 0
 	}
+
+	if !mask.Hint {
+		e.Hint = ""
+	}
+
+	if !mask.CreatedAt {
+		e.CreatedAt = 0
+	}
 }
 
 func (s *Service) updateEntry(ctx context.Context, e *types.Entry, inputMask *types.EntryMask, outputMask *types.EntryMask) *entryv1.BatchUpdateEntryResponse_Result {
@@ -412,12 +660,17 @@ func (s *Service) updateEntry(ctx context.Context, e *types.Entry, inputMask *ty
 			StoreSvid:     inputMask.StoreSvid,
 			X509SvidTtl:   inputMask.X509SvidTtl,
 			JwtSvidTtl:    inputMask.JwtSvidTtl,
+			Hint:          inputMask.Hint,
 		}
 	}
 	dsEntry, err := s.ds.UpdateRegistrationEntry(ctx, convEntry, mask)
 	if err != nil {
+		statusCode := status.Code(err)
+		if statusCode == codes.Unknown {
+			statusCode = codes.Internal
+		}
 		return &entryv1.BatchUpdateEntryResponse_Result{
-			Status: api.MakeStatus(log, codes.Internal, "failed to update entry", err),
+			Status: api.MakeStatus(log, statusCode, "failed to update entry", err),
 		}
 	}
 
@@ -507,11 +760,23 @@ func fieldsFromEntryProto(ctx context.Context, proto *types.Entry, inputMask *ty
 		fields[telemetry.StoreSvid] = proto.StoreSvid
 	}
 
+	if inputMask == nil || inputMask.Hint {
+		fields[telemetry.Hint] = proto.Hint
+	}
+
+	if inputMask == nil || inputMask.CreatedAt {
+		fields[telemetry.CreatedAt] = proto.CreatedAt
+	}
+
 	return fields
 }
 
 func fieldsFromListEntryFilter(ctx context.Context, td spiffeid.TrustDomain, filter *entryv1.ListEntriesRequest_Filter) logrus.Fields {
 	fields := logrus.Fields{}
+
+	if filter.ByHint != nil {
+		fields[telemetry.Hint] = filter.ByHint.Value
+	}
 
 	if filter.ByParentId != nil {
 		if parentID, err := api.TrustDomainMemberIDFromProto(ctx, td, filter.ByParentId); err == nil {
@@ -535,5 +800,51 @@ func fieldsFromListEntryFilter(ctx context.Context, td spiffeid.TrustDomain, fil
 		fields[telemetry.FederatesWith] = strings.Join(filter.ByFederatesWith.TrustDomains, ",")
 	}
 
+	if filter.ByDownstream != nil {
+		fields[telemetry.Downstream] = &filter.ByDownstream.Value
+	}
+
 	return fields
+}
+
+func fieldsFromCountEntryFilter(ctx context.Context, td spiffeid.TrustDomain, filter *entryv1.CountEntriesRequest_Filter) logrus.Fields {
+	fields := logrus.Fields{}
+
+	if filter.ByHint != nil {
+		fields[telemetry.Hint] = filter.ByHint.Value
+	}
+
+	if filter.ByParentId != nil {
+		if parentID, err := api.TrustDomainMemberIDFromProto(ctx, td, filter.ByParentId); err == nil {
+			fields[telemetry.ParentID] = parentID.String()
+		}
+	}
+
+	if filter.BySpiffeId != nil {
+		if id, err := api.TrustDomainWorkloadIDFromProto(ctx, td, filter.BySpiffeId); err == nil {
+			fields[telemetry.SPIFFEID] = id.String()
+		}
+	}
+
+	if filter.BySelectors != nil {
+		fields[telemetry.BySelectorMatch] = filter.BySelectors.Match.String()
+		fields[telemetry.BySelectors] = api.SelectorFieldFromProto(filter.BySelectors.Selectors)
+	}
+
+	if filter.ByFederatesWith != nil {
+		fields[telemetry.FederatesWithMatch] = filter.ByFederatesWith.Match.String()
+		fields[telemetry.FederatesWith] = strings.Join(filter.ByFederatesWith.TrustDomains, ",")
+	}
+
+	if filter.ByDownstream != nil {
+		fields[telemetry.Downstream] = &filter.ByDownstream.Value
+	}
+
+	return fields
+}
+
+func sortEntriesByID(entries []*types.Entry) {
+	sort.Slice(entries, func(a, b int) bool {
+		return entries[a].Id < entries[b].Id
+	})
 }

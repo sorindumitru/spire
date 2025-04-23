@@ -132,21 +132,55 @@ func (c *cache) startRunner(ctx context.Context) {
 		}
 	}
 
-	ticker := c.clk.Ticker(readyCheckInterval)
+	startSteadyStateHealthCheckCh := make(chan struct{})
+	// Run health check in a tighter loop until we get an initial ready + live state
+	go func() {
+		for {
+			checkFunc()
+
+			allReady := true
+			allLive := true
+			for _, status := range c.getStatuses() {
+				if !status.details.Ready {
+					allReady = false
+					break
+				}
+
+				if !status.details.Live {
+					allLive = false
+					break
+				}
+			}
+
+			if allReady && allLive {
+				break
+			}
+
+			select {
+			case <-c.clk.After(readyCheckInitialInterval):
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		startSteadyStateHealthCheckCh <- struct{}{}
+	}()
 
 	go func() {
 		defer func() {
 			c.log.Debug("Finishing health checker")
-			ticker.Stop()
 		}()
-		for {
-			checkFunc()
 
+		// Wait until initial ready + live state is achieved, then periodically check health at a longer interval
+		<-startSteadyStateHealthCheckCh
+		for {
 			select {
-			case <-ticker.C:
+			case <-c.clk.After(readyCheckInterval):
 			case <-ctx.Done():
 				return
 			}
+
+			checkFunc()
 		}
 	}()
 }
@@ -157,8 +191,8 @@ func (c *cache) setStatus(name string, prevState checkState, state checkState) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 
-	// We are sure that checker exist in this plase, to be able to check
-	// status of a subsytem we must call the checker inside this map
+	// We are sure that checker exists in this place, to be able to check
+	// status of a subsystem we must call the checker inside this map
 	c.checkerSubsystems[name].state = state
 }
 

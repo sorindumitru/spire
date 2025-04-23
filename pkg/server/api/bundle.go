@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -25,9 +26,9 @@ func BundleToProto(b *common.Bundle) (*types.Bundle, error) {
 	}
 
 	return &types.Bundle{
-		TrustDomain:     td.String(),
+		TrustDomain:     td.Name(),
 		RefreshHint:     b.RefreshHint,
-		SequenceNumber:  0,
+		SequenceNumber:  b.SequenceNumber,
 		X509Authorities: CertificatesToProto(b.RootCas),
 		JwtAuthorities:  PublicKeysToProto(b.JwtSigningKeys),
 	}, nil
@@ -37,7 +38,8 @@ func CertificatesToProto(rootCas []*common.Certificate) []*types.X509Certificate
 	var x509Authorities []*types.X509Certificate
 	for _, rootCA := range rootCas {
 		x509Authorities = append(x509Authorities, &types.X509Certificate{
-			Asn1: rootCA.DerBytes,
+			Asn1:    rootCA.DerBytes,
+			Tainted: rootCA.TaintedKey,
 		})
 	}
 
@@ -50,6 +52,7 @@ func PublicKeysToProto(keys []*common.PublicKey) []*types.JWTKey {
 			PublicKey: key.PkixBytes,
 			KeyId:     key.Kid,
 			ExpiresAt: key.NotAfter,
+			Tainted:   key.TaintedKey,
 		})
 	}
 	return jwtAuthorities
@@ -78,6 +81,7 @@ func ProtoToBundle(b *types.Bundle) (*common.Bundle, error) {
 	commonBundle := &common.Bundle{
 		TrustDomainId:  td.IDString(),
 		RefreshHint:    b.RefreshHint,
+		SequenceNumber: b.SequenceNumber,
 		RootCas:        rootCas,
 		JwtSigningKeys: jwtSigningKeys,
 	}
@@ -94,6 +98,7 @@ func ProtoToBundleMask(mask *types.BundleMask) *common.BundleMask {
 		JwtSigningKeys: mask.JwtAuthorities,
 		RootCas:        mask.X509Authorities,
 		RefreshHint:    mask.RefreshHint,
+		SequenceNumber: mask.SequenceNumber,
 	}
 }
 
@@ -156,15 +161,11 @@ func FieldsFromBundleProto(proto *types.Bundle, inputMask *types.BundleMask) log
 	}
 
 	if inputMask == nil || inputMask.JwtAuthorities {
-		for k, v := range FieldsFromJwtAuthoritiesProto(proto.JwtAuthorities) {
-			fields[k] = v
-		}
+		maps.Copy(fields, FieldsFromJwtAuthoritiesProto(proto.JwtAuthorities))
 	}
 
 	if inputMask == nil || inputMask.X509Authorities {
-		for k, v := range FieldsFromX509AuthoritiesProto(proto.X509Authorities) {
-			fields[k] = v
-		}
+		maps.Copy(fields, FieldsFromX509AuthoritiesProto(proto.X509Authorities))
 	}
 	return fields
 }

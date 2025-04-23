@@ -1,13 +1,12 @@
 //go:build windows
-// +build windows
 
 package process
 
 import (
-	"reflect"
 	"syscall"
 	"unsafe"
 
+	"github.com/spiffe/spire/pkg/common/util"
 	"golang.org/x/sys/windows"
 )
 
@@ -92,7 +91,7 @@ func (a *api) GetObjectType(handle windows.Handle) (string, error) {
 	length := uint32(0)
 
 	status := ntQueryObject(handle, ObjectTypeInformationClass,
-		&buffer[0], uint32(len(buffer)), &length)
+		&buffer[0], util.MustCast[uint32](len(buffer)), &length)
 	if status != windows.STATUS_SUCCESS {
 		return "", status
 	}
@@ -106,7 +105,7 @@ func (a *api) GetObjectName(handle windows.Handle) (string, error) {
 	var length uint32
 
 	status := ntQueryObject(handle, ObjectNameInformationClass,
-		&buffer[0], uint32(len(buffer)), &length)
+		&buffer[0], util.MustCast[uint32](len(buffer)), &length)
 	if status != windows.STATUS_SUCCESS {
 		return "", status
 	}
@@ -123,7 +122,7 @@ func (a *api) QuerySystemExtendedHandleInformation() ([]SystemHandleInformationE
 		status = ntQuerySystemInformation(
 			windows.SystemExtendedHandleInformation,
 			unsafe.Pointer(&buffer[0]),
-			uint32(len(buffer)),
+			util.MustCast[uint32](len(buffer)),
 			&retLen,
 		)
 
@@ -131,26 +130,23 @@ func (a *api) QuerySystemExtendedHandleInformation() ([]SystemHandleInformationE
 			status == windows.STATUS_BUFFER_TOO_SMALL ||
 			status == windows.STATUS_INFO_LENGTH_MISMATCH {
 			if int(retLen) <= cap(buffer) {
-				(*reflect.SliceHeader)(unsafe.Pointer(&buffer)).Len = int(retLen)
+				buffer = unsafe.Slice(&buffer[0], int(retLen))
 			} else {
 				buffer = make([]byte, int(retLen))
 			}
 			continue
-		} else {
-			// if no error
-			break
 		}
+		// if no error
+		break
 	}
 
 	if status>>30 != 3 {
 		buffer = (buffer)[:int(retLen)]
 
 		handlesList := (*SystemExtendedHandleInformation)(unsafe.Pointer(&buffer[0]))
-		handles := make([]SystemHandleInformationExItem, int(handlesList.NumberOfHandles))
-		hdr := (*reflect.SliceHeader)(unsafe.Pointer(&handles))
-		hdr.Data = uintptr(unsafe.Pointer(&handlesList.Handles[0]))
+		handles := unsafe.Slice(&handlesList.Handles[0], int(handlesList.NumberOfHandles))
 
-		return handles, nil
+		return handles, nil //nolint:nilerr
 	}
 
 	return nil, status
@@ -227,12 +223,7 @@ func (u UnicodeString) String() string {
 		_ = recover()
 	}()
 
-	var data []uint16
-
-	sh := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	sh.Data = uintptr(unsafe.Pointer(u.WString))
-	sh.Len = int(u.Length * 2)
-	sh.Cap = int(u.Length * 2)
+	data := unsafe.Slice((*uint16)(unsafe.Pointer(u.WString)), int(u.Length*2))
 
 	return windows.UTF16ToString(data)
 }

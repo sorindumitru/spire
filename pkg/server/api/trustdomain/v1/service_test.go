@@ -20,6 +20,7 @@ import (
 	"github.com/spiffe/spire/pkg/server/datastore"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/fakes/fakedatastore"
+	"github.com/spiffe/spire/test/grpctest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/spiffe/spire/test/testca"
 	"github.com/stretchr/testify/assert"
@@ -118,7 +119,6 @@ func TestGetFederationRelationship(t *testing.T) {
 			},
 		},
 		{
-
 			name:        "malformed trust domain",
 			trustDomain: "https://foot.test",
 			err:         "failed to parse trust domain: scheme is missing or invalid",
@@ -195,7 +195,6 @@ func TestGetFederationRelationship(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			ds := newFakeDS(t)
 			test := setupServiceTest(t, ds)
@@ -407,7 +406,6 @@ func TestListFederationRelationships(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			test.logHook.Reset()
 
@@ -470,9 +468,10 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 	require.NoError(t, err)
 
 	sb := &common.Bundle{
-		TrustDomainId: "spiffe://domain.test",
-		RefreshHint:   60,
-		RootCas:       []*common.Certificate{{DerBytes: caRaw}},
+		TrustDomainId:  "spiffe://domain.test",
+		RefreshHint:    60,
+		SequenceNumber: 42,
+		RootCas:        []*common.Certificate{{DerBytes: caRaw}},
 		JwtSigningKeys: []*common.PublicKey{
 			{
 				Kid:       "key-id-1",
@@ -603,7 +602,7 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 						"bundle_jwt_authority_key_id.0":            "key-id-1",
 						"bundle_jwt_authority_public_key_sha256.0": pkixHashed,
 						"bundle_refresh_hint":                      "60",
-						"bundle_sequence_number":                   "0",
+						"bundle_sequence_number":                   "42",
 						"bundle_x509_authorities_asn1_sha256.0":    x509AuthorityHashed,
 						"bundle_trust_domain_id":                   "domain.test",
 					},
@@ -664,7 +663,7 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 						"bundle_jwt_authority_key_id.0":            "key-id-1",
 						"bundle_jwt_authority_public_key_sha256.0": pkixHashed,
 						"bundle_refresh_hint":                      "60",
-						"bundle_sequence_number":                   "0",
+						"bundle_sequence_number":                   "42",
 						"bundle_x509_authorities_asn1_sha256.0":    x509AuthorityHashed,
 						"bundle_trust_domain_id":                   "domain.test",
 					},
@@ -899,7 +898,7 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 						"bundle_jwt_authority_key_id.0":            "key-id-1",
 						"bundle_jwt_authority_public_key_sha256.0": pkixHashed,
 						"bundle_refresh_hint":                      "60",
-						"bundle_sequence_number":                   "0",
+						"bundle_sequence_number":                   "42",
 						"bundle_trust_domain_id":                   "domain.test",
 						"bundle_x509_authorities_asn1_sha256.0":    x509AuthorityHashed,
 					},
@@ -918,7 +917,7 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 			name: "trust domain already exists",
 			req: []*types.FederationRelationship{
 				{
-					TrustDomain:           defaultFederationRelationship.TrustDomain.String(),
+					TrustDomain:           defaultFederationRelationship.TrustDomain.Name(),
 					BundleEndpointProfile: &types.FederationRelationship_HttpsWeb{},
 					BundleEndpointUrl:     "https://federated-td-web.org/another",
 				},
@@ -959,7 +958,7 @@ func TestBatchCreateFederationRelationship(t *testing.T) {
 			name: "using server trust domain",
 			req: []*types.FederationRelationship{
 				{
-					TrustDomain:           td.String(),
+					TrustDomain:           td.Name(),
 					BundleEndpointProfile: &types.FederationRelationship_HttpsWeb{},
 					BundleEndpointUrl:     "https://federated-td-web.org/another",
 				},
@@ -1060,7 +1059,8 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 					DerBytes: caRaw,
 				},
 			},
-			RefreshHint: 60,
+			RefreshHint:    60,
+			SequenceNumber: 42,
 		},
 	}
 
@@ -1072,7 +1072,7 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 		BundleEndpointProfile: datastore.BundleEndpointWeb,
 	}
 
-	allRelationships := []string{fooFR.TrustDomain.String(), barFR.TrustDomain.String(), bazFR.TrustDomain.String()}
+	allRelationships := []string{fooFR.TrustDomain.Name(), barFR.TrustDomain.Name(), bazFR.TrustDomain.Name()}
 	for _, tt := range []struct {
 		name            string
 		dsError         error
@@ -1083,8 +1083,8 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 	}{
 		{
 			name:            "delete multiple trustdomains",
-			reqTrustDomains: []string{barFR.TrustDomain.String(), "not.found", bazFR.TrustDomain.String()},
-			expectDs:        []string{fooFR.TrustDomain.String()},
+			reqTrustDomains: []string{barFR.TrustDomain.Name(), "not.found", bazFR.TrustDomain.Name()},
+			expectDs:        []string{fooFR.TrustDomain.Name()},
 			expectResults: []*trustdomainv1.BatchDeleteFederationRelationshipResponse_Result{
 				{
 					Status:      api.OK(),
@@ -1156,7 +1156,6 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 			},
 		},
 		{
-
 			name:            "empty trust domain",
 			reqTrustDomains: []string{""},
 			expectDs:        allRelationships,
@@ -1188,7 +1187,6 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 			},
 		},
 		{
-
 			name:            "malformed trust domain",
 			reqTrustDomains: []string{"https://foot.test"},
 			expectDs:        allRelationships,
@@ -1259,7 +1257,7 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 		},
 		{
 			name:            "DS fails",
-			reqTrustDomains: []string{fooFR.TrustDomain.String()},
+			reqTrustDomains: []string{fooFR.TrustDomain.Name()},
 			dsError:         errors.New("oh! no"),
 			expectDs:        allRelationships,
 			expectResults: []*trustdomainv1.BatchDeleteFederationRelationshipResponse_Result{
@@ -1325,7 +1323,7 @@ func TestBatchDeleteFederationRelationship(t *testing.T) {
 
 			var tds []string
 			for _, fr := range listResp.FederationRelationships {
-				tds = append(tds, fr.TrustDomain.String())
+				tds = append(tds, fr.TrustDomain.Name())
 			}
 			require.Equal(t, tt.expectDs, tds)
 		})
@@ -1355,21 +1353,24 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 	barURL, err := url.Parse("https://bar.test/path")
 	require.NoError(t, err)
 	barCommonBundle1 := &common.Bundle{
-		TrustDomainId: "spiffe://bar.test",
-		RootCas:       []*common.Certificate{{DerBytes: caRaw}},
-		RefreshHint:   60,
+		TrustDomainId:  "spiffe://bar.test",
+		RootCas:        []*common.Certificate{{DerBytes: caRaw}},
+		RefreshHint:    60,
+		SequenceNumber: 42,
 	}
 
 	barTypesBundle1 := &types.Bundle{
 		TrustDomain:     "bar.test",
 		X509Authorities: []*types.X509Certificate{{Asn1: caRaw}},
 		RefreshHint:     60,
+		SequenceNumber:  42,
 	}
 
 	barCommonBundle2 := &common.Bundle{
-		TrustDomainId: "spiffe://bar.test",
-		RootCas:       []*common.Certificate{{DerBytes: newCARaw}},
-		RefreshHint:   30,
+		TrustDomainId:  "spiffe://bar.test",
+		RootCas:        []*common.Certificate{{DerBytes: newCARaw}},
+		RefreshHint:    30,
+		SequenceNumber: 20,
 		JwtSigningKeys: []*common.PublicKey{
 			{
 				PkixBytes: pkixBytes,
@@ -1389,7 +1390,8 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 				PublicKey: pkixBytes,
 			},
 		},
-		RefreshHint: 30,
+		RefreshHint:    30,
+		SequenceNumber: 20,
 	}
 
 	barFR := &datastore.FederationRelationship{
@@ -1541,7 +1543,7 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 						"bundle_jwt_authority_key_id.0":            "key-id-1",
 						"bundle_jwt_authority_public_key_sha256.0": api.HashByte(pkixBytes),
 						"bundle_refresh_hint":                      "30",
-						"bundle_sequence_number":                   "0",
+						"bundle_sequence_number":                   "20",
 						"bundle_x509_authorities_asn1_sha256.0":    api.HashByte(newCARaw),
 						"bundle_trust_domain_id":                   "bar.test",
 					},
@@ -1766,7 +1768,8 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 									Asn1: caRaw,
 								},
 							},
-							RefreshHint: 60,
+							RefreshHint:    60,
+							SequenceNumber: 42,
 						},
 					},
 				},
@@ -1778,9 +1781,10 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 					BundleEndpointProfile: datastore.BundleEndpointSPIFFE,
 					EndpointSPIFFEID:      spiffeid.RequireFromString("spiffe://bar.test/endpoint"),
 					TrustDomainBundle: &common.Bundle{
-						TrustDomainId: "spiffe://bar.test",
-						RootCas:       []*common.Certificate{{DerBytes: caRaw}},
-						RefreshHint:   60,
+						TrustDomainId:  "spiffe://bar.test",
+						RootCas:        []*common.Certificate{{DerBytes: caRaw}},
+						RefreshHint:    60,
+						SequenceNumber: 42,
 					},
 				},
 			},
@@ -1848,7 +1852,7 @@ func TestBatchUpdateFederationRelationship(t *testing.T) {
 						"bundle_jwt_authority_key_id.0":            "key-id-1",
 						"bundle_jwt_authority_public_key_sha256.0": api.HashByte(pkixBytes),
 						"bundle_refresh_hint":                      "30",
-						"bundle_sequence_number":                   "0",
+						"bundle_sequence_number":                   "20",
 						"bundle_x509_authorities_asn1_sha256.0":    api.HashByte(newCARaw),
 						"bundle_trust_domain_id":                   "bar.test",
 						telemetry.Type:                             "audit",
@@ -2187,9 +2191,6 @@ func setupServiceTest(t *testing.T, ds datastore.DataStore) *serviceTest {
 
 	log, logHook := test.NewNullLogger()
 	log.Level = logrus.DebugLevel
-	registerFn := func(s *grpc.Server) {
-		trustdomain.RegisterService(s, service)
-	}
 
 	test := &serviceTest{
 		ds:      ds,
@@ -2197,26 +2198,21 @@ func setupServiceTest(t *testing.T, ds datastore.DataStore) *serviceTest {
 		logHook: logHook,
 	}
 
-	ppMiddleware := middleware.Preprocess(func(ctx context.Context, fullMethod string, req interface{}) (context.Context, error) {
-		ctx = rpccontext.WithLogger(ctx, log)
+	overrideContext := func(ctx context.Context) context.Context {
+		return rpccontext.WithLogger(ctx, log)
+	}
 
-		return ctx, nil
-	})
-
-	unaryInterceptor, streamInterceptor := middleware.Interceptors(middleware.Chain(
-		ppMiddleware,
-		// Add audit log with local tracking disabled
-		middleware.WithAuditLog(false),
-	))
-
-	server := grpc.NewServer(
-		grpc.UnaryInterceptor(unaryInterceptor),
-		grpc.StreamInterceptor(streamInterceptor),
+	server := grpctest.StartServer(t, func(s grpc.ServiceRegistrar) {
+		trustdomain.RegisterService(s, service)
+	},
+		grpctest.OverrideContext(overrideContext),
+		grpctest.Middleware(middleware.WithAuditLog(false)),
 	)
 
-	conn, done := spiretest.NewAPIServerWithMiddleware(t, registerFn, server)
-	test.done = done
+	conn := server.NewGRPCClient(t)
+
 	test.client = trustdomainv1.NewTrustDomainClient(conn)
+	test.done = server.Stop
 
 	return test
 }
@@ -2233,7 +2229,7 @@ func newFakeDS(t *testing.T) *fakeDS {
 	}
 }
 
-func (d *fakeDS) CreateFederationRelationship(c context.Context, fr *datastore.FederationRelationship) (*datastore.FederationRelationship, error) {
+func (d *fakeDS) CreateFederationRelationship(_ context.Context, fr *datastore.FederationRelationship) (*datastore.FederationRelationship, error) {
 	if d.customDSResponse != nil {
 		return d.customDSResponse, nil
 	}
@@ -2241,7 +2237,7 @@ func (d *fakeDS) CreateFederationRelationship(c context.Context, fr *datastore.F
 	return d.DataStore.CreateFederationRelationship(ctx, fr)
 }
 
-func (d *fakeDS) UpdateFederationRelationship(c context.Context, fr *datastore.FederationRelationship, mask *types.FederationRelationshipMask) (*datastore.FederationRelationship, error) {
+func (d *fakeDS) UpdateFederationRelationship(_ context.Context, fr *datastore.FederationRelationship, mask *types.FederationRelationshipMask) (*datastore.FederationRelationship, error) {
 	if d.customDSResponse != nil {
 		return d.customDSResponse, nil
 	}
@@ -2261,7 +2257,7 @@ func (r *fakeBundleRefresher) ReloadCount() int {
 	return r.reloads
 }
 
-func (r *fakeBundleRefresher) RefreshBundleFor(ctx context.Context, td spiffeid.TrustDomain) (bool, error) {
+func (r *fakeBundleRefresher) RefreshBundleFor(_ context.Context, td spiffeid.TrustDomain) (bool, error) {
 	switch {
 	case td == spiffeid.RequireTrustDomainFromString("good.test"):
 		return true, nil

@@ -15,6 +15,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -24,10 +26,10 @@ import (
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/jwtutil"
 	"github.com/spiffe/spire/pkg/common/plugin/azure"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	nodeattestorbase "github.com/spiffe/spire/pkg/server/plugin/nodeattestor/base"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 const (
@@ -48,6 +50,20 @@ var (
 	reNetworkSecurityGroupID = regexp.MustCompile(`^/subscriptions/[^/]+/resourceGroups/([^/]+)/providers/Microsoft.Network/networkSecurityGroups/([^/]+)$`)
 	reNetworkInterfaceID     = regexp.MustCompile(`^/subscriptions/[^/]+/resourceGroups/([^/]+)/providers/Microsoft.Network/networkInterfaces/([^/]+)$`)
 	reVirtualNetworkSubnetID = regexp.MustCompile(`^/subscriptions/[^/]+/resourceGroups/([^/]+)/providers/Microsoft.Network/virtualNetworks/([^/]+)/subnets/([^/]+)$`)
+	// Azure doesn't appear to publicly document which signature algorithms they use for MSI tokens,
+	// but a couple examples online were showing RS256.
+	// To ensure compatibility, accept the most common signature algorithms that are known to be secure.
+	allowedJWTSignatureAlgorithms = []jose.SignatureAlgorithm{
+		jose.RS256,
+		jose.RS384,
+		jose.RS512,
+		jose.ES256,
+		jose.ES384,
+		jose.ES512,
+		jose.PS256,
+		jose.PS384,
+		jose.PS512,
+	}
 )
 
 func BuiltIn() catalog.BuiltIn {
@@ -63,7 +79,6 @@ func builtin(p *MSIAttestorPlugin) catalog.BuiltIn {
 
 type TenantConfig struct {
 	ResourceID     string `hcl:"resource_id" json:"resource_id"`
-	UseMSI         bool   `hcl:"use_msi" json:"use_msi"`
 	SubscriptionID string `hcl:"subscription_id" json:"subscription_id"`
 	AppID          string `hcl:"app_id" json:"app_id"`
 	AppSecret      string `hcl:"app_secret" json:"app_secret"`
@@ -85,6 +100,92 @@ type msiAttestorConfig struct {
 	idPathTemplate *agentpathtemplate.Template
 }
 
+func (p *MSIAttestorPlugin) buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *msiAttestorConfig {
+	newConfig := new(MSIAttestorConfig)
+
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("unable to decode configuration: %v", err)
+		return nil
+	}
+
+	if len(newConfig.Tenants) == 0 {
+		status.ReportError("configuration must have at least one tenant")
+	}
+	for _, tenant := range newConfig.Tenants {
+		if tenant.ResourceID == "" {
+			tenant.ResourceID = azure.DefaultMSIResourceID
+		}
+	}
+
+	tenants := make(map[string]*tenantConfig)
+	for tenantID, tenant := range newConfig.Tenants {
+		var client apiClient
+
+		// Use tenant-specific credentials for resolving selectors
+		switch {
+		case tenant.SubscriptionID != "", tenant.AppID != "", tenant.AppSecret != "":
+			if tenant.SubscriptionID == "" {
+				status.ReportErrorf("misconfigured tenant %q: missing subscription id", tenantID)
+			}
+			if tenant.AppID == "" {
+				status.ReportErrorf("misconfigured tenant %q: missing app id", tenantID)
+			}
+			if tenant.AppSecret == "" {
+				status.ReportErrorf("misconfigured tenant %q: missing app secret", tenantID)
+			}
+
+			cred, err := azidentity.NewClientSecretCredential(tenantID, tenant.AppID, tenant.AppSecret, nil)
+			if err != nil {
+				status.ReportErrorf("unable to get tenant client credential: %v", err)
+			}
+
+			client, err = p.hooks.newClient(tenant.SubscriptionID, cred)
+			if err != nil {
+				status.ReportErrorf("unable to create client for tenant %q: %v", tenantID, err)
+			}
+
+		default:
+			instanceMetadata, err := p.hooks.fetchInstanceMetadata(http.DefaultClient)
+			if err != nil {
+				status.ReportError(err.Error())
+			}
+			cred, err := p.hooks.fetchCredential(tenantID)
+			if err != nil {
+				status.ReportErrorf("unable to fetch client credential: %v", err)
+			}
+			client, err = p.hooks.newClient(instanceMetadata.Compute.SubscriptionID, cred)
+			if err != nil {
+				status.ReportErrorf("unable to create client with default credential: %v", err)
+			}
+		}
+
+		// If credentials are not configured then selectors won't be gathered.
+		if client == nil {
+			status.ReportErrorf("no client credentials available for tenant %q", tenantID)
+		}
+
+		tenants[tenantID] = &tenantConfig{
+			resourceID: tenant.ResourceID,
+			client:     client,
+		}
+	}
+
+	tmpl := azure.DefaultAgentPathTemplate
+	if len(newConfig.AgentPathTemplate) > 0 {
+		var err error
+		tmpl, err = agentpathtemplate.Parse(newConfig.AgentPathTemplate)
+		if err != nil {
+			status.ReportErrorf("failed to parse agent path template: %q", newConfig.AgentPathTemplate)
+		}
+	}
+
+	return &msiAttestorConfig{
+		td:             coreConfig.TrustDomain,
+		tenants:        tenants,
+		idPathTemplate: tmpl,
+	}
+}
+
 type MSIAttestorPlugin struct {
 	nodeattestorbase.Base
 	nodeattestorv1.UnsafeNodeAttestorServer
@@ -99,8 +200,8 @@ type MSIAttestorPlugin struct {
 		now                   func() time.Time
 		keySetProvider        jwtutil.KeySetProvider
 		newClient             func(string, azcore.TokenCredential) (apiClient, error)
-		fetchInstanceMetadata func(context.Context, azure.HTTPClient) (*azure.InstanceMetadata, error)
-		msiCredential         func() (azcore.TokenCredential, error)
+		fetchInstanceMetadata func(azure.HTTPClient) (*azure.InstanceMetadata, error)
+		fetchCredential       func(string) (azcore.TokenCredential, error)
 	}
 }
 
@@ -112,9 +213,14 @@ func New() *MSIAttestorPlugin {
 	p.hooks.keySetProvider = jwtutil.NewCachingKeySetProvider(jwtutil.OIDCIssuer(azureOIDCIssuer), keySetRefreshInterval)
 	p.hooks.newClient = newAzureClient
 	p.hooks.fetchInstanceMetadata = azure.FetchInstanceMetadata
-	p.hooks.msiCredential = func() (azcore.TokenCredential, error) {
-		return azidentity.NewManagedIdentityCredential(nil)
+	p.hooks.fetchCredential = func(tenantID string) (azcore.TokenCredential, error) {
+		return azidentity.NewDefaultAzureCredential(
+			&azidentity.DefaultAzureCredentialOptions{
+				TenantID: tenantID,
+			},
+		)
 	}
+
 	return p
 }
 
@@ -152,7 +258,7 @@ func (p *MSIAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 		return status.Errorf(codes.Internal, "unable to obtain JWKS: %v", err)
 	}
 
-	token, err := jwt.ParseSigned(attestationData.Token)
+	token, err := jwt.ParseSigned(attestationData.Token, allowedJWTSignatureAlgorithms)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable to parse token: %v", err)
 	}
@@ -196,18 +302,16 @@ func (p *MSIAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 	}
 
 	if err := claims.ValidateWithLeeway(jwt.Expected{
-		Audience: []string{tenant.resourceID},
-		Time:     p.hooks.now(),
+		AnyAudience: []string{tenant.resourceID},
+		Time:        p.hooks.now(),
 	}, tokenLeeway); err != nil {
 		return status.Errorf(codes.Internal, "unable to validate token claims: %v", err)
 	}
 
 	var selectorValues []string
-	if tenant.client != nil {
-		selectorValues, err = p.resolve(stream.Context(), tenant.client, claims.PrincipalID)
-		if err != nil {
-			return err
-		}
+	selectorValues, err = p.resolve(stream.Context(), tenant.client, claims.PrincipalID)
+	if err != nil {
+		return err
 	}
 
 	return stream.Send(&nodeattestorv1.AttestResponse{
@@ -221,105 +325,26 @@ func (p *MSIAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 	})
 }
 
-func (p *MSIAttestorPlugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	hclConfig := new(MSIAttestorConfig)
-	if err := hcl.Decode(hclConfig, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
-	}
-	if req.CoreConfiguration == nil {
-		return nil, status.Error(codes.InvalidArgument, "core configuration is required")
-	}
-	if req.CoreConfiguration.TrustDomain == "" {
-		return nil, status.Error(codes.InvalidArgument, "core configuration missing trust domain")
-	}
-
-	if len(hclConfig.Tenants) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "configuration must have at least one tenant")
-	}
-	for _, tenant := range hclConfig.Tenants {
-		if tenant.ResourceID == "" {
-			tenant.ResourceID = azure.DefaultMSIResourceID
-		}
-	}
-
-	td, err := spiffeid.TrustDomainFromString(req.CoreConfiguration.TrustDomain)
+func (p *MSIAttestorPlugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, p.buildConfig)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, err.Error())
+		return nil, err
 	}
 
-	tenants := make(map[string]*tenantConfig)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = newConfig
 
-	for tenantID, tenant := range hclConfig.Tenants {
-		var client apiClient
-
-		// Use tenant-specific credentials for resolving selectors
-		switch {
-		case tenant.SubscriptionID != "", tenant.AppID != "", tenant.AppSecret != "":
-			if tenant.UseMSI {
-				return nil, status.Errorf(codes.InvalidArgument, "misconfigured tenant %q: cannot use both MSI and app authentication", tenantID)
-			}
-			if tenant.SubscriptionID == "" {
-				return nil, status.Errorf(codes.InvalidArgument, "misconfigured tenant %q: missing subscription id", tenantID)
-			}
-			if tenant.AppID == "" {
-				return nil, status.Errorf(codes.InvalidArgument, "misconfigured tenant %q: missing app id", tenantID)
-			}
-			if tenant.AppSecret == "" {
-				return nil, status.Errorf(codes.InvalidArgument, "misconfigured tenant %q: missing app secret", tenantID)
-			}
-
-			cred, err := azidentity.NewClientSecretCredential(tenantID, tenant.AppID, tenant.AppSecret, nil)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "unable to get tenant client credential: %v", err)
-			}
-
-			client, err = p.hooks.newClient(tenant.SubscriptionID, cred)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "unable to create client for tenant %q: %v", tenantID, err)
-			}
-		case tenant.UseMSI:
-			instanceMetadata, err := p.hooks.fetchInstanceMetadata(ctx, http.DefaultClient)
-			if err != nil {
-				return nil, err
-			}
-			cred, err := p.hooks.msiCredential()
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "unable to get MSI credential: %v", err)
-			}
-			client, err = p.hooks.newClient(instanceMetadata.Compute.SubscriptionID, cred)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "unable to create client with MSI credential: %v", err)
-			}
-		}
-
-		// If credentials are not configured then selectors won't be gathered.
-		// TODO: make this an error condition in a future release
-		if client == nil {
-			p.log.Warn("No client credentials available for tenant. Selectors will not be produced by the node attestor for this node. This will be an error in a future release.",
-				"tenant", tenantID)
-		}
-
-		tenants[tenantID] = &tenantConfig{
-			resourceID: tenant.ResourceID,
-			client:     client,
-		}
-	}
-
-	tmpl := azure.DefaultAgentPathTemplate
-	if len(hclConfig.AgentPathTemplate) > 0 {
-		var err error
-		tmpl, err = agentpathtemplate.Parse(hclConfig.AgentPathTemplate)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to parse agent path template: %q", hclConfig.AgentPathTemplate)
-		}
-	}
-
-	p.setConfig(&msiAttestorConfig{
-		td:             td,
-		tenants:        tenants,
-		idPathTemplate: tmpl,
-	})
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *MSIAttestorPlugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, p.buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 func (p *MSIAttestorPlugin) getConfig() (*msiAttestorConfig, error) {
@@ -329,12 +354,6 @@ func (p *MSIAttestorPlugin) getConfig() (*msiAttestorConfig, error) {
 		return nil, status.Error(codes.FailedPrecondition, "not configured")
 	}
 	return p.config, nil
-}
-
-func (p *MSIAttestorPlugin) setConfig(config *msiAttestorConfig) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.config = config
 }
 
 func (p *MSIAttestorPlugin) resolve(ctx context.Context, client apiClient, principalID string) ([]string, error) {

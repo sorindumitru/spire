@@ -6,11 +6,12 @@ import (
 	"net"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	common "github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/health"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
+	loggerv1 "github.com/spiffe/spire/pkg/server/api/logger/v1"
 	"github.com/spiffe/spire/pkg/server/authpolicy"
 	bundle_client "github.com/spiffe/spire/pkg/server/bundle/client"
 	"github.com/spiffe/spire/pkg/server/endpoints"
@@ -20,9 +21,9 @@ import (
 
 type Config struct {
 	// Configurations for server plugins
-	PluginConfigs common.HCLPluginConfigMap
+	PluginConfigs common.PluginConfigs
 
-	Log logrus.FieldLogger
+	Log loggerv1.Logger
 
 	// LogReopener facilitates handling a signal to rotate log file.
 	LogReopener func(context.Context) error
@@ -98,6 +99,15 @@ type Config struct {
 	// CacheReloadInterval controls how often the in-memory entry cache reloads
 	CacheReloadInterval time.Duration
 
+	// EventsBasedCache enabled event driven cache reloads
+	EventsBasedCache bool
+
+	// PruneEventsOlderThan controls how long events can live before they are pruned
+	PruneEventsOlderThan time.Duration
+
+	// SQLTransactionTimeout controls how long to wait for an event before giving up
+	SQLTransactionTimeout time.Duration
+
 	// AuthPolicyEngineConfig determines the config for authz policy
 	AuthOpaPolicyEngineConfig *authpolicy.OpaEngineConfig
 
@@ -105,9 +115,15 @@ type Config struct {
 	// X509-SVID, are granted admin rights.
 	AdminIDs []spiffeid.ID
 
-	// OmitX509SVIDUID, if true, omits the X.500 Unique Identifier from being
-	// calculated and added to the Subject DN on X509-SVIDs.
-	OmitX509SVIDUID bool
+	// UseLegacyDownstreamX509CATTL, if true, the downstream X509CAs will use
+	// the legacy TTL calculation (e.g. prefer downstream workload entry TTL,
+	// then fall back to the default workload X509-SVID TTL) v.s. the new TTL
+	// calculation (prefer the TTL passed by the downstream caller, then fall
+	// back to the default X509 CA TTL).
+	UseLegacyDownstreamX509CATTL bool
+
+	// TLSPolicy determines the policy settings to apply to all TLS connections.
+	TLSPolicy tlspolicy.Policy
 }
 
 type ExperimentalConfig struct {

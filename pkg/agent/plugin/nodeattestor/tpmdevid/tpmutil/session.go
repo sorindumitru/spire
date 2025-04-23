@@ -7,7 +7,7 @@ import (
 	"io"
 
 	"github.com/google/go-tpm-tools/client"
-	"github.com/google/go-tpm/tpm2"
+	"github.com/google/go-tpm/legacy/tpm2"
 	"github.com/google/go-tpm/tpmutil"
 	"github.com/hashicorp/go-hclog"
 	"github.com/spiffe/spire/pkg/common/plugin/tpmdevid"
@@ -22,7 +22,7 @@ const EKCertificateHandleRSA = tpmutil.Handle(0x01c00002)
 const randomPasswordSize = 32
 
 // Session represents a TPM with loaded DevID credentials and exposes methods
-// to perfom cryptographyc operations relevant to the SPIRE node attestation
+// to perform cryptographic operations relevant to the SPIRE node attestation
 // workflow.
 type Session struct {
 	devID    *SigningKey
@@ -256,8 +256,8 @@ func (c *Session) GetAKPublic() []byte {
 }
 
 // loadKey loads a key pair into the TPM.
-func (c *Session) loadKey(pubKey, privKey []byte, parentKeyPassword, keyPassword string) (*SigningKey, error) {
-	pub, err := tpm2.DecodePublic(pubKey)
+func (c *Session) loadKey(publicKey, privateKey []byte, parentKeyPassword, keyPassword string) (*SigningKey, error) {
+	pub, err := tpm2.DecodePublic(publicKey)
 	if err != nil {
 		return nil, fmt.Errorf("tpm2.DecodePublic failed: %w", err)
 	}
@@ -303,7 +303,7 @@ func (c *Session) loadKey(pubKey, privKey []byte, parentKeyPassword, keyPassword
 	}
 	defer c.flushContext(srkHandle)
 
-	keyHandle, _, err := tpm2.Load(c.rwc, srkHandle, parentKeyPassword, pubKey, privKey)
+	keyHandle, _, err := tpm2.Load(c.rwc, srkHandle, parentKeyPassword, publicKey, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("tpm2.Load failed: %w", err)
 	}
@@ -349,7 +349,7 @@ func (c *Session) createAttestationKey(parentKeyPassword, keyPassword string) ([
 // We need a session-based authorization to run the activate credential command
 // (password-based auth is not enough) because of the attributes of the EK template.
 func (c *Session) createPolicySessionForEK() (tpmutil.Handle, error) {
-	// The TPM is accesed in a plain session (we assume the bus is trusted) so we use an:
+	// The TPM is accessed in a plain session (we assume the bus is trusted) so we use an:
 	// un-bounded and un-salted policy session (bindKey = HandleNull, tpmKey = HandleNull, secret = nil,
 	// (sym = algNull, nonceCaller = all zeros).
 

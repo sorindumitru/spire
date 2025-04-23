@@ -43,7 +43,7 @@ func (c *listCommand) AppendFlags(fs *flag.FlagSet) {
 	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintList)
 }
 
-func (c *listCommand) Run(ctx context.Context, env *commoncli.Env, serverClient util.ServerClient) error {
+func (c *listCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {
 	bundleClient := serverClient.NewBundleClient()
 	if c.id != "" {
 		resp, err := bundleClient.GetFederatedBundle(ctx, &bundlev1.GetFederatedBundleRequest{
@@ -63,7 +63,7 @@ func (c *listCommand) Run(ctx context.Context, env *commoncli.Env, serverClient 
 	return c.printer.PrintProto(resp)
 }
 
-func (c *listCommand) prettyPrintList(env *commoncli.Env, results ...interface{}) error {
+func (c *listCommand) prettyPrintList(env *commoncli.Env, results ...any) error {
 	if listResp, ok := results[0].(*bundlev1.ListFederatedBundlesResponse); ok {
 		for i, bundle := range listResp.Bundles {
 			if i != 0 {

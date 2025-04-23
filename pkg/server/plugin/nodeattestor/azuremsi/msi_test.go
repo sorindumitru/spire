@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -29,8 +32,6 @@ import (
 	"github.com/spiffe/spire/test/testkey"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
-	jose "gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 const (
@@ -148,17 +149,18 @@ func (s *MSIAttestorSuite) TestAttestFailsWithBadSignature() {
 func (s *MSIAttestorSuite) TestAttestFailsWithAlgorithmMismatch() {
 	// sign a token with a different key algorithm than that of the key in
 	// the key set.
+	key := testkey.MustEC256()
 	signer, err := jose.NewSigner(jose.SigningKey{
-		Algorithm: jose.HS256,
-		Key:       []byte("0123456789ABCDEF"),
+		Algorithm: jose.ES256,
+		Key:       key,
 	}, &jose.SignerOptions{
-		ExtraHeaders: map[jose.HeaderKey]interface{}{
+		ExtraHeaders: map[jose.HeaderKey]any{
 			"kid": "KEYID",
 		},
 	})
 	s.Require().NoError(err)
 
-	token, err := jwt.Signed(signer).CompactSerialize()
+	token, err := jwt.Signed(signer).Serialize()
 	s.Require().NoError(err)
 
 	s.requireAttestError(s.T(), makeAttestPayload(token),
@@ -182,13 +184,13 @@ func (s *MSIAttestorSuite) TestAttestFailsClaimValidation() {
 	s.T().Run("no audience", func(t *testing.T) {
 		s.requireAttestError(t, s.signAttestPayload("KEYID", "", "TENANTID", "PRINCIPALID"),
 			codes.Internal,
-			"nodeattestor(azure_msi): unable to validate token claims: square/go-jose/jwt: validation failed, invalid audience claim (aud)")
+			"nodeattestor(azure_msi): unable to validate token claims: go-jose/go-jose/jwt: validation failed, invalid audience claim (aud)")
 	})
 
 	s.T().Run("wrong audience", func(t *testing.T) {
 		s.requireAttestError(t, s.signAttestPayload("KEYID", "FOO", "TENANTID", "PRINCIPALID"),
 			codes.Internal,
-			"nodeattestor(azure_msi): unable to validate token claims: square/go-jose/jwt: validation failed, invalid audience claim (aud)")
+			"nodeattestor(azure_msi): unable to validate token claims: go-jose/go-jose/jwt: validation failed, invalid audience claim (aud)")
 	})
 
 	s.T().Run(" missing principal id (sub) claim", func(t *testing.T) {
@@ -208,7 +210,7 @@ func (s *MSIAttestorSuite) TestAttestTokenExpiration() {
 
 	// just after 5m leeway
 	s.adjustTime(time.Second)
-	s.requireAttestError(s.T(), token, codes.Internal, "nodeattestor(azure_msi): unable to validate token claims: square/go-jose/jwt: validation failed, token is expired (exp)")
+	s.requireAttestError(s.T(), token, codes.Internal, "nodeattestor(azure_msi): unable to validate token claims: go-jose/go-jose/jwt: validation failed, token is expired (exp)")
 }
 
 func (s *MSIAttestorSuite) TestAttestSuccessWithDefaultResourceID() {
@@ -242,7 +244,7 @@ func (s *MSIAttestorSuite) TestAttestSuccessWithCustomSPIFFEIDTemplate() {
 
 	payload := s.signAttestPayload("KEYID", resourceID, "TENANTID", "PRINCIPALID")
 
-	selectorValues := append([]string{}, vmSelectors...)
+	selectorValues := slices.Clone(vmSelectors)
 	sort.Strings(selectorValues)
 
 	var expected []*common.Selector
@@ -258,11 +260,8 @@ func (s *MSIAttestorSuite) TestAttestSuccessWithCustomSPIFFEIDTemplate() {
 		tenants = {
 			"TENANTID" = {
 				resource_id = "https://example.org/app/"
-				use_msi = true
 			}
-			"TENANTID2" = {
-				use_msi = true
-			}
+			"TENANTID2" = { }
 		}
 		agent_path_template = "/{{ .PluginName }}/{{ .TenantID }}"
 	`)
@@ -273,16 +272,17 @@ func (s *MSIAttestorSuite) TestAttestSuccessWithCustomSPIFFEIDTemplate() {
 	s.RequireProtoListEqual(expected, resp.Selectors)
 }
 
-func (s *MSIAttestorSuite) TestAttestSuccessWithNoClientCredentials() {
+func (s *MSIAttestorSuite) TestAttestFailsWithNoClientCredentials() {
 	s.attestor = s.loadPlugin(plugintest.Configure(`
 		tenants = {
 			"TENANTID" = {}
 		}`))
 
-	s.requireAttestSuccess(
+	s.requireAttestError(
+		s.T(),
 		s.signAttestPayload("KEYID", azure.DefaultMSIResourceID, "TENANTID", "PRINCIPALID"),
-		"spiffe://example.org/spire/agent/azure_msi/TENANTID/PRINCIPALID",
-		nil)
+		codes.Internal,
+		`nodeattestor(azure_msi): unable to get resource for principal "PRINCIPALID": not found`)
 }
 
 func (s *MSIAttestorSuite) TestAttestResolutionWithVariousSelectorCombos() {
@@ -401,18 +401,30 @@ func (s *MSIAttestorSuite) TestAttestFailsWhenAttestedBefore() {
 func (s *MSIAttestorSuite) TestConfigure() {
 	var clients []string
 	var logEntries []*logrus.Entry
-	doConfig := func(t *testing.T, coreConfig catalog.CoreConfig, config string) error {
+
+	type testOpts struct {
+		fetchCredential func(string) (azcore.TokenCredential, error)
+	}
+
+	doConfig := func(t *testing.T, coreConfig catalog.CoreConfig, config string, opt *testOpts) error {
 		// reset the clients list and log entries
 		clients = nil
 		logEntries = nil
 
+		if opt == nil {
+			opt = new(testOpts)
+		}
+
 		attestor := New()
 		attestor.hooks.now = func() time.Time { return s.now }
 		attestor.hooks.keySetProvider = jwtutil.KeySetProviderFunc(func(ctx context.Context) (*jose.JSONWebKeySet, error) { return s.jwks, nil })
-		attestor.hooks.fetchInstanceMetadata = func(context.Context, azure.HTTPClient) (*azure.InstanceMetadata, error) {
+		attestor.hooks.fetchInstanceMetadata = func(azure.HTTPClient) (*azure.InstanceMetadata, error) {
 			return instanceMetadata, nil
 		}
-		attestor.hooks.msiCredential = func() (azcore.TokenCredential, error) {
+		attestor.hooks.fetchCredential = func(tenantID string) (azcore.TokenCredential, error) {
+			if opt.fetchCredential != nil {
+				return opt.fetchCredential(tenantID)
+			}
 			return &fakeAzureCredential{}, nil
 		}
 		attestor.hooks.newClient = func(subscriptionID string, credential azcore.TokenCredential) (apiClient, error) {
@@ -432,22 +444,24 @@ func (s *MSIAttestorSuite) TestConfigure() {
 		return err
 	}
 
+	_ = logEntries // silence unused warning, future tests asserting on logs will use this
+
 	coreConfig := catalog.CoreConfig{
 		TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
 	}
 
 	s.T().Run("malformed configuration", func(t *testing.T) {
-		err := doConfig(t, coreConfig, "blah")
+		err := doConfig(t, coreConfig, "blah", nil)
 		spiretest.RequireErrorContains(t, err, "unable to decode configuration")
 	})
 
 	s.T().Run("missing trust domain", func(t *testing.T) {
-		err := doConfig(t, catalog.CoreConfig{}, "")
-		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, "core configuration missing trust domain")
+		err := doConfig(t, catalog.CoreConfig{}, "", nil)
+		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, "server core configuration must contain trust_domain")
 	})
 
 	s.T().Run("missing tenants", func(t *testing.T) {
-		err := doConfig(t, coreConfig, "")
+		err := doConfig(t, coreConfig, "", nil)
 		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, "configuration must have at least one tenant")
 	})
 
@@ -458,16 +472,9 @@ func (s *MSIAttestorSuite) TestConfigure() {
 				resource_id = "https://example.org/app/"
 			}
 		}
-		`)
+		`, nil)
 		require.NoError(t, err)
-		require.ElementsMatch(t, nil, clients)
-		spiretest.AssertLogs(t, logEntries, []spiretest.LogEntry{
-			spiretest.LogEntry{
-				Level:   logrus.WarnLevel,
-				Message: "No client credentials available for tenant. Selectors will not be produced by the node attestor for this node. This will be an error in a future release.",
-				Data:    logrus.Fields{"tenant": "TENANTID"},
-			},
-		})
+		require.ElementsMatch(t, []string{"SUBSCRIPTIONID"}, clients)
 	})
 
 	s.T().Run("success with MSI", func(t *testing.T) {
@@ -475,10 +482,9 @@ func (s *MSIAttestorSuite) TestConfigure() {
 		tenants = {
 			"TENANTID" = {
 				resource_id = "https://example.org/app/"
-				use_msi = true
 			}
 		}
-		`)
+		`, nil)
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"SUBSCRIPTIONID"}, clients)
 	})
@@ -493,7 +499,7 @@ func (s *MSIAttestorSuite) TestConfigure() {
 				app_secret = "APPSECRET"
 			}
 		}
-		`)
+		`, nil)
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"TENANTSUBSCRIPTIONID"}, clients)
 	})
@@ -507,31 +513,11 @@ func (s *MSIAttestorSuite) TestConfigure() {
 				app_id = "APPID"
 				app_secret = "APPSECRET"
 			}
-			"TENANTID2" = {
-				use_msi = true
-			}
+			"TENANTID2" = {	}
 		}
-		`)
+		`, nil)
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{"TENANTSUBSCRIPTIONID", "SUBSCRIPTIONID"}, clients)
-	})
-
-	s.T().Run("failure with both app creds and msi", func(t *testing.T) {
-		err := doConfig(t, coreConfig, `
-		tenants = {
-			"TENANTID" = {
-				resource_id = "https://example.org/app/"
-				use_msi = true
-				subscription_id = "TENANTSUBSCRIPTIONID"
-				app_id = "APPID"
-				app_secret = "APPSECRET"
-			}
-			"TENANTID2" = {
-				use_msi = true
-			}
-		}
-		`)
-		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, `misconfigured tenant "TENANTID": cannot use both MSI and app authentication`)
 	})
 
 	s.T().Run("failure with tenant missing subscription id", func(t *testing.T) {
@@ -544,7 +530,7 @@ func (s *MSIAttestorSuite) TestConfigure() {
 
 			}
 		}
-		`)
+		`, nil)
 		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, `misconfigured tenant "TENANTID": missing subscription id`)
 	})
 
@@ -558,7 +544,7 @@ func (s *MSIAttestorSuite) TestConfigure() {
 
 			}
 		}
-		`)
+		`, nil)
 		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, `misconfigured tenant "TENANTID": missing app id`)
 	})
 
@@ -572,8 +558,37 @@ func (s *MSIAttestorSuite) TestConfigure() {
 
 			}
 		}
-		`)
+		`, nil)
 		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, `misconfigured tenant "TENANTID": missing app secret`)
+	})
+
+	s.T().Run("success with default credential", func(t *testing.T) {
+		err := doConfig(t, coreConfig, `
+		tenants = {
+			"TENANTID" = {
+				resource_id = "https://example.org/app/"
+			}
+		}
+		`, nil)
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"SUBSCRIPTIONID"}, clients)
+	})
+
+	s.T().Run("error when default credential fetch fails", func(t *testing.T) {
+		err := doConfig(t, coreConfig, `
+		tenants = {
+			"TENANTID" = {
+				resource_id = "https://example.org/app/"
+			}
+		}
+		`,
+			&testOpts{
+				fetchCredential: func(string) (azcore.TokenCredential, error) {
+					return nil, errors.New("some error")
+				},
+			},
+		)
+		spiretest.RequireGRPCStatusContains(t, err, codes.InvalidArgument, `unable to fetch client credential: some error`)
 	})
 }
 
@@ -609,12 +624,12 @@ func (s *MSIAttestorSuite) signToken(keyID, audience, tenantID, principalID stri
 
 	// add the tenant id claim
 	if tenantID != "" {
-		builder = builder.Claims(map[string]interface{}{
+		builder = builder.Claims(map[string]any{
 			"tid": tenantID,
 		})
 	}
 
-	token, err := builder.CompactSerialize()
+	token, err := builder.Serialize()
 	s.Require().NoError(err)
 	return token
 }
@@ -628,11 +643,8 @@ func (s *MSIAttestorSuite) loadPlugin(options ...plugintest.Option) nodeattestor
 		tenants = {
 			"TENANTID" = {
 				resource_id = "https://example.org/app/"
-				use_msi = true
 			}
-			"TENANTID2" = {
-				use_msi = true
-			}
+			"TENANTID2" = { }
 		}
 	`, options...)
 }
@@ -648,10 +660,10 @@ func (s *MSIAttestorSuite) loadPluginWithConfig(config string, options ...plugin
 	attestor.hooks.newClient = func(string, azcore.TokenCredential) (apiClient, error) {
 		return s.api, nil
 	}
-	attestor.hooks.fetchInstanceMetadata = func(context.Context, azure.HTTPClient) (*azure.InstanceMetadata, error) {
+	attestor.hooks.fetchInstanceMetadata = func(azure.HTTPClient) (*azure.InstanceMetadata, error) {
 		return instanceMetadata, nil
 	}
-	attestor.hooks.msiCredential = func() (azcore.TokenCredential, error) {
+	attestor.hooks.fetchCredential = func(_ string) (azcore.TokenCredential, error) {
 		return &fakeAzureCredential{}, nil
 	}
 
@@ -728,7 +740,7 @@ func (c *fakeAPIClient) SetVirtualMachineResourceID(principalID, resourceID stri
 	c.vmResourceIDs[principalID] = resourceID
 }
 
-func (c *fakeAPIClient) GetVirtualMachineResourceID(ctx context.Context, principalID string) (string, error) {
+func (c *fakeAPIClient) GetVirtualMachineResourceID(_ context.Context, principalID string) (string, error) {
 	id := c.vmResourceIDs[principalID]
 	if id == "" {
 		return "", errors.New("not found")
@@ -740,7 +752,7 @@ func (c *fakeAPIClient) SetVirtualMachine(resourceGroup string, name string, vm 
 	c.virtualMachines[resourceGroupName(resourceGroup, name)] = vm
 }
 
-func (c *fakeAPIClient) GetVirtualMachine(ctx context.Context, resourceGroup string, name string) (*armcompute.VirtualMachine, error) {
+func (c *fakeAPIClient) GetVirtualMachine(_ context.Context, resourceGroup string, name string) (*armcompute.VirtualMachine, error) {
 	vm := c.virtualMachines[resourceGroupName(resourceGroup, name)]
 	if vm == nil {
 		return nil, errors.New("not found")
@@ -752,7 +764,7 @@ func (c *fakeAPIClient) SetNetworkInterface(resourceGroup string, name string, n
 	c.networkInterfaces[resourceGroupName(resourceGroup, name)] = ni
 }
 
-func (c *fakeAPIClient) GetNetworkInterface(ctx context.Context, resourceGroup string, name string) (*armnetwork.Interface, error) {
+func (c *fakeAPIClient) GetNetworkInterface(_ context.Context, resourceGroup string, name string) (*armnetwork.Interface, error) {
 	ni := c.networkInterfaces[resourceGroupName(resourceGroup, name)]
 	if ni == nil {
 		return nil, errors.New("not found")
@@ -767,9 +779,9 @@ func (f *fakeAzureCredential) GetToken(context.Context, policy.TokenRequestOptio
 }
 
 func makeAttestPayload(token string) []byte {
-	return []byte(fmt.Sprintf(`{"token": %q}`, token))
+	return fmt.Appendf(nil, `{"token": %q}`, token)
 }
 
-func expectNoChallenge(ctx context.Context, challenge []byte) ([]byte, error) {
+func expectNoChallenge(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("challenge is not expected")
 }

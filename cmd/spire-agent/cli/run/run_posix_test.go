@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package run
 
@@ -7,16 +6,17 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"syscall"
+	"path"
 	"testing"
 
-	"github.com/hashicorp/hcl/hcl/printer"
 	"github.com/spiffe/spire/pkg/agent"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	commoncli "github.com/spiffe/spire/pkg/common/cli"
 	"github.com/spiffe/spire/pkg/common/fflag"
 	"github.com/spiffe/spire/pkg/common/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func TestCommand_Run(t *testing.T) {
@@ -130,8 +130,8 @@ func TestCommand_Run(t *testing.T) {
 			}
 			if testCase.want.agentUdsDirCreated {
 				assert.DirExistsf(t, testAgentSocketDir, "spire-agent uds dir should be created")
-				currentUmask := syscall.Umask(0)
-				assert.Equalf(t, currentUmask, 0027, "spire-agent process should be created with 0027 umask")
+				currentUmask := unix.Umask(0)
+				assert.Equalf(t, currentUmask, 0o027, "spire-agent process should be created with 0027 umask")
 			} else {
 				assert.NoDirExistsf(t, testAgentSocketDir, "spire-agent uds dir should not be created")
 			}
@@ -181,38 +181,40 @@ func TestParseConfigGood(t *testing.T) {
 	assert.Equal(t, true, c.Agent.AllowUnauthenticatedVerifiers)
 	assert.Equal(t, []string{"c1", "c2", "c3"}, c.Agent.AllowedForeignJWTClaims)
 
+	// Parse/reprint cycle trims outer whitespace
+	const data = `join_token = "PLUGIN-AGENT-NOT-A-SECRET"`
+
 	// Check for plugins configurations
-	pluginConfigs := *c.Plugins
-	expectedData := "join_token = \"PLUGIN-AGENT-NOT-A-SECRET\""
-	var data bytes.Buffer
-	err = printer.DefaultConfig.Fprint(&data, pluginConfigs["plugin_type_agent"]["plugin_name_agent"].PluginData)
-	assert.NoError(t, err)
+	expectedPluginConfigs := catalog.PluginConfigs{
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_name_agent",
+			Path:       "./pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   false,
+		},
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_disabled",
+			Path:       "./pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FixedData(data),
+			Disabled:   true,
+		},
+		{
+			Type:       "plugin_type_agent",
+			Name:       "plugin_enabled",
+			Path:       "./pluginAgentCmd",
+			Checksum:   "pluginAgentChecksum",
+			DataSource: catalog.FileData("plugin.conf"),
+			Disabled:   false,
+		},
+	}
 
-	assert.Len(t, pluginConfigs, 1)
-	assert.Len(t, pluginConfigs["plugin_type_agent"], 3)
-
-	pluginConfig := pluginConfigs["plugin_type_agent"]["plugin_name_agent"]
-	assert.Nil(t, pluginConfig.Enabled)
-	assert.Equal(t, true, pluginConfig.IsEnabled())
-	assert.Equal(t, "pluginAgentChecksum", pluginConfig.PluginChecksum)
-	assert.Equal(t, "./pluginAgentCmd", pluginConfig.PluginCmd)
-	assert.Equal(t, data.String(), expectedData)
-
-	// Disabled plugin
-	pluginConfig = pluginConfigs["plugin_type_agent"]["plugin_disabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, false, pluginConfig.IsEnabled())
-	assert.Equal(t, "pluginAgentChecksum", pluginConfig.PluginChecksum)
-	assert.Equal(t, "./pluginAgentCmd", pluginConfig.PluginCmd)
-	assert.Equal(t, data.String(), expectedData)
-
-	// Enabled plugin
-	pluginConfig = pluginConfigs["plugin_type_agent"]["plugin_enabled"]
-	assert.NotNil(t, pluginConfig.Enabled)
-	assert.Equal(t, true, pluginConfig.IsEnabled())
-	assert.Equal(t, "pluginAgentChecksum", pluginConfig.PluginChecksum)
-	assert.Equal(t, "./pluginAgentCmd", pluginConfig.PluginCmd)
-	assert.Equal(t, data.String(), expectedData)
+	pluginConfigs, err := catalog.PluginConfigsFromHCLNode(c.Plugins)
+	require.NoError(t, err)
+	require.Equal(t, expectedPluginConfigs, pluginConfigs)
 }
 
 func mergeInputCasesOS() []mergeInputCase {
@@ -236,7 +238,7 @@ func mergeInputCasesOS() []mergeInputCase {
 			},
 		},
 		{
-			msg:       "socket_path should be configuable by CLI flag",
+			msg:       "socket_path should be configurable by CLI flag",
 			fileInput: func(c *Config) {},
 			cliInput: func(c *agentConfig) {
 				c.SocketPath = "foo"
@@ -270,7 +272,9 @@ func mergeInputCasesOS() []mergeInputCase {
 	}
 }
 
-func newAgentConfigCasesOS() []newAgentConfigCase {
+func newAgentConfigCasesOS(t *testing.T) []newAgentConfigCase {
+	testDir := t.TempDir()
+
 	return []newAgentConfigCase{
 		{
 			msg: "socket_path should be correctly configured",
@@ -356,6 +360,16 @@ func newAgentConfigCasesOS() []newAgentConfigCase {
 			},
 			test: func(t *testing.T, c *agent.Config) {
 				require.Nil(t, c.AdminBindAddress)
+			},
+		},
+		{
+			msg: "log_file allows to reopen",
+			input: func(c *Config) {
+				c.Agent.LogFile = path.Join(testDir, "foo")
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.NotNil(t, c.Log)
+				require.NotNil(t, c.LogReopener)
 			},
 		},
 	}

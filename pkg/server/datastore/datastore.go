@@ -23,23 +23,44 @@ type DataStore interface {
 	SetBundle(context.Context, *common.Bundle) (*common.Bundle, error)
 	UpdateBundle(context.Context, *common.Bundle, *common.BundleMask) (*common.Bundle, error)
 
+	// Keys
+	TaintX509CA(ctx context.Context, trustDomainID string, subjectKeyIDToTaint string) error
+	RevokeX509CA(ctx context.Context, trustDomainID string, subjectKeyIDToRevoke string) error
+	TaintJWTKey(ctx context.Context, trustDomainID string, authorityID string) (*common.PublicKey, error)
+	RevokeJWTKey(ctx context.Context, trustDomainID string, authorityID string) (*common.PublicKey, error)
+
 	// Entries
-	CountRegistrationEntries(context.Context) (int32, error)
+	CountRegistrationEntries(context.Context, *CountRegistrationEntriesRequest) (int32, error)
 	CreateRegistrationEntry(context.Context, *common.RegistrationEntry) (*common.RegistrationEntry, error)
 	CreateOrReturnRegistrationEntry(context.Context, *common.RegistrationEntry) (*common.RegistrationEntry, bool, error)
 	DeleteRegistrationEntry(ctx context.Context, entryID string) (*common.RegistrationEntry, error)
 	FetchRegistrationEntry(ctx context.Context, entryID string) (*common.RegistrationEntry, error)
+	FetchRegistrationEntries(ctx context.Context, entryIDs []string) (map[string]*common.RegistrationEntry, error)
 	ListRegistrationEntries(context.Context, *ListRegistrationEntriesRequest) (*ListRegistrationEntriesResponse, error)
 	PruneRegistrationEntries(ctx context.Context, expiresBefore time.Time) error
 	UpdateRegistrationEntry(context.Context, *common.RegistrationEntry, *common.RegistrationEntryMask) (*common.RegistrationEntry, error)
 
+	// Entries Events
+	ListRegistrationEntryEvents(ctx context.Context, req *ListRegistrationEntryEventsRequest) (*ListRegistrationEntryEventsResponse, error)
+	PruneRegistrationEntryEvents(ctx context.Context, olderThan time.Duration) error
+	FetchRegistrationEntryEvent(ctx context.Context, eventID uint) (*RegistrationEntryEvent, error)
+	CreateRegistrationEntryEventForTesting(ctx context.Context, event *RegistrationEntryEvent) error
+	DeleteRegistrationEntryEventForTesting(ctx context.Context, eventID uint) error
+
 	// Nodes
-	CountAttestedNodes(context.Context) (int32, error)
+	CountAttestedNodes(context.Context, *CountAttestedNodesRequest) (int32, error)
 	CreateAttestedNode(context.Context, *common.AttestedNode) (*common.AttestedNode, error)
 	DeleteAttestedNode(ctx context.Context, spiffeID string) (*common.AttestedNode, error)
 	FetchAttestedNode(ctx context.Context, spiffeID string) (*common.AttestedNode, error)
 	ListAttestedNodes(context.Context, *ListAttestedNodesRequest) (*ListAttestedNodesResponse, error)
 	UpdateAttestedNode(context.Context, *common.AttestedNode, *common.AttestedNodeMask) (*common.AttestedNode, error)
+
+	// Nodes Events
+	ListAttestedNodeEvents(ctx context.Context, req *ListAttestedNodeEventsRequest) (*ListAttestedNodeEventsResponse, error)
+	PruneAttestedNodeEvents(ctx context.Context, olderThan time.Duration) error
+	FetchAttestedNodeEvent(ctx context.Context, eventID uint) (*AttestedNodeEvent, error)
+	CreateAttestedNodeEventForTesting(ctx context.Context, event *AttestedNodeEvent) error
+	DeleteAttestedNodeEventForTesting(ctx context.Context, eventID uint) error
 
 	// Node selectors
 	GetNodeSelectors(ctx context.Context, spiffeID string, dataConsistency DataConsistency) ([]*common.Selector, error)
@@ -58,6 +79,12 @@ type DataStore interface {
 	ListFederationRelationships(context.Context, *ListFederationRelationshipsRequest) (*ListFederationRelationshipsResponse, error)
 	DeleteFederationRelationship(context.Context, spiffeid.TrustDomain) error
 	UpdateFederationRelationship(context.Context, *FederationRelationship, *types.FederationRelationshipMask) (*FederationRelationship, error)
+
+	// CA Journals
+	SetCAJournal(ctx context.Context, caJournal *CAJournal) (*CAJournal, error)
+	FetchCAJournal(ctx context.Context, activeX509AuthorityID string) (*CAJournal, error)
+	PruneCAJournals(ctx context.Context, allCAsExpireBefore int64) error
+	ListCAJournalsForTesting(ctx context.Context) ([]*CAJournal, error)
 }
 
 // DataConsistency indicates the required data consistency for a read operation.
@@ -143,6 +170,21 @@ type ListAttestedNodesResponse struct {
 	Pagination *Pagination
 }
 
+type ListAttestedNodeEventsRequest struct {
+	DataConsistency    DataConsistency
+	GreaterThanEventID uint
+	LessThanEventID    uint
+}
+
+type AttestedNodeEvent struct {
+	EventID  uint
+	SpiffeID string
+}
+
+type ListAttestedNodeEventsResponse struct {
+	Events []AttestedNodeEvent
+}
+
 type ListBundlesRequest struct {
 	Pagination *Pagination
 }
@@ -168,11 +210,34 @@ type ListRegistrationEntriesRequest struct {
 	BySpiffeID      string
 	Pagination      *Pagination
 	ByFederatesWith *ByFederatesWith
+	ByHint          string
+	ByDownstream    *bool
+}
+
+type CAJournal struct {
+	ID                    uint
+	Data                  []byte
+	ActiveX509AuthorityID string
 }
 
 type ListRegistrationEntriesResponse struct {
 	Entries    []*common.RegistrationEntry
 	Pagination *Pagination
+}
+
+type ListRegistrationEntryEventsRequest struct {
+	DataConsistency    DataConsistency
+	GreaterThanEventID uint
+	LessThanEventID    uint
+}
+
+type RegistrationEntryEvent struct {
+	EventID uint
+	EntryID string
+}
+
+type ListRegistrationEntryEventsResponse struct {
+	Events []RegistrationEntryEvent
 }
 
 type ListFederationRelationshipsRequest struct {
@@ -182,6 +247,25 @@ type ListFederationRelationshipsRequest struct {
 type ListFederationRelationshipsResponse struct {
 	FederationRelationships []*FederationRelationship
 	Pagination              *Pagination
+}
+
+type CountAttestedNodesRequest struct {
+	ByAttestationType string
+	ByBanned          *bool
+	ByExpiresBefore   time.Time
+	BySelectorMatch   *BySelectors
+	FetchSelectors    bool
+	ByCanReattest     *bool
+}
+
+type CountRegistrationEntriesRequest struct {
+	DataConsistency DataConsistency
+	ByParentID      string
+	BySelectors     *BySelectors
+	BySpiffeID      string
+	ByFederatesWith *ByFederatesWith
+	ByHint          string
+	ByDownstream    *bool
 }
 
 type BundleEndpointType string

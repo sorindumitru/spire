@@ -19,6 +19,8 @@ import (
 	"github.com/spiffe/spire/pkg/common/coretypes/jwtkey"
 	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/idutil"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -30,8 +32,6 @@ const (
 	internalPollFreq = time.Second
 )
 
-var clk clock.Clock = clock.New()
-
 type Configuration struct {
 	ServerAddr        string             `hcl:"server_address" json:"server_address"`
 	ServerPort        string             `hcl:"server_port" json:"server_port"`
@@ -39,8 +39,20 @@ type Configuration struct {
 	Experimental      experimentalConfig `hcl:"experimental"`
 }
 
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Configuration {
+	newConfig := new(Configuration)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportError("plugin configuration is malformed")
+		return nil
+	}
+
+	// TODO: add field validation
+	return newConfig
+}
+
 type experimentalConfig struct {
 	WorkloadAPINamedPipeName string `hcl:"workload_api_named_pipe_name" json:"workload_api_named_pipe_name"`
+	RequirePQKEM             bool   `hcl:"require_pq_kem" json:"require_pq_kem"`
 }
 
 func BuiltIn() catalog.BuiltIn {
@@ -58,6 +70,7 @@ type Plugin struct {
 	upstreamauthorityv1.UnsafeUpstreamAuthorityServer
 	configv1.UnsafeConfigServer
 
+	clk clock.Clock
 	log hclog.Logger
 
 	mtx         sync.RWMutex
@@ -78,38 +91,23 @@ type Plugin struct {
 
 func New() *Plugin {
 	return &Plugin{
+		clk:           clock.New(),
 		currentBundle: &plugintypes.Bundle{},
 	}
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	// Parse HCL config payload into config struct
-	config := new(Configuration)
-
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
-	}
-
-	if req.CoreConfiguration == nil {
-		return nil, status.Error(codes.InvalidArgument, "core configuration is required")
-	}
-
-	if req.CoreConfiguration.TrustDomain == "" {
-		return nil, status.Error(codes.InvalidArgument, "trust_domain is required")
+func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	// Create trust domain
-	td, err := spiffeid.TrustDomainFromString(req.CoreConfiguration.TrustDomain)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "trust_domain is malformed: %v", err)
-	}
-	p.trustDomain = td
-
-	// Set config
-	p.config = config
+	// Swap Running Config
+	p.trustDomain, _ = spiffeid.TrustDomainFromString(req.CoreConfiguration.TrustDomain)
+	p.config = newConfig
 
 	// Create spire-server client
 	serverAddr := fmt.Sprintf("%s:%s", p.config.ServerAddr, p.config.ServerPort)
@@ -118,14 +116,29 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 		return nil, status.Errorf(codes.InvalidArgument, "unable to set Workload API address: %v", err)
 	}
 
-	serverID, err := idutil.ServerID(td)
+	serverID, err := idutil.ServerID(p.trustDomain)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to build server ID: %v", err)
 	}
 
-	p.serverClient = newServerClient(serverID, serverAddr, workloadAPIAddr, p.log)
+	tlsPolicy := tlspolicy.Policy{
+		RequirePQKEM: p.config.Experimental.RequirePQKEM,
+	}
+
+	tlspolicy.LogPolicy(tlsPolicy, p.log)
+
+	p.serverClient = newServerClient(serverID, serverAddr, workloadAPIAddr, p.log, tlsPolicy)
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, err
 }
 
 func (p *Plugin) SetLogger(log hclog.Logger) {
@@ -139,19 +152,21 @@ func (p *Plugin) MintX509CAAndSubscribe(request *upstreamauthorityv1.MintX509CAR
 	}
 	defer p.unsubscribeToPolling()
 
-	certChain, roots, err := p.serverClient.newDownstreamX509CA(stream.Context(), request.Csr)
+	// TODO: downstream RPC is not returning authority metadata, like tainted bit
+	// avoid using it for now in favor of a call to get bundle RPC
+	certChain, _, err := p.serverClient.newDownstreamX509CA(stream.Context(), request.Csr, request.PreferredTtl)
 	if err != nil {
 		return status.Errorf(codes.Internal, "unable to request a new Downstream X509CA: %v", err)
 	}
 
-	var bundles []*plugintypes.X509Certificate
-	for _, cert := range roots {
-		pluginCert, err := x509certificate.ToPluginProto(cert)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to parse X.509 authorities: %v", err)
-		}
+	serverBundle, err := p.serverClient.getBundle(stream.Context())
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to fetch bundle from upstream server: %v", err)
+	}
 
-		bundles = append(bundles, pluginCert)
+	bundles, err := x509certificate.ToPluginFromAPIProtos(serverBundle.X509Authorities)
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to parse X.509 authorities: %v", err)
 	}
 
 	// Set X509 Authorities
@@ -159,12 +174,12 @@ func (p *Plugin) MintX509CAAndSubscribe(request *upstreamauthorityv1.MintX509CAR
 
 	rootCAs := []*plugintypes.X509Certificate{}
 
-	x509CAChain, err := x509certificate.ToPluginProtos(certChain)
+	x509CAChain, err := x509certificate.ToPluginFromCertificates(certChain)
 	if err != nil {
 		return status.Errorf(codes.Internal, "unable to form response X.509 CA chain: %v", err)
 	}
 
-	ticker := clk.Ticker(internalPollFreq)
+	ticker := p.clk.Ticker(internalPollFreq)
 	defer ticker.Stop()
 	for {
 		newRootCAs := p.getBundle().X509Authorities
@@ -222,7 +237,7 @@ func (p *Plugin) PublishJWTKeyAndSubscribe(req *upstreamauthorityv1.PublishJWTKe
 	p.setBundleJWTAuthorities(jwtKeys)
 
 	keys := []*plugintypes.JWTKey{}
-	ticker := clk.Ticker(internalPollFreq)
+	ticker := p.clk.Ticker(internalPollFreq)
 	defer ticker.Stop()
 	for {
 		newKeys := p.getBundle().JwtAuthorities
@@ -246,7 +261,7 @@ func (p *Plugin) PublishJWTKeyAndSubscribe(req *upstreamauthorityv1.PublishJWTKe
 }
 
 func (p *Plugin) pollBundleUpdates(ctx context.Context) {
-	ticker := clk.Ticker(upstreamPollFreq)
+	ticker := p.clk.Ticker(upstreamPollFreq)
 	defer ticker.Stop()
 	for {
 		preFetchCallVersion := p.getBundleVersion()
@@ -328,7 +343,7 @@ func (p *Plugin) unsubscribeToPolling() {
 	defer p.pollMtx.Unlock()
 	p.currentPollSubscribers--
 	if p.currentPollSubscribers == 0 {
-		// TODO: may we relase server here?
+		// TODO: may we release server here?
 		p.stopPolling()
 	}
 }

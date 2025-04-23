@@ -21,6 +21,9 @@ The main configuration accepts the following values:
 |---------------|-----------------------------------------------------------------------------------|---------|
 | `clusters`    | A map of clusters, keyed by an arbitrary ID, that are authorized for attestation. |         |
 
+> [!WARNING]
+> When `clusters` is empty, no clusters are authorized for attestation.
+
 Each cluster in the main configuration requires the following configuration:
 
 | Configuration                | Description                                                                                                                                                                                                                                                                 | Default          |
@@ -31,7 +34,7 @@ Each cluster in the main configuration requires the following configuration:
 | `allowed_node_label_keys`    | Node label keys considered for selectors                                                                                                                                                                                                                                    |                  |
 | `allowed_pod_label_keys`     | Pod label keys considered for selectors                                                                                                                                                                                                                                     |                  |
 
-A sample configuration for SPIRE server running inside of a Kubernetes cluster:
+A sample configuration for SPIRE server running inside a Kubernetes cluster:
 
 ```hcl
     NodeAttestor "k8s_psat" {

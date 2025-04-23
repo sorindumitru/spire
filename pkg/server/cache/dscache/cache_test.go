@@ -1,6 +1,7 @@
 package dscache
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"testing"
@@ -14,7 +15,6 @@ import (
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/spiffe/spire/test/testca"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -147,7 +147,6 @@ func TestBundleInvalidations(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// Create datastore and cache
 			ds := fakedatastore.New(t)
@@ -162,7 +161,7 @@ func TestBundleInvalidations(t *testing.T) {
 			_, err = cache.FetchBundle(context.Background(), td)
 			require.NoError(t, err)
 
-			// Run the function that invalidates the bundle (Prune, Append, etc)
+			// Run the function that invalidates the bundle (Prune, Append, etc.)
 			// (which may or not fail according to dsFailure flag)
 			if tt.dsFailure {
 				ds.SetNextError(fmt.Errorf("failure"))
@@ -198,12 +197,14 @@ func getBundles(t *testing.T, td string) (*common.Bundle, *common.Bundle) {
 	bundle1 := &common.Bundle{
 		TrustDomainId:  td,
 		RefreshHint:    1,
+		SequenceNumber: 2,
 		RootCas:        roots,
 		JwtSigningKeys: keys,
 	}
 
 	bundle2 := proto.Clone(bundle1).(*common.Bundle)
 	bundle2.RefreshHint = 2
+	bundle2.SequenceNumber = 5
 
 	return bundle1, bundle2
 }

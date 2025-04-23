@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/server/plugin/keymanager"
 	"github.com/spiffe/spire/pkg/server/plugin/keymanager/disk"
 	keymanagertest "github.com/spiffe/spire/pkg/server/plugin/keymanager/test"
@@ -80,10 +82,13 @@ func TestGenerateKeyPersistence(t *testing.T) {
 	)
 }
 
-func loadPlugin(t *testing.T, configFmt string, configArgs ...interface{}) (keymanager.KeyManager, error) {
+func loadPlugin(t *testing.T, configFmt string, configArgs ...any) (keymanager.KeyManager, error) {
 	km := new(keymanager.V1)
 	var configErr error
 	plugintest.Load(t, disk.TestBuiltIn(keymanagertest.NewGenerator()), km,
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
 		plugintest.Configuref(configFmt, configArgs...),
 		plugintest.CaptureConfigureError(&configErr),
 	)

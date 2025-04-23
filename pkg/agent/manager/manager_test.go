@@ -9,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	testlog "github.com/sirupsen/logrus/hooks/test"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	agentv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/agent/v1"
@@ -29,6 +32,7 @@ import (
 	"github.com/spiffe/spire/pkg/agent/workloadkey"
 	"github.com/spiffe/spire/pkg/common/bundleutil"
 	"github.com/spiffe/spire/pkg/common/idutil"
+	"github.com/spiffe/spire/pkg/common/rotationutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/pkg/server/api"
@@ -37,6 +41,7 @@ import (
 	"github.com/spiffe/spire/test/fakes/fakeagentcatalog"
 	"github.com/spiffe/spire/test/fakes/fakeagentkeymanager"
 	"github.com/spiffe/spire/test/spiretest"
+	"github.com/spiffe/spire/test/testca"
 	"github.com/spiffe/spire/test/testkey"
 	"github.com/spiffe/spire/test/util"
 	"github.com/stretchr/testify/assert"
@@ -105,7 +110,7 @@ func TestStoreBundleOnStartup(t *testing.T) {
 		Metrics:     &telemetry.Blackhole{},
 		TrustDomain: trustDomain,
 		Storage:     sto,
-		Bundle:      bundleutil.BundleFromRootCA(trustDomain, ca),
+		Bundle:      spiffebundle.FromX509Authorities(trustDomain, []*x509.Certificate{ca}),
 		Clk:         clk,
 		Catalog:     cat,
 	}
@@ -117,7 +122,7 @@ func TestStoreBundleOnStartup(t *testing.T) {
 		bundles := sub.Value()
 		require.NotNil(t, bundles)
 		bundle := bundles[trustDomain]
-		require.Equal(t, bundle.RootCAs(), []*x509.Certificate{ca})
+		require.Equal(t, bundle.X509Authorities(), []*x509.Certificate{ca})
 	})
 
 	require.Error(t, m.Initialize(context.Background()))
@@ -203,18 +208,19 @@ func TestHappyPathWithoutSyncNorRotation(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		WorkloadKeyType: workloadkey.ECP256,
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Clk:             clk,
-		Catalog:         cat,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		WorkloadKeyType:  workloadkey.ECP256,
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Clk:              clk,
+		Catalog:          cat,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m, closer := initializeAndRunNewManager(t, c)
@@ -239,7 +245,7 @@ func TestHappyPathWithoutSyncNorRotation(t *testing.T) {
 	require.Equal(t, api.bundle, m.GetBundle())
 
 	// Expect three SVIDs on cache
-	require.Equal(t, 3, m.CountSVIDs())
+	require.Equal(t, 3, m.CountX509SVIDs())
 
 	// Expect last sync
 	require.Equal(t, clk.Now(), m.GetLastSync())
@@ -257,11 +263,11 @@ func TestHappyPathWithoutSyncNorRotation(t *testing.T) {
 			t.Fatal("expected 2 entries")
 		}
 
-		if len(u.Bundle.RootCAs()) != 1 {
+		if len(u.Bundle.X509Authorities()) != 1 {
 			t.Fatal("expected 1 bundle root CA")
 		}
 
-		if !u.Bundle.EqualTo(api.bundle) {
+		if !u.Bundle.Equal(api.bundle) {
 			t.Fatal("received bundle should be equals to the server bundle")
 		}
 
@@ -294,18 +300,19 @@ func TestRotationWithRSAKey(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Clk:             clk,
-		Catalog:         cat,
-		WorkloadKeyType: workloadkey.RSA2048,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.RSA2048,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m, closer := initializeAndRunNewManager(t, c)
@@ -330,7 +337,7 @@ func TestRotationWithRSAKey(t *testing.T) {
 	require.Equal(t, api.bundle, m.GetBundle())
 
 	// Expect three SVIDs on cache
-	require.Equal(t, 3, m.CountSVIDs())
+	require.Equal(t, 3, m.CountX509SVIDs())
 
 	// Expect last sync
 	require.Equal(t, clk.Now(), m.GetLastSync())
@@ -348,11 +355,11 @@ func TestRotationWithRSAKey(t *testing.T) {
 			t.Fatal("expected 2 entries")
 		}
 
-		if len(u.Bundle.RootCAs()) != 1 {
+		if len(u.Bundle.X509Authorities()) != 1 {
 			t.Fatal("expected 1 bundle root CA")
 		}
 
-		if !u.Bundle.EqualTo(api.bundle) {
+		if !u.Bundle.Equal(api.bundle) {
 			t.Fatal("received bundle should be equals to the server bundle")
 		}
 
@@ -402,6 +409,7 @@ func TestSVIDRotation(t *testing.T) {
 		Clk:              clk,
 		WorkloadKeyType:  workloadkey.ECP256,
 		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := initializeNewManager(t, c)
@@ -441,13 +449,13 @@ func TestSVIDRotation(t *testing.T) {
 	// Now advance time enough that the cert is expiring soon enough that the
 	// manager will attempt to rotate, but be unable to since the read lock is
 	// held.
-	clk.Add(baseTTLSeconds / 2)
+	clk.Add(baseTTLSeconds)
 
 	closer := runManager(t, m)
 	defer closer()
 
 	// Loop, we should not detect SVID rotations
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		s := m.GetCurrentCredentials()
 		svid = s.SVID
 		require.True(t, svidsEqual(svid, baseSVID))
@@ -514,6 +522,7 @@ func TestSynchronization(t *testing.T) {
 		Catalog:          cat,
 		WorkloadKeyType:  workloadkey.ECP256,
 		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -542,11 +551,11 @@ func TestSynchronization(t *testing.T) {
 		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
 	}
 
-	if len(u.Bundle.RootCAs()) != 1 {
+	if len(u.Bundle.X509Authorities()) != 1 {
 		t.Fatal("expected 1 bundle root CA")
 	}
 
-	if !u.Bundle.EqualTo(api.bundle) {
+	if !u.Bundle.Equal(api.bundle) {
 		t.Fatal("received bundle should be equals to the server bundle")
 	}
 
@@ -599,11 +608,11 @@ func TestSynchronization(t *testing.T) {
 		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
 	}
 
-	if len(u.Bundle.RootCAs()) != 1 {
+	if len(u.Bundle.X509Authorities()) != 1 {
 		t.Fatal("expected 1 bundle root CA")
 	}
 
-	if !u.Bundle.EqualTo(api.bundle) {
+	if !u.Bundle.Equal(api.bundle) {
 		t.Fatal("received bundle should be equals to the server bundle")
 	}
 
@@ -654,18 +663,19 @@ func TestSynchronizationClearsStaleCacheEntries(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Clk:             clk,
-		Catalog:         cat,
-		WorkloadKeyType: workloadkey.ECP256,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -727,18 +737,19 @@ func TestSynchronizationUpdatesRegistrationEntries(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Clk:             clk,
-		Catalog:         cat,
-		WorkloadKeyType: workloadkey.ECP256,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -761,6 +772,178 @@ func TestSynchronizationUpdatesRegistrationEntries(t *testing.T) {
 	compareRegistrationEntries(t,
 		regEntriesMap["resp3"],
 		m.cache.Entries())
+}
+
+func TestForceRotation(t *testing.T) {
+	dir := spiretest.TempDir(t)
+	km := fakeagentkeymanager.New(t, dir)
+
+	clk := clock.NewMock(t)
+	// Big number to never get into regular rotation
+	ttl := 10000
+	api := newMockAPI(t, &mockAPIConfig{
+		km: km,
+		getAuthorizedEntries: func(*mockAPI, int32, *entryv1.GetAuthorizedEntriesRequest) (*entryv1.GetAuthorizedEntriesResponse, error) {
+			return makeGetAuthorizedEntriesResponse(t, "resp1", "resp2"), nil
+		},
+		batchNewX509SVIDEntries: func(*mockAPI, int32) []*common.RegistrationEntry {
+			return makeBatchNewX509SVIDEntries("resp1", "resp2")
+		},
+		svidTTL: ttl,
+		clk:     clk,
+	})
+
+	baseSVID, baseSVIDKey := api.newSVID(joinTokenID, 1*time.Hour)
+	cat := fakeagentcatalog.New()
+	cat.SetKeyManager(km)
+
+	log, logHook := testlog.NewNullLogger()
+	log.Level = logrus.DebugLevel
+
+	c := &Config{
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              log,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		RotationInterval: time.Hour,
+		SyncInterval:     time.Hour,
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger, Metrics: &telemetry.Blackhole{}}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
+	}
+
+	m := newManager(c)
+
+	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{
+		{Type: "unix", Value: "uid:1111"},
+		{Type: "spiffe_id", Value: joinTokenID.String()},
+	})
+	require.NoError(t, err)
+	defer sub.Finish()
+
+	if err := m.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	require.Equal(t, clk.Now(), m.GetLastSync())
+
+	// Before synchronization
+	identitiesBefore := identitiesByEntryID(m.cache.Identities())
+	if len(identitiesBefore) != 3 {
+		t.Fatalf("3 cached identities were expected; got %d", len(identitiesBefore))
+	}
+
+	// This is the initial update based on the selector set
+	u := <-sub.Updates()
+	if len(u.Identities) != 3 {
+		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
+	}
+
+	if len(u.Bundle.X509Authorities()) != 1 {
+		t.Fatal("expected 1 bundle root CA")
+	}
+
+	if !u.Bundle.Equal(api.bundle) {
+		t.Fatal("received bundle should be equals to the server bundle")
+	}
+
+	for key, eu := range identitiesByEntryID(u.Identities) {
+		eb, ok := identitiesBefore[key]
+		if !ok {
+			t.Fatalf("an update was received for an inexistent entry on the cache with EntryId=%v", key)
+		}
+		require.Equal(t, eb, eu, "identity received does not match identity on cache")
+	}
+
+	require.Equal(t, clk.Now(), m.GetLastSync())
+
+	// No ttl and bundle updates
+	clk.Add(time.Second)
+	require.NoError(t, m.synchronize(context.Background()))
+	select {
+	case <-sub.Updates():
+		t.Fatal("update unexpected after 1 second")
+	default:
+	}
+	assert.False(t, m.svid.IsTainted())
+
+	// Taint authority
+	api.taintCurrentX509Authority()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	// Initial synchronization
+	require.NoError(t, m.synchronize(ctx))
+
+	// Wait until tainted authorities are fully processed, then retry synchronization
+	assert.Eventually(t, func() bool {
+		for _, logEntry := range logHook.AllEntries() {
+			if logEntry.Message == "Finished processing all tainted entries" {
+				return true
+			}
+		}
+		return false
+	}, time.Minute, 50*time.Millisecond, "No tainted authority processed")
+
+	// Retry synchronization to handle potential edge case
+	require.NoError(t, m.synchronize(ctx))
+
+	select {
+	case u = <-sub.Updates():
+	case <-ctx.Done():
+		t.Fatal("Expected update after tainting authority, but none received")
+	}
+
+	// SVID is signed by a tainted authority, it must be tainted
+	assert.True(t, m.svid.IsTainted())
+	taintedSubjectKeyID := x509util.SubjectKeyIDToString(api.taintedX509Authority.SubjectKeyId)
+	expectProcessedTaintedX509Authorities := map[string]struct{}{
+		taintedSubjectKeyID: {},
+	}
+	assert.Equal(t, expectProcessedTaintedX509Authorities, m.processedTaintedX509Authorities)
+
+	// Make sure the update contains the updated entries and that the cache
+	// has a consistent view.
+	identitiesAfter := identitiesByEntryID(m.cache.Identities())
+	if len(identitiesAfter) != 3 {
+		t.Fatalf("expected 3 identities, got: %d", len(identitiesAfter))
+	}
+
+	for key, eb := range identitiesBefore {
+		ea, ok := identitiesAfter[key]
+		if !ok {
+			t.Fatalf("expected identity with EntryId=%v after synchronization", key)
+		}
+		require.NotEqual(t, eb, ea, "there is at least one identity that was not refreshed: %v", ea)
+	}
+
+	if len(u.Identities) != 3 {
+		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
+	}
+
+	if len(u.Bundle.X509Authorities()) != 2 {
+		t.Fatal("expected 1 bundle root CA")
+	}
+
+	if !u.Bundle.Equal(api.bundle) {
+		t.Fatal("received bundle should be equals to the server bundle")
+	}
+
+	for key, eu := range identitiesByEntryID(u.Identities) {
+		ea, ok := identitiesAfter[key]
+		if !ok {
+			t.Fatalf("an update was received for an inexistent entry on the cache with EntryId=%v", key)
+		}
+		require.Equal(t, eu, ea, "entry received does not match entry on cache")
+	}
+
+	require.Equal(t, clk.Now(), m.GetLastSync())
 }
 
 func TestSubscribersGetUpToDateBundle(t *testing.T) {
@@ -800,6 +983,7 @@ func TestSubscribersGetUpToDateBundle(t *testing.T) {
 		Catalog:          cat,
 		WorkloadKeyType:  workloadkey.ECP256,
 		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -811,10 +995,10 @@ func TestSubscribersGetUpToDateBundle(t *testing.T) {
 	util.RunWithTimeout(t, 1*time.Second, func() {
 		// Update should contain a new bundle.
 		u := <-sub.Updates()
-		if len(u.Bundle.RootCAs()) != 2 {
-			t.Fatalf("expected 2 bundles, got: %d", len(u.Bundle.RootCAs()))
+		if len(u.Bundle.X509Authorities()) != 2 {
+			t.Fatalf("expected 2 bundles, got: %d", len(u.Bundle.X509Authorities()))
 		}
-		if !u.Bundle.EqualTo(c.Bundle) {
+		if !u.Bundle.Equal(c.Bundle) {
 			t.Fatal("bundles were expected to be equal")
 		}
 	})
@@ -843,21 +1027,23 @@ func TestSynchronizationWithLRUCache(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:       api.addr,
-		SVID:             baseSVID,
-		SVIDKey:          baseSVIDKey,
-		Log:              testLogger,
-		TrustDomain:      trustDomain,
-		Storage:          openStorage(t, dir),
-		Bundle:           api.bundle,
-		Metrics:          &telemetry.Blackhole{},
-		RotationInterval: time.Hour,
-		SyncInterval:     time.Hour,
-		Clk:              clk,
-		Catalog:          cat,
-		WorkloadKeyType:  workloadkey.ECP256,
-		SVIDCacheMaxSize: 10,
-		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:           api.addr,
+		SVID:                 baseSVID,
+		SVIDKey:              baseSVIDKey,
+		Log:                  testLogger,
+		TrustDomain:          trustDomain,
+		Storage:              openStorage(t, dir),
+		Bundle:               api.bundle,
+		Metrics:              &telemetry.Blackhole{},
+		RotationInterval:     time.Hour,
+		SyncInterval:         time.Hour,
+		Clk:                  clk,
+		Catalog:              cat,
+		WorkloadKeyType:      workloadkey.ECP256,
+		X509SVIDCacheMaxSize: 10,
+		JWTSVIDCacheMaxSize:  10,
+		SVIDStoreCache:       storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy:     rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -886,11 +1072,11 @@ func TestSynchronizationWithLRUCache(t *testing.T) {
 		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
 	}
 
-	if len(u.Bundle.RootCAs()) != 1 {
+	if len(u.Bundle.X509Authorities()) != 1 {
 		t.Fatal("expected 1 bundle root CA")
 	}
 
-	if !u.Bundle.EqualTo(api.bundle) {
+	if !u.Bundle.Equal(api.bundle) {
 		t.Fatal("received bundle should be equals to the server bundle")
 	}
 
@@ -943,11 +1129,11 @@ func TestSynchronizationWithLRUCache(t *testing.T) {
 		t.Fatalf("expected 3 identities, got: %d", len(u.Identities))
 	}
 
-	if len(u.Bundle.RootCAs()) != 1 {
+	if len(u.Bundle.X509Authorities()) != 1 {
 		t.Fatal("expected 1 bundle root CA")
 	}
 
-	if !u.Bundle.EqualTo(api.bundle) {
+	if !u.Bundle.Equal(api.bundle) {
 		t.Fatal("received bundle should be equals to the server bundle")
 	}
 
@@ -960,6 +1146,170 @@ func TestSynchronizationWithLRUCache(t *testing.T) {
 	}
 
 	require.Equal(t, clk.Now(), m.GetLastSync())
+}
+
+func TestSyncRetriesWithDefaultIntervalOnZeroSVIDSReturned(t *testing.T) {
+	dir := spiretest.TempDir(t)
+	km := fakeagentkeymanager.New(t, dir)
+
+	startAt := time.Now()
+	clk := clock.NewMockAt(t, startAt)
+	actualSyncIntervals := []time.Duration{}
+	clk.SetAfterHook(func(d time.Duration) <-chan time.Time {
+		actualSyncIntervals = append(actualSyncIntervals, d)
+		c := make(chan time.Time, 1)
+		c <- startAt.Add(time.Second)
+		return c
+	})
+	timeout := time.Second * 10
+	getAuthorizedEntriesAttempts := 0
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	api := newMockAPI(t, &mockAPIConfig{
+		km: km,
+		getAuthorizedEntries: func(*mockAPI, int32, *entryv1.GetAuthorizedEntriesRequest) (*entryv1.GetAuthorizedEntriesResponse, error) {
+			// simulate 2 consecutive cache misses in server
+			getAuthorizedEntriesAttempts++
+			if getAuthorizedEntriesAttempts < 3 {
+				return &entryv1.GetAuthorizedEntriesResponse{
+					Entries: []*types.Entry{},
+				}, nil
+			}
+			// stop the sync loop with returning the entries because we will now wait for the long 'SyncInterval'
+			cancel()
+			return makeGetAuthorizedEntriesResponse(t, "resp1", "resp2"), nil
+		},
+		batchNewX509SVIDEntries: func(*mockAPI, int32) []*common.RegistrationEntry {
+			return makeBatchNewX509SVIDEntries("resp1", "resp2")
+		},
+		svidTTL: 100,
+		clk:     clk,
+	})
+
+	baseSVID, baseSVIDKey := api.newSVID(joinTokenID, 1*time.Hour)
+	cat := fakeagentcatalog.New()
+	cat.SetKeyManager(km)
+
+	c := &Config{
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		RotationInterval: time.Hour,
+		// set sync interval to a high value to proof that synchronizer retries sync
+		// with the lower default interval in case 0 entries are returned
+		SyncInterval:     time.Hour,
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
+	}
+
+	m := newManager(c)
+
+	// initialize generates the first attempt at fetching entries
+	if err := m.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.runSynchronizer(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// m.runSynchronizer should fetch the entries 2 more times, totalling 3 attempts
+	if getAuthorizedEntriesAttempts != 3 {
+		t.Fatalf("did not attempt to fetch entries 3 times; attempts: %d", getAuthorizedEntriesAttempts)
+	}
+
+	// m.runSynchronizer should sync 2 times with the faster "defaultSyncInterval" after no entries are returned
+	if (actualSyncIntervals[0] != defaultSyncInterval) || (actualSyncIntervals[1] != defaultSyncInterval) {
+		t.Fatalf("did not do a fast sync retry after 0 SVIDs were returned; sync intervals: %v", actualSyncIntervals)
+	}
+}
+
+func TestSyncFailsWithUnknownAuthority(t *testing.T) {
+	dir := spiretest.TempDir(t)
+	km := fakeagentkeymanager.New(t, dir)
+
+	// Create a verification error
+	ca := testca.New(t, spiffeid.RequireTrustDomainFromString("test.td"))
+	ca2 := testca.New(t, spiffeid.RequireTrustDomainFromString("test.td"))
+	svid := ca2.CreateX509SVID(spiffeid.RequireFromString("spiffe://test.td/w1"))
+	_, _, unknownAuthorityErr := x509svid.Verify(svid.Certificates, ca.X509Bundle())
+	require.Error(t, unknownAuthorityErr)
+
+	startAt := time.Now()
+	clk := clock.NewMockAt(t, startAt)
+	actualSyncIntervals := []time.Duration{}
+	clk.SetAfterHook(func(d time.Duration) <-chan time.Time {
+		actualSyncIntervals = append(actualSyncIntervals, d)
+		c := make(chan time.Time, 1)
+		c <- startAt.Add(time.Second)
+		return c
+	})
+	timeout := time.Second * 10
+	getAuthorizedEntriesAttempts := 0
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	api := newMockAPI(t, &mockAPIConfig{
+		km: km,
+		getAuthorizedEntries: func(*mockAPI, int32, *entryv1.GetAuthorizedEntriesRequest) (*entryv1.GetAuthorizedEntriesResponse, error) {
+			getAuthorizedEntriesAttempts++
+			if getAuthorizedEntriesAttempts > 1 {
+				return nil, unknownAuthorityErr
+			}
+			return makeGetAuthorizedEntriesResponse(t, "resp1", "resp2"), nil
+		},
+		batchNewX509SVIDEntries: func(*mockAPI, int32) []*common.RegistrationEntry {
+			return makeBatchNewX509SVIDEntries("resp1", "resp2")
+		},
+		svidTTL: 100,
+		clk:     clk,
+	})
+
+	baseSVID, baseSVIDKey := api.newSVID(joinTokenID, 1*time.Hour)
+	cat := fakeagentcatalog.New()
+	cat.SetKeyManager(km)
+
+	c := &Config{
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		RotationInterval: time.Hour,
+		// set sync interval to a high value to proof that synchronizer retries sync
+		// with the lower default interval in case 0 entries are returned
+		SyncInterval:     time.Hour,
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
+	}
+
+	m := newManager(c)
+
+	// initialize generates the first attempt at fetching entries
+	if err := m.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	/// Sync to get expected error
+	err := m.runSynchronizer(ctx)
+	spiretest.RequireErrorPrefix(t, err, "failed to sync with SPIRE Server:")
 }
 
 func TestSyncSVIDsWithLRUCache(t *testing.T) {
@@ -998,19 +1348,21 @@ func TestSyncSVIDsWithLRUCache(t *testing.T) {
 	cat.SetKeyManager(km)
 
 	c := &Config{
-		ServerAddr:       api.addr,
-		SVID:             baseSVID,
-		SVIDKey:          baseSVIDKey,
-		Log:              testLogger,
-		TrustDomain:      trustDomain,
-		Storage:          openStorage(t, dir),
-		Bundle:           api.bundle,
-		Metrics:          &telemetry.Blackhole{},
-		Clk:              clk,
-		Catalog:          cat,
-		WorkloadKeyType:  workloadkey.ECP256,
-		SVIDCacheMaxSize: 1,
-		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:           api.addr,
+		SVID:                 baseSVID,
+		SVIDKey:              baseSVIDKey,
+		Log:                  testLogger,
+		TrustDomain:          trustDomain,
+		Storage:              openStorage(t, dir),
+		Bundle:               api.bundle,
+		Metrics:              &telemetry.Blackhole{},
+		Clk:                  clk,
+		Catalog:              cat,
+		WorkloadKeyType:      workloadkey.ECP256,
+		X509SVIDCacheMaxSize: 1,
+		JWTSVIDCacheMaxSize:  1,
+		SVIDStoreCache:       storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy:     rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -1053,9 +1405,9 @@ func TestSyncSVIDsWithLRUCache(t *testing.T) {
 	assert.NoError(t, subErr, "subscriber error")
 
 	// ensure 2 SVIDs corresponding to selectors are cached.
-	assert.Equal(t, 2, m.cache.CountSVIDs())
+	assert.Equal(t, 2, m.cache.CountX509SVIDs())
 
-	// cancel the ctx to stop go routines
+	// cancel the ctx to stop Go routines
 	cancel()
 
 	syncErr := <-syncErrCh
@@ -1104,6 +1456,7 @@ func TestSurvivesCARotation(t *testing.T) {
 		Catalog:          cat,
 		WorkloadKeyType:  workloadkey.ECP256,
 		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
@@ -1113,14 +1466,14 @@ func TestSurvivesCARotation(t *testing.T) {
 	// This should be the update received when Subscribe function was called.
 	updates := sub.Updates()
 	initialUpdate := <-updates
-	initialRoot := initialUpdate.Bundle.RootCAs()[0]
+	initialRoot := initialUpdate.Bundle.X509Authorities()[0]
 
 	defer initializeAndRunManager(t, m)()
 
 	// Second FetchX509 request will create a new CA
 	clk.Add(syncInterval)
 	newCAUpdate := <-updates
-	newRoots := newCAUpdate.Bundle.RootCAs()
+	newRoots := newCAUpdate.Bundle.X509Authorities()
 	require.Contains(t, newRoots, initialRoot)
 	require.Len(t, newRoots, 2)
 }
@@ -1153,28 +1506,28 @@ func TestFetchJWTSVID(t *testing.T) {
 	baseSVID, baseSVIDKey := api.newSVID(joinTokenID, 1*time.Hour)
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Catalog:         cat,
-		Clk:             clk,
-		WorkloadKeyType: workloadkey.ECP256,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Catalog:          cat,
+		Clk:              clk,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m := newManager(c)
 	require.NoError(t, m.Initialize(context.Background()))
 
-	spiffeID := spiffeid.RequireFromString("spiffe://example.org/blog")
 	audience := []string{"foo"}
 
 	// nothing in cache, fetch fails
-	svid, err := m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err := m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.Error(t, err)
 	require.Empty(t, svid)
 
@@ -1188,7 +1541,7 @@ func TestFetchJWTSVID(t *testing.T) {
 		IssuedAt:  issuedAtA,
 		ExpiresAt: expiresAtA,
 	}
-	svid, err = m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err = m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.NoError(t, err)
 	require.Equal(t, tokenA, svid.Token)
 	require.Equal(t, issuedAtA, svid.IssuedAt.Unix())
@@ -1200,14 +1553,14 @@ func TestFetchJWTSVID(t *testing.T) {
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(time.Minute).Unix(),
 	}
-	svid, err = m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err = m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.NoError(t, err)
 	require.Equal(t, tokenA, svid.Token)
 	require.Equal(t, issuedAtA, svid.IssuedAt.Unix())
 	require.Equal(t, expiresAtA, svid.ExpiresAt.Unix())
 
 	// expire the cached JWT soon and make sure new JWT is fetched
-	clk.Add(time.Second * 30)
+	clk.Add(time.Second * 45)
 	now = clk.Now()
 	tokenC := "C"
 	issuedAtC := now.Unix()
@@ -1217,7 +1570,7 @@ func TestFetchJWTSVID(t *testing.T) {
 		IssuedAt:  issuedAtC,
 		ExpiresAt: expiresAtC,
 	}
-	svid, err = m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err = m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.NoError(t, err)
 	require.Equal(t, tokenC, svid.Token)
 	require.Equal(t, issuedAtC, svid.IssuedAt.Unix())
@@ -1226,7 +1579,7 @@ func TestFetchJWTSVID(t *testing.T) {
 	// expire the JWT soon, fail the fetch, and make sure cached JWT is returned
 	clk.Add(time.Second * 30)
 	fetchResp.Svid = nil
-	svid, err = m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err = m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.NoError(t, err)
 	require.Equal(t, tokenC, svid.Token)
 	require.Equal(t, issuedAtC, svid.IssuedAt.Unix())
@@ -1235,7 +1588,7 @@ func TestFetchJWTSVID(t *testing.T) {
 	// now completely expire the JWT and make sure an error is returned, since
 	// the fetch fails and the cached version is expired.
 	clk.Add(time.Second * 30)
-	svid, err = m.FetchJWTSVID(context.Background(), spiffeID, audience)
+	svid, err = m.FetchJWTSVID(context.Background(), regEntriesMap["resp2"][0], audience)
 	require.Error(t, err)
 	require.Nil(t, svid)
 }
@@ -1276,18 +1629,19 @@ func TestStorableSVIDsSync(t *testing.T) {
 	cat.SetKeyManager(fakeagentkeymanager.New(t, dir))
 
 	c := &Config{
-		ServerAddr:      api.addr,
-		SVID:            baseSVID,
-		SVIDKey:         baseSVIDKey,
-		Log:             testLogger,
-		TrustDomain:     trustDomain,
-		Storage:         openStorage(t, dir),
-		Bundle:          api.bundle,
-		Metrics:         &telemetry.Blackhole{},
-		Clk:             clk,
-		Catalog:         cat,
-		WorkloadKeyType: workloadkey.ECP256,
-		SVIDStoreCache:  storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		ServerAddr:       api.addr,
+		SVID:             baseSVID,
+		SVIDKey:          baseSVIDKey,
+		Log:              testLogger,
+		TrustDomain:      trustDomain,
+		Storage:          openStorage(t, dir),
+		Bundle:           api.bundle,
+		Metrics:          &telemetry.Blackhole{},
+		Clk:              clk,
+		Catalog:          cat,
+		WorkloadKeyType:  workloadkey.ECP256,
+		SVIDStoreCache:   storecache.New(&storecache.Config{TrustDomain: trustDomain, Log: testLogger}),
+		RotationStrategy: rotationutil.NewRotationStrategy(0),
 	}
 
 	m, closer := initializeAndRunNewManager(t, c)
@@ -1302,7 +1656,7 @@ func TestStorableSVIDsSync(t *testing.T) {
 			require.Len(t, records, len(entries))
 			spiretest.RequireProtoEqual(t, entries[i], record.Entry)
 
-			// Verify record has latests SVIDs
+			// Verify record has latest's SVIDs
 			chain := api.lastestSVIDs[record.Entry.EntryId]
 			require.Equal(t, chain, record.Svid.Chain)
 		}
@@ -1409,7 +1763,7 @@ type mockAPI struct {
 
 	addr string
 
-	bundle *bundleutil.Bundle
+	bundle *spiffebundle.Bundle
 	ca     *x509.Certificate
 	caKey  *ecdsa.PrivateKey
 
@@ -1419,9 +1773,11 @@ type mockAPI struct {
 	getAuthorizedEntriesCount int32
 	batchNewX509SVIDCount     int32
 
+	taintedX509Authority *x509.Certificate
+
 	clk clock.Clock
 
-	// Add latests SVIDs per entry, to verify returned SVIDs are valid
+	// Add latest's SVIDs per entry, to verify returned SVIDs are valid
 	lastestSVIDs map[string][]*x509.Certificate
 
 	agentv1.UnimplementedAgentServer
@@ -1431,10 +1787,13 @@ type mockAPI struct {
 }
 
 func newMockAPI(t *testing.T, config *mockAPIConfig) *mockAPI {
+	bundle := spiffebundle.New(trustDomain)
+	bundle.SetRefreshHint(0)
+	bundle.SetSequenceNumber(0)
 	h := &mockAPI{
 		t:            t,
 		c:            config,
-		bundle:       bundleutil.New(trustDomain),
+		bundle:       bundle,
 		clk:          config.clk,
 		lastestSVIDs: make(map[string][]*x509.Certificate),
 	}
@@ -1487,7 +1846,7 @@ func (h *mockAPI) RenewAgent(ctx context.Context, req *agentv1.RenewAgentRequest
 	}, nil
 }
 
-func (h *mockAPI) GetAuthorizedEntries(ctx context.Context, req *entryv1.GetAuthorizedEntriesRequest) (*entryv1.GetAuthorizedEntriesResponse, error) {
+func (h *mockAPI) GetAuthorizedEntries(_ context.Context, req *entryv1.GetAuthorizedEntriesRequest) (*entryv1.GetAuthorizedEntriesResponse, error) {
 	count := atomic.AddInt32(&h.getAuthorizedEntriesCount, 1)
 	if h.c.getAuthorizedEntries != nil {
 		return h.c.getAuthorizedEntries(h, count, req)
@@ -1495,7 +1854,7 @@ func (h *mockAPI) GetAuthorizedEntries(ctx context.Context, req *entryv1.GetAuth
 	return nil, errors.New("no GetAuthorizedEntries implementation for test")
 }
 
-func (h *mockAPI) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509SVIDRequest) (*svidv1.BatchNewX509SVIDResponse, error) {
+func (h *mockAPI) BatchNewX509SVID(_ context.Context, req *svidv1.BatchNewX509SVIDRequest) (*svidv1.BatchNewX509SVIDResponse, error) {
 	count := atomic.AddInt32(&h.batchNewX509SVIDCount, 1)
 
 	var entries map[string]*common.RegistrationEntry
@@ -1507,13 +1866,13 @@ func (h *mockAPI) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 		entry, ok := entries[param.EntryId]
 		if !ok {
 			resp.Results = append(resp.Results, &svidv1.BatchNewX509SVIDResponse_Result{
-				Status: api.CreateStatus(codes.NotFound, "entry %q not found", param.EntryId),
+				Status: api.CreateStatusf(codes.NotFound, "entry %q not found", param.EntryId),
 			})
 			continue
 		}
 		svid := h.newSVIDFromCSR(spiffeid.RequireFromString(entry.SpiffeId), param.Csr)
 
-		// Keep latests SVIDs per entry
+		// Keep latest's SVIDs per entry
 		h.lastestSVIDs[entry.EntryId] = svid
 
 		resp.Results = append(resp.Results, &svidv1.BatchNewX509SVIDResponse_Result{
@@ -1527,18 +1886,27 @@ func (h *mockAPI) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 	return resp, nil
 }
 
-func (h *mockAPI) NewJWTSVID(ctx context.Context, req *svidv1.NewJWTSVIDRequest) (*svidv1.NewJWTSVIDResponse, error) {
+func (h *mockAPI) NewJWTSVID(_ context.Context, req *svidv1.NewJWTSVIDRequest) (*svidv1.NewJWTSVIDResponse, error) {
 	if h.c.newJWTSVID != nil {
 		return h.c.newJWTSVID(h, req)
 	}
 	return nil, errors.New("no FetchJWTSVID implementation for test")
 }
 
-func (h *mockAPI) GetBundle(ctx context.Context, req *bundlev1.GetBundleRequest) (*types.Bundle, error) {
-	return api.BundleToProto(h.bundle.Proto())
+func (h *mockAPI) GetBundle(context.Context, *bundlev1.GetBundleRequest) (*types.Bundle, error) {
+	bundle := bundleutil.BundleProtoFromRootCAs(h.bundle.TrustDomain().IDString(), h.bundle.X509Authorities())
+	if h.taintedX509Authority != nil {
+		for _, eachRootCA := range bundle.RootCas {
+			if reflect.DeepEqual(eachRootCA.DerBytes, h.taintedX509Authority.Raw) {
+				eachRootCA.TaintedKey = true
+			}
+		}
+	}
+
+	return api.BundleToProto(bundle)
 }
 
-func (h *mockAPI) GetFederatedBundle(ctx context.Context, req *bundlev1.GetFederatedBundleRequest) (*types.Bundle, error) {
+func (h *mockAPI) GetFederatedBundle(_ context.Context, req *bundlev1.GetFederatedBundleRequest) (*types.Bundle, error) {
 	return &types.Bundle{
 		TrustDomain: req.TrustDomain,
 		X509Authorities: []*types.X509Certificate{
@@ -1547,11 +1915,20 @@ func (h *mockAPI) GetFederatedBundle(ctx context.Context, req *bundlev1.GetFeder
 	}, nil
 }
 
+// taintCurrentX509Authority create a new X.509 authority and taint old
+func (h *mockAPI) taintCurrentX509Authority() {
+	h.taintedX509Authority = h.ca
+	ca, caKey := createCA(h.t, h.clk)
+	h.ca = ca
+	h.caKey = caKey
+	h.bundle.AddX509Authority(ca)
+}
+
 func (h *mockAPI) rotateCA() {
 	ca, caKey := createCA(h.t, h.clk)
 	h.ca = ca
 	h.caKey = caKey
-	h.bundle.AppendRootCA(ca)
+	h.bundle.AddX509Authority(ca)
 }
 
 func (h *mockAPI) newSVID(spiffeID spiffeid.ID, ttl time.Duration) ([]*x509.Certificate, keymanager.Key) {
@@ -1562,7 +1939,7 @@ func (h *mockAPI) newSVIDFromCSR(spiffeID spiffeid.ID, csr []byte) []*x509.Certi
 	return createSVIDFromCSR(h.t, h.clk, h.ca, h.caKey, spiffeID, csr, h.c.svidTTL)
 }
 
-func (h *mockAPI) getGRPCServerConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+func (h *mockAPI) getGRPCServerConfig(*tls.ClientHelloInfo) (*tls.Config, error) {
 	certChain := [][]byte{}
 	for _, c := range h.svid {
 		certChain = append(certChain, c.Raw)
@@ -1581,6 +1958,9 @@ func (h *mockAPI) getGRPCServerConfig(hello *tls.ClientHelloInfo) (*tls.Config, 
 		Certificates: certs,
 		ClientCAs:    roots,
 		MinVersion:   tls.VersionTLS12,
+		NextProtos: []string{
+			"h2",
+		},
 	}, nil
 }
 

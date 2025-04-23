@@ -1,11 +1,9 @@
 package client
 
 import (
-	"context"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/spiffe/spire/pkg/common/idutil"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -24,7 +23,7 @@ const (
 	roundRobinServiceConfig = `{ "loadBalancingConfig": [ { "round_robin": {} } ] }`
 )
 
-type DialServerConfig struct {
+type ServerClientConfig struct {
 	// Address is the SPIRE server address
 	Address string
 
@@ -38,11 +37,14 @@ type DialServerConfig struct {
 	// certificate to present to the server during the TLS handshake.
 	GetAgentCertificate func() *tls.Certificate
 
-	// dialContext is an optional constructor for the grpc client connection.
-	dialContext func(ctx context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
+	// TLSPolicy determines the post-quantum-safe policy to apply to all TLS connections.
+	TLSPolicy tlspolicy.Policy
+
+	// dialOpts are optional gRPC dial options
+	dialOpts []grpc.DialOption
 }
 
-func DialServer(ctx context.Context, config DialServerConfig) (*grpc.ClientConn, error) {
+func NewServerGRPCClient(config ServerClientConfig) (*grpc.ClientConn, error) {
 	bundleSource := newBundleSource(config.TrustDomain, config.GetBundle)
 	serverID, err := idutil.ServerID(config.TrustDomain)
 	if err != nil {
@@ -57,29 +59,25 @@ func DialServer(ctx context.Context, config DialServerConfig) (*grpc.ClientConn,
 		tlsConfig = tlsconfig.MTLSClientConfig(newX509SVIDSource(config.GetAgentCertificate), bundleSource, authorizer)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, defaultDialTimeout)
-	defer cancel()
+	err = tlspolicy.ApplyPolicy(tlsConfig, config.TLSPolicy)
+	if err != nil {
+		return nil, err
+	}
 
-	if config.dialContext == nil {
-		config.dialContext = grpc.DialContext
+	dialOpts := config.dialOpts
+	if dialOpts == nil {
+		dialOpts = []grpc.DialOption{
+			grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
+			grpc.WithDisableServiceConfig(),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		}
 	}
-	client, err := config.dialContext(ctx, config.Address,
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-		grpc.WithDisableServiceConfig(),
-		grpc.FailOnNonTempDialError(true),
-		grpc.WithBlock(),
-		grpc.WithReturnConnectionError(),
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-	)
-	switch {
-	case err == nil:
-	case errors.Is(err, context.Canceled):
-		return nil, fmt.Errorf("failed to dial %s: canceled", config.Address)
-	case errors.Is(err, context.DeadlineExceeded):
-		return nil, fmt.Errorf("failed to dial %s: timed out", config.Address)
-	default:
-		return nil, fmt.Errorf("failed to dial %s: %w", config.Address, err)
+
+	client, err := grpc.NewClient(config.Address, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
 	}
+
 	return client, nil
 }
 

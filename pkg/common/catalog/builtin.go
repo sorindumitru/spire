@@ -5,12 +5,12 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
 	"github.com/spiffe/spire-plugin-sdk/private"
 	"github.com/spiffe/spire/pkg/common/log"
-	"github.com/zeebo/errs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -42,8 +42,6 @@ func LoadBuiltIn(ctx context.Context, builtIn BuiltIn, config BuiltInConfig) (_ 
 }
 
 func loadBuiltIn(ctx context.Context, builtIn BuiltIn, config BuiltInConfig) (_ *pluginImpl, err error) {
-	builtinServer := newBuiltInServer()
-
 	logger := log.NewHCLogAdapter(
 		config.Log,
 		builtIn.Name,
@@ -63,6 +61,9 @@ func loadBuiltIn(ctx context.Context, builtIn BuiltIn, config BuiltInConfig) (_ 
 	}()
 	closers = append(closers, dialer)
 
+	builtinServer, serverCloser := newBuiltInServer(config.Log)
+	closers = append(closers, serverCloser)
+
 	pluginServers := append([]pluginsdk.ServiceServer{builtIn.Plugin}, builtIn.Services...)
 
 	private.Register(builtinServer, pluginServers, logger, dialer)
@@ -81,11 +82,12 @@ func loadBuiltIn(ctx context.Context, builtIn BuiltIn, config BuiltInConfig) (_ 
 	return newPlugin(ctx, builtinConn, info, config.Log, closers, config.HostServices)
 }
 
-func newBuiltInServer() *grpc.Server {
+func newBuiltInServer(log logrus.FieldLogger) (*grpc.Server, io.Closer) {
+	drain := &drainHandlers{}
 	return grpc.NewServer(
-		grpc.StreamInterceptor(streamPanicInterceptor),
-		grpc.UnaryInterceptor(unaryPanicInterceptor),
-	)
+		grpc.ChainStreamInterceptor(drain.StreamServerInterceptor, streamPanicInterceptor(log)),
+		grpc.ChainUnaryInterceptor(drain.UnaryServerInterceptor, unaryPanicInterceptor(log)),
+	), closerFunc(drain.Wait)
 }
 
 type builtinDialer struct {
@@ -95,11 +97,11 @@ type builtinDialer struct {
 	conn         *pipeConn
 }
 
-func (d *builtinDialer) DialHost(ctx context.Context) (grpc.ClientConnInterface, error) {
+func (d *builtinDialer) DialHost(context.Context) (grpc.ClientConnInterface, error) {
 	if d.conn != nil {
 		return d.conn, nil
 	}
-	server := newHostServer(d.pluginName, d.hostServices)
+	server := newHostServer(d.log, d.pluginName, d.hostServices)
 	conn, err := startPipeServer(server, d.log)
 	if err != nil {
 		return nil, err
@@ -142,9 +144,13 @@ func startPipeServer(server *grpc.Server, log logrus.FieldLogger) (_ *pipeConn, 
 	}()
 
 	// Dial the server
-	conn, err := grpc.Dial("IGNORED", grpc.WithBlock(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(pipeNet.DialContext))
+	conn, err := grpc.NewClient(
+		"passthrough:IGNORED",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(pipeNet.DialContext),
+	)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 	closers = append(closers, conn)
 
@@ -152,4 +158,37 @@ func startPipeServer(server *grpc.Server, log logrus.FieldLogger) (_ *pipeConn, 
 		ClientConnInterface: conn,
 		Closer:              closers,
 	}, nil
+}
+
+type drainHandlers struct {
+	wg sync.WaitGroup
+}
+
+func (d *drainHandlers) Wait() {
+	done := make(chan struct{})
+
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	t := time.NewTimer(time.Minute)
+	defer t.Stop()
+
+	select {
+	case <-done:
+	case <-t.C:
+	}
+}
+
+func (d *drainHandlers) UnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	d.wg.Add(1)
+	defer d.wg.Done()
+	return handler(ctx, req)
+}
+
+func (d *drainHandlers) StreamServerInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	d.wg.Add(1)
+	defer d.wg.Done()
+	return handler(srv, ss)
 }

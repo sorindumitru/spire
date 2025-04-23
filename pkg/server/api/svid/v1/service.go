@@ -10,6 +10,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	svidv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/svid/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
+	"github.com/spiffe/spire/pkg/common/idutil"
 	"github.com/spiffe/spire/pkg/common/jwtsvid"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/x509util"
@@ -23,25 +24,27 @@ import (
 )
 
 // RegisterService registers the service on the gRPC server.
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	svidv1.RegisterSVIDServer(s, service)
 }
 
 // Config is the service configuration
 type Config struct {
-	EntryFetcher api.AuthorizedEntryFetcher
-	ServerCA     ca.ServerCA
-	TrustDomain  spiffeid.TrustDomain
-	DataStore    datastore.DataStore
+	EntryFetcher                 api.AuthorizedEntryFetcher
+	ServerCA                     ca.ServerCA
+	TrustDomain                  spiffeid.TrustDomain
+	DataStore                    datastore.DataStore
+	UseLegacyDownstreamX509CATTL bool
 }
 
 // New creates a new SVID service
 func New(config Config) *Service {
 	return &Service{
-		ca: config.ServerCA,
-		ef: config.EntryFetcher,
-		td: config.TrustDomain,
-		ds: config.DataStore,
+		ca:                           config.ServerCA,
+		ef:                           config.EntryFetcher,
+		td:                           config.TrustDomain,
+		ds:                           config.DataStore,
+		useLegacyDownstreamX509CATTL: config.UseLegacyDownstreamX509CATTL,
 	}
 }
 
@@ -49,10 +52,11 @@ func New(config Config) *Service {
 type Service struct {
 	svidv1.UnsafeSVIDServer
 
-	ca ca.ServerCA
-	ef api.AuthorizedEntryFetcher
-	td spiffeid.TrustDomain
-	ds datastore.DataStore
+	ca                           ca.ServerCA
+	ef                           api.AuthorizedEntryFetcher
+	td                           spiffeid.TrustDomain
+	ds                           datastore.DataStore
+	useLegacyDownstreamX509CATTL bool
 }
 
 func (s *Service) MintX509SVID(ctx context.Context, req *svidv1.MintX509SVIDRequest) (*svidv1.MintX509SVIDResponse, error) {
@@ -91,17 +95,24 @@ func (s *Service) MintX509SVID(ctx context.Context, req *svidv1.MintX509SVIDRequ
 		return nil, api.MakeErr(log, codes.InvalidArgument, "CSR URI SAN is invalid", err)
 	}
 
+	dnsNames := make([]string, 0, len(csr.DNSNames))
 	for _, dnsName := range csr.DNSNames {
-		if err := x509util.ValidateDNS(dnsName); err != nil {
+		err := x509util.ValidateLabel(dnsName)
+		if err != nil {
 			return nil, api.MakeErr(log, codes.InvalidArgument, "CSR DNS name is invalid", err)
 		}
+		dnsNames = append(dnsNames, dnsName)
 	}
 
-	x509SVID, err := s.ca.SignX509SVID(ctx, ca.X509SVIDParams{
-		SpiffeID:  id,
+	if err := x509util.CheckForWildcardOverlap(dnsNames); err != nil {
+		return nil, api.MakeErr(log, codes.InvalidArgument, "CSR DNS name contains a wildcard that covers another non-wildcard name", err)
+	}
+
+	x509SVID, err := s.ca.SignWorkloadX509SVID(ctx, ca.WorkloadX509SVIDParams{
+		SPIFFEID:  id,
 		PublicKey: csr.PublicKey,
 		TTL:       time.Duration(req.Ttl) * time.Second,
-		DNSList:   csr.DNSNames,
+		DNSNames:  dnsNames,
 		Subject:   csr.Subject,
 	})
 	if err != nil {
@@ -157,8 +168,13 @@ func (s *Service) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 		return nil, api.MakeErr(log, status.Code(err), "rejecting request due to certificate signing rate limiting", err)
 	}
 
+	requestedEntries := make(map[string]struct{})
+	for _, svidParam := range req.Params {
+		requestedEntries[svidParam.GetEntryId()] = struct{}{}
+	}
+
 	// Fetch authorized entries
-	entriesMap, err := s.fetchEntries(ctx, log)
+	entriesMap, err := s.findEntries(ctx, log, requestedEntries)
 	if err != nil {
 		return nil, err
 	}
@@ -168,10 +184,19 @@ func (s *Service) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 		//  Create new SVID
 		r := s.newX509SVID(ctx, svidParam, entriesMap)
 		results = append(results, r)
+		spiffeID := ""
+		if r.Svid != nil {
+			id, err := idutil.IDProtoString(r.Svid.Id)
+			if err == nil {
+				spiffeID = id
+			}
+		}
+
 		rpccontext.AuditRPCWithTypesStatus(ctx, r.Status, func() logrus.Fields {
 			fields := logrus.Fields{
 				telemetry.Csr:            api.HashByte(svidParam.Csr),
 				telemetry.RegistrationID: svidParam.EntryId,
+				telemetry.SPIFFEID:       spiffeID,
 			}
 
 			if r.Svid != nil {
@@ -185,24 +210,17 @@ func (s *Service) BatchNewX509SVID(ctx context.Context, req *svidv1.BatchNewX509
 	return &svidv1.BatchNewX509SVIDResponse{Results: results}, nil
 }
 
-// fetchEntries fetches authorized entries using caller ID from context
-func (s *Service) fetchEntries(ctx context.Context, log logrus.FieldLogger) (map[string]*types.Entry, error) {
+func (s *Service) findEntries(ctx context.Context, log logrus.FieldLogger, entries map[string]struct{}) (map[string]*types.Entry, error) {
 	callerID, ok := rpccontext.CallerID(ctx)
 	if !ok {
 		return nil, api.MakeErr(log, codes.Internal, "caller ID missing from request context", nil)
 	}
 
-	entries, err := s.ef.FetchAuthorizedEntries(ctx, callerID)
+	foundEntries, err := s.ef.LookupAuthorizedEntries(ctx, callerID, entries)
 	if err != nil {
 		return nil, api.MakeErr(log, codes.Internal, "failed to fetch registration entries", err)
 	}
-
-	entriesMap := make(map[string]*types.Entry, len(entries))
-	for _, entry := range entries {
-		entriesMap[entry.Id] = entry
-	}
-
-	return entriesMap, nil
+	return foundEntries, nil
 }
 
 // newX509SVID creates an X509-SVID using data from registration entry and key from CSR
@@ -242,7 +260,7 @@ func (s *Service) newX509SVID(ctx context.Context, param *svidv1.NewX509SVIDPara
 		}
 	}
 
-	spiffeID, err := api.TrustDomainMemberIDFromProto(ctx, s.td, entry.SpiffeId)
+	spiffeID, err := api.TrustDomainMemberIDFromProto(ctx, s.td, entry.GetSpiffeId())
 	if err != nil {
 		// This shouldn't be the case unless there is invalid data in the datastore
 		return &svidv1.BatchNewX509SVIDResponse_Result{
@@ -251,11 +269,11 @@ func (s *Service) newX509SVID(ctx context.Context, param *svidv1.NewX509SVIDPara
 	}
 	log = log.WithField(telemetry.SPIFFEID, spiffeID.String())
 
-	x509Svid, err := s.ca.SignX509SVID(ctx, ca.X509SVIDParams{
-		SpiffeID:  spiffeID,
+	x509Svid, err := s.ca.SignWorkloadX509SVID(ctx, ca.WorkloadX509SVIDParams{
+		SPIFFEID:  spiffeID,
 		PublicKey: csr.PublicKey,
-		DNSList:   entry.DnsNames,
-		TTL:       time.Duration(entry.X509SvidTtl) * time.Second,
+		DNSNames:  entry.GetDnsNames(),
+		TTL:       time.Duration(entry.GetX509SvidTtl()) * time.Second,
 	})
 	if err != nil {
 		return &svidv1.BatchNewX509SVIDResponse_Result{
@@ -265,12 +283,12 @@ func (s *Service) newX509SVID(ctx context.Context, param *svidv1.NewX509SVIDPara
 
 	log.WithField(telemetry.Expiration, x509Svid[0].NotAfter.Format(time.RFC3339)).
 		WithField(telemetry.SerialNumber, x509Svid[0].SerialNumber.String()).
-		WithField(telemetry.RevisionNumber, entry.RevisionNumber).
+		WithField(telemetry.RevisionNumber, entry.GetRevisionNumber()).
 		Debug("Signed X509 SVID")
 
 	return &svidv1.BatchNewX509SVIDResponse_Result{
 		Svid: &types.X509SVID{
-			Id:        entry.SpiffeId,
+			Id:        entry.GetSpiffeId(),
 			CertChain: x509util.RawCertsFromCertificates(x509Svid),
 			ExpiresAt: x509Svid[0].NotAfter.Unix(),
 		},
@@ -292,8 +310,8 @@ func (s *Service) mintJWTSVID(ctx context.Context, protoID *types.SPIFFEID, audi
 		return nil, api.MakeErr(log, codes.InvalidArgument, "at least one audience is required", nil)
 	}
 
-	token, err := s.ca.SignJWTSVID(ctx, ca.JWTSVIDParams{
-		SpiffeID: id,
+	token, err := s.ca.SignWorkloadJWTSVID(ctx, ca.WorkloadJWTSVIDParams{
+		SPIFFEID: id,
 		TTL:      time.Duration(ttl) * time.Second,
 		Audience: audience,
 	})
@@ -330,8 +348,12 @@ func (s *Service) NewJWTSVID(ctx context.Context, req *svidv1.NewJWTSVIDRequest)
 		return nil, api.MakeErr(log, status.Code(err), "rejecting request due to JWT signing request rate limiting", err)
 	}
 
+	entries := map[string]struct{}{
+		req.EntryId: {},
+	}
+
 	// Fetch authorized entries
-	entriesMap, err := s.fetchEntries(ctx, log)
+	entriesMap, err := s.findEntries(ctx, log, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -341,12 +363,12 @@ func (s *Service) NewJWTSVID(ctx context.Context, req *svidv1.NewJWTSVIDRequest)
 		return nil, api.MakeErr(log, codes.NotFound, "entry not found or not authorized", nil)
 	}
 
-	jwtsvid, err := s.mintJWTSVID(ctx, entry.SpiffeId, req.Audience, entry.JwtSvidTtl)
+	jwtsvid, err := s.mintJWTSVID(ctx, entry.GetSpiffeId(), req.Audience, entry.GetJwtSvidTtl())
 	if err != nil {
 		return nil, err
 	}
 	rpccontext.AuditRPCWithFields(ctx, logrus.Fields{
-		telemetry.TTL: entry.JwtSvidTtl,
+		telemetry.TTL: entry.GetJwtSvidTtl(),
 	})
 
 	return &svidv1.NewJWTSVIDResponse{
@@ -377,10 +399,20 @@ func (s *Service) NewDownstreamX509CA(ctx context.Context, req *svidv1.NewDownst
 		return nil, err
 	}
 
-	x509CASvid, err := s.ca.SignX509CASVID(ctx, ca.X509CASVIDParams{
-		SpiffeID:  s.td.ID(),
+	// Use the TTL offered by the downstream server (if any), unless we are
+	// configured to use the legacy TTL.
+	ttl := req.PreferredTtl
+	if s.useLegacyDownstreamX509CATTL {
+		// Legacy downstream TTL prefers the downstream workload entry
+		// TTL (if any) and then the default workload TTL. We'll handle the
+		// latter inside of the credbuilder package, which already has
+		// knowledge of the default.
+		ttl = entry.X509SvidTtl
+	}
+
+	x509CASvid, err := s.ca.SignDownstreamX509CA(ctx, ca.DownstreamX509CAParams{
 		PublicKey: csr.PublicKey,
-		TTL:       time.Duration(entry.X509SvidTtl) * time.Second,
+		TTL:       time.Duration(ttl) * time.Second,
 	})
 	if err != nil {
 		return nil, api.MakeErr(log, codes.Internal, "failed to sign downstream X.509 CA", err)
@@ -419,7 +451,7 @@ func (s Service) fieldsFromJWTSvidParams(ctx context.Context, protoID *types.SPI
 		telemetry.TTL: ttl,
 	}
 	if protoID != nil {
-		// Dont care about parsing error
+		// Don't care about parsing error
 		id, err := api.TrustDomainWorkloadIDFromProto(ctx, s.td, protoID)
 		if err == nil {
 			fields[telemetry.SPIFFEID] = id.String()

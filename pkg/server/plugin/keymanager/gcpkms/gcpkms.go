@@ -14,18 +14,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"cloud.google.com/go/iam"
 	"cloud.google.com/go/iam/apiv1/iampb"
 	"cloud.google.com/go/kms/apiv1/kmspb"
 	"github.com/andres-erbsen/clock"
-	"github.com/gofrs/uuid"
+	"github.com/gofrs/uuid/v5"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/keymanager/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/common/diskutil"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
@@ -116,8 +118,11 @@ type Plugin struct {
 
 // Config provides configuration context for the plugin.
 type Config struct {
-	// File path location where key metadata used by the plugin is persisted.
-	KeyMetadataFile string `hcl:"key_metadata_file" json:"key_metadata_file"`
+	// File path location where information about generated keys will be persisted.
+	KeyIdentifierFile string `hcl:"key_identifier_file" json:"key_identifier_file"`
+
+	// Key metadata used by the plugin.
+	KeyIdentifierValue string `hcl:"key_identifier_value" json:"key_identifier_value"`
 
 	// File path location to a custom IAM Policy (v3) that will be set to
 	// created CryptoKeys.
@@ -131,6 +136,36 @@ type Config struct {
 	// API. If not specified, the value of the GOOGLE_APPLICATION_CREDENTIALS
 	// environment variable is used.
 	ServiceAccountFile string `hcl:"service_account_file" json:"service_account_file"`
+}
+
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Config {
+	newConfig := new(Config)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("unable to decode configuration: %v", err)
+	}
+
+	if newConfig.KeyRing == "" {
+		status.ReportError("configuration is missing the key ring")
+	}
+
+	if newConfig.KeyIdentifierFile == "" && newConfig.KeyIdentifierValue == "" {
+		status.ReportError("configuration requires a key identifier file or a key identifier value")
+	}
+
+	if newConfig.KeyIdentifierFile != "" && newConfig.KeyIdentifierValue != "" {
+		status.ReportError("configuration can't have a key identifier file and a key identifier value at the same time")
+	}
+
+	if newConfig.KeyIdentifierValue != "" {
+		if !validateCharacters(newConfig.KeyIdentifierValue) {
+			status.ReportError("Key identifier must contain only letters, numbers, underscores (_), and dashes (-)")
+		}
+		if len(newConfig.KeyIdentifierValue) > 63 {
+			status.ReportError("Key identifier must not be longer than 63 characters")
+		}
+	}
+
+	return newConfig
 }
 
 // New returns an instantiated plugin.
@@ -162,19 +197,23 @@ func (p *Plugin) Close() error {
 
 // Configure sets up the plugin.
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config, err := parseAndValidateConfig(req.HclConfiguration)
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	serverID, err := getOrCreateServerID(config.KeyMetadataFile)
-	if err != nil {
-		return nil, err
+	serverID := newConfig.KeyIdentifierValue
+	if serverID == "" {
+		serverID, err = getOrCreateServerID(newConfig.KeyIdentifierFile)
+		if err != nil {
+			return nil, err
+		}
 	}
-	p.log.Debug("Loaded server ID", "server_id", serverID)
+	p.log.Debug("Loaded server id", "server_id", serverID)
+
 	var customPolicy *iam.Policy3
-	if config.KeyPolicyFile != "" {
-		if customPolicy, err = parsePolicyFile(config.KeyPolicyFile); err != nil {
+	if newConfig.KeyPolicyFile != "" {
+		if customPolicy, err = parsePolicyFile(newConfig.KeyPolicyFile); err != nil {
 			return nil, status.Errorf(codes.Internal, "could not parse policy file: %v", err)
 		}
 	}
@@ -192,8 +231,8 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	})
 
 	var opts []option.ClientOption
-	if config.ServiceAccountFile != "" {
-		opts = append(opts, option.WithCredentialsFile(config.ServiceAccountFile))
+	if newConfig.ServiceAccountFile != "" {
+		opts = append(opts, option.WithCredentialsFile(newConfig.ServiceAccountFile))
 	}
 
 	kc, err := p.hooks.newKMSClient(ctx, opts...)
@@ -202,13 +241,13 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	}
 
 	fetcher := &keyFetcher{
-		keyRing:   config.KeyRing,
+		keyRing:   newConfig.KeyRing,
 		kmsClient: kc,
 		log:       p.log,
 		serverID:  serverID,
 		tdHash:    tdHashString,
 	}
-	p.log.Debug("Fetching keys from Cloud KMS", "key_ring", config.KeyRing)
+	p.log.Debug("Fetching keys from Cloud KMS", "key_ring", newConfig.KeyRing)
 	keyEntries, err := fetcher.fetchKeyEntries(ctx)
 	if err != nil {
 		return nil, err
@@ -217,14 +256,14 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.setCache(keyEntries)
 	p.kmsClient = kc
 
-	// Cancel previous tasks in case of re configure.
+	// Cancel previous tasks in case of re-configure.
 	if p.cancelTasks != nil {
 		p.cancelTasks()
 	}
 
 	p.configMtx.Lock()
 	defer p.configMtx.Unlock()
-	p.config = config
+	p.config = newConfig
 
 	// Start long-running tasks.
 	ctx, p.cancelTasks = context.WithCancel(context.Background())
@@ -233,6 +272,15 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	go p.disposeCryptoKeysTask(ctx)
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(ctx context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 // GenerateKey creates a key in KMS. If a key already exists in the local storage,
@@ -256,7 +304,7 @@ func (p *Plugin) GenerateKey(ctx context.Context, req *keymanagerv1.GenerateKeyR
 }
 
 // GetPublicKey returns the public key for a given key
-func (p *Plugin) GetPublicKey(ctx context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
+func (p *Plugin) GetPublicKey(_ context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
 	if req.KeyId == "" {
 		return nil, status.Error(codes.InvalidArgument, "key id is required")
 	}
@@ -557,7 +605,7 @@ func (p *Plugin) disposeCryptoKeys(ctx context.Context) error {
 	return nil
 }
 
-// disposeCryptoKeysTask will be run every 24hs.
+// disposeCryptoKeysTask will be run every 24hr.
 // It will schedule the destruction of CryptoKeyVersions that have a
 // spire-last-update label value older than two weeks.
 // It will only schedule the destruction of CryptoKeyVersions belonging to the
@@ -769,7 +817,7 @@ func (p *Plugin) keepActiveCryptoKeys(ctx context.Context) error {
 	}
 
 	if errs != nil {
-		return fmt.Errorf(strings.Join(errs, "; "))
+		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -825,7 +873,7 @@ func (p *Plugin) notifyKeepActiveCryptoKeys(err error) {
 	}
 }
 
-// scheduleDestroyTask is a long running task that schedules the destruction
+// scheduleDestroyTask is a long-running task that schedules the destruction
 // of inactive CryptoKeyVersions and sets the corresponding CryptoKey as inactive.
 func (p *Plugin) scheduleDestroyTask(ctx context.Context) {
 	backoffMin := 1 * time.Second
@@ -981,7 +1029,7 @@ func cryptoKeyVersionAlgorithmFromKeyType(keyType keymanagerv1.KeyType) (kmspb.C
 // generateCryptoKeyID returns a new identifier to be used as a CryptoKeyID.
 // The returned identifier has the form: spire-key-<UUID>-<SPIRE-KEY-ID>,
 // where UUID is a new randomly generated UUID and SPIRE-KEY-ID is provided
-// through the spireKeyID paramenter.
+// through the spireKeyID parameter.
 func (p *Plugin) generateCryptoKeyID(spireKeyID string) (cryptoKeyID string, err error) {
 	pd, err := p.getPluginData()
 	if err != nil {
@@ -1090,24 +1138,13 @@ func min(x, y time.Duration) time.Duration {
 	return y
 }
 
-// parseAndValidateConfig returns an error if any configuration provided does
-// not meet acceptable criteria
-func parseAndValidateConfig(c string) (*Config, error) {
-	config := new(Config)
-
-	if err := hcl.Decode(config, c); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
+func validateCharacters(str string) bool {
+	for _, r := range str {
+		if !unicode.IsLower(r) && !unicode.IsNumber(r) && r != '-' && r != '_' {
+			return false
+		}
 	}
-
-	if config.KeyRing == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration is missing the key ring")
-	}
-
-	if config.KeyMetadataFile == "" {
-		return nil, status.Error(codes.InvalidArgument, "configuration is missing server ID file path")
-	}
-
-	return config, nil
+	return true
 }
 
 // parsePolicyFile parses a file containing iam.Policy3 data in JSON format.

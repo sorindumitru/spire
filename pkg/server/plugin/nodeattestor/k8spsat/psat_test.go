@@ -17,47 +17,22 @@ import (
 	"testing"
 	"time"
 
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/catalog"
-	"github.com/spiffe/spire/pkg/common/pemutil"
 	sat_common "github.com/spiffe/spire/pkg/common/plugin/k8s"
 	"github.com/spiffe/spire/pkg/server/plugin/nodeattestor"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/plugintest"
 	"github.com/spiffe/spire/test/spiretest"
+	"github.com/spiffe/spire/test/testkey"
 	"google.golang.org/grpc/codes"
-	jose "gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-)
-
-var (
-	fooKeyPEM = []byte(`-----BEGIN RSA PRIVATE KEY-----
-MIIBywIBAAJhAMB4gbT09H2RKXaxbu6IV9C3WY+pvkGAbrlQRIHLHwV3Xt1HchjX
-c08v1VEoTBN2YTjhZJlDb/VUsNMJsmBFBBted5geRcbrDtXFlUJ8tQoQx1dWM4Aa
-xcdULJ83A9ICKwIDAQABAmBR1asInrIphYQEtHJ/NzdnRd3tqHV9cjch0dAfA5dA
-Ar4yBYOsrkaX37WqWSDnkYgN4FWYBWn7WxeotCtA5UQ3SM5hLld67rUqAm2dLrs1
-z8va6SwLzrPTu2+rmRgovFECMQDpbfPBRex7FY/xWu1pYv6X9XZ26SrC2Wc6RIpO
-38AhKGjTFEMAPJQlud4e2+4I3KkCMQDTFLUvBSXokw2NvcNiM9Kqo5zCnCIkgc+C
-hM3EzSh2jh4gZvRzPOhXYvNKgLx8+LMCMQDL4meXlpV45Fp3eu4GsJqi65jvP7VD
-v1P0hs0vGyvbSkpUo0vqNv9G/FNQLNR6FRECMFXEMz5wxA91OOuf8HTFg9Lr+fUl
-RcY5rJxm48kUZ12Mr3cQ/kCYvftL7HkYR/4rewIxANdritlIPu4VziaEhYZg7dvz
-pG3eEhiqPxE++QHpwU78O+F1GznOPBvpZOB3GfyjNQ==
------END RSA PRIVATE KEY-----`)
-	barKeyPEM = []byte(`-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgOIAksqKX+ByhLcme
-T7MXn5Qz58BJCSvvAyRoz7+7jXGhRANCAATUWB+7Xo/JyFuh1KQ6umUbihP+AGzy
-da0ItHUJ/C5HElB5cSuyOAXDQbM5fuxJIefEVpodjqsQP6D0D8CPLJ5H
------END PRIVATE KEY-----`)
-	bazKeyPEM = []byte(`-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgpHVYFq6Z/LgGIG/X
-+i+PWZEFjGVEUpjrMzlz95tDl4yhRANCAAQAc/I3bBO9XhgTTbLBuNA6XJBSvds9
-c4gThKYxugN3V398Eieoo2HTO2L7BBjTp5yh+EUtHQD52bFseBCnZT3d
------END PRIVATE KEY-----`)
 )
 
 func TestAttestorPlugin(t *testing.T) {
@@ -90,24 +65,21 @@ type TokenData struct {
 
 func (s *AttestorSuite) SetupSuite() {
 	var err error
-	s.fooKey, err = pemutil.ParseRSAPrivateKey(fooKeyPEM)
-	s.Require().NoError(err)
+	s.fooKey = testkey.MustRSA2048()
 	s.fooSigner, err = jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key:       s.fooKey,
 	}, nil)
 	s.Require().NoError(err)
 
-	s.barKey, err = pemutil.ParseECPrivateKey(barKeyPEM)
-	s.Require().NoError(err)
+	s.barKey = testkey.MustEC256()
 	s.barSigner, err = jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.ES256,
 		Key:       s.barKey,
 	}, nil)
 	s.Require().NoError(err)
 
-	bazKey, err := pemutil.ParseECPrivateKey(bazKeyPEM)
-	s.Require().NoError(err)
+	bazKey := testkey.MustEC256()
 	s.bazSigner, err = jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.ES256,
 		Key:       bazKey,
@@ -368,15 +340,15 @@ func (s *AttestorSuite) TestConfigure() {
 
 	// malformed configuration
 	err := doConfig(coreConfig, "blah")
-	s.RequireGRPCStatusContains(err, codes.InvalidArgument, "unable to decode configuration")
+	s.RequireGRPCStatusContains(err, codes.InvalidArgument, "plugin configuration is malformed")
 
 	// missing trust domain
 	err = doConfig(catalog.CoreConfig{}, "")
-	s.RequireGRPCStatus(err, codes.InvalidArgument, "core configuration missing trust domain")
+	s.RequireGRPCStatus(err, codes.InvalidArgument, "server core configuration must contain trust_domain")
 
 	// missing clusters
 	err = doConfig(coreConfig, "")
-	s.RequireGRPCStatus(err, codes.InvalidArgument, "configuration must have at least one cluster")
+	s.Require().NoError(err)
 
 	// cluster missing service account allow list
 	err = doConfig(coreConfig, `clusters = {
@@ -410,7 +382,7 @@ func (s *AttestorSuite) signToken(signer jose.Signer, tokenData *TokenData) stri
 	builder := jwt.Signed(signer)
 	builder = builder.Claims(claims)
 
-	token, err := builder.CompactSerialize()
+	token, err := builder.Serialize()
 	s.Require().NoError(err)
 	return token
 }
@@ -458,7 +430,7 @@ func (s *AttestorSuite) requireAttestError(payload []byte, expectCode codes.Code
 }
 
 func makePayload(cluster, token string) []byte {
-	return []byte(fmt.Sprintf(`{"cluster": %q, "token": %q}`, cluster, token))
+	return fmt.Appendf(nil, `{"cluster": %q, "token": %q}`, cluster, token)
 }
 
 func createAndWriteSelfSignedCert(cn string, signer crypto.Signer, path string) error {
@@ -473,7 +445,7 @@ func createAndWriteSelfSignedCert(cn string, signer crypto.Signer, path string) 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600)
+	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o600)
 }
 
 func createTokenStatus(tokenData *TokenData, authenticated bool, audience []string) *authv1.TokenReviewStatus {
@@ -522,7 +494,7 @@ func createNode(nodeName, nodeUID string) *corev1.Node {
 	}
 }
 
-func expectNoChallenge(ctx context.Context, challenge []byte) ([]byte, error) {
+func expectNoChallenge(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("challenge is not expected")
 }
 
@@ -557,7 +529,7 @@ func (c *fakeAPIServerClient) SetTokenStatus(token string, status *authv1.TokenR
 	c.status[token] = status
 }
 
-func (c *fakeAPIServerClient) GetNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
+func (c *fakeAPIServerClient) GetNode(_ context.Context, nodeName string) (*corev1.Node, error) {
 	node, ok := c.nodes[nodeName]
 	if !ok {
 		return nil, fmt.Errorf("node %s not found", nodeName)
@@ -565,7 +537,7 @@ func (c *fakeAPIServerClient) GetNode(ctx context.Context, nodeName string) (*co
 	return node, nil
 }
 
-func (c *fakeAPIServerClient) GetPod(ctx context.Context, namespace, podName string) (*corev1.Pod, error) {
+func (c *fakeAPIServerClient) GetPod(_ context.Context, namespace, podName string) (*corev1.Pod, error) {
 	pod, ok := c.pods[namespacedName{namespace: namespace, name: podName}]
 	if !ok {
 		return nil, fmt.Errorf("pod %s/%s not found", namespace, podName)
@@ -573,7 +545,7 @@ func (c *fakeAPIServerClient) GetPod(ctx context.Context, namespace, podName str
 	return pod, nil
 }
 
-func (c *fakeAPIServerClient) ValidateToken(ctx context.Context, token string, audiences []string) (*authv1.TokenReviewStatus, error) {
+func (c *fakeAPIServerClient) ValidateToken(_ context.Context, token string, audiences []string) (*authv1.TokenReviewStatus, error) {
 	status, ok := c.status[token]
 	if !ok {
 		return nil, errors.New("no status configured by test for token")

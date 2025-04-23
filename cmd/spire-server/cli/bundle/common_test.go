@@ -9,9 +9,9 @@ import (
 	"github.com/mitchellh/cli"
 	bundlev1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/bundle/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
-	"github.com/spiffe/spire/cmd/spire-server/cli/common"
 	common_cli "github.com/spiffe/spire/pkg/common/cli"
 	"github.com/spiffe/spire/pkg/common/pemutil"
+	"github.com/spiffe/spire/test/clitest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -79,6 +79,7 @@ diIqWtxAqBLFrx8zNS4=
             ]
         }
     ],
+    "spiffe_sequence": 42,
     "spiffe_refresh_hint": 60
 }
 `
@@ -202,7 +203,7 @@ func setupTest(t *testing.T, newClient func(*common_cli.Env) cli.Command) *bundl
 		cert1:    cert1,
 		cert2:    cert2,
 		key1Pkix: key1Pkix,
-		addr:     common.GetAddr(addr),
+		addr:     clitest.GetAddr(addr),
 		stdin:    stdin,
 		stdout:   stdout,
 		stderr:   stderr,
@@ -240,7 +241,7 @@ func (s *bundleTest) afterTest(t *testing.T) {
 }
 
 func (s *bundleTest) args(extra ...string) []string {
-	return append([]string{common.AddrArg, s.addr}, extra...)
+	return append([]string{clitest.AddrArg, s.addr}, extra...)
 }
 
 type fakeBundleServer struct {
@@ -256,7 +257,7 @@ type fakeBundleServer struct {
 	toDelete          []string
 }
 
-func (f *fakeBundleServer) GetBundle(ctx context.Context, in *bundlev1.GetBundleRequest) (*types.Bundle, error) {
+func (f *fakeBundleServer) GetBundle(context.Context, *bundlev1.GetBundleRequest) (*types.Bundle, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -265,7 +266,7 @@ func (f *fakeBundleServer) GetBundle(ctx context.Context, in *bundlev1.GetBundle
 	return f.bundles[0], nil
 }
 
-func (f *fakeBundleServer) BatchSetFederatedBundle(ctx context.Context, req *bundlev1.BatchSetFederatedBundleRequest) (*bundlev1.BatchSetFederatedBundleResponse, error) {
+func (f *fakeBundleServer) BatchSetFederatedBundle(_ context.Context, req *bundlev1.BatchSetFederatedBundleRequest) (*bundlev1.BatchSetFederatedBundleResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -292,7 +293,7 @@ func (f *fakeBundleServer) ListFederatedBundles(context.Context, *bundlev1.ListF
 	}, nil
 }
 
-func (f *fakeBundleServer) GetFederatedBundle(ctx context.Context, req *bundlev1.GetFederatedBundleRequest) (*types.Bundle, error) {
+func (f *fakeBundleServer) GetFederatedBundle(_ context.Context, req *bundlev1.GetFederatedBundleRequest) (*types.Bundle, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -306,7 +307,7 @@ func (f *fakeBundleServer) GetFederatedBundle(ctx context.Context, req *bundlev1
 	return nil, status.New(codes.NotFound, "not found").Err()
 }
 
-func (f *fakeBundleServer) BatchDeleteFederatedBundle(ctx context.Context, req *bundlev1.BatchDeleteFederatedBundleRequest) (*bundlev1.BatchDeleteFederatedBundleResponse, error) {
+func (f *fakeBundleServer) BatchDeleteFederatedBundle(_ context.Context, req *bundlev1.BatchDeleteFederatedBundleRequest) (*bundlev1.BatchDeleteFederatedBundleResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

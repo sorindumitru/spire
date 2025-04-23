@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package windows
 
@@ -7,13 +6,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"syscall"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	workloadattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/workloadattestor/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/util"
 	"golang.org/x/sys/windows"
@@ -36,6 +35,16 @@ func New() *Plugin {
 type Configuration struct {
 	DiscoverWorkloadPath bool  `hcl:"discover_workload_path"`
 	WorkloadSizeLimit    int64 `hcl:"workload_size_limit"`
+}
+
+func buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *Configuration {
+	newConfig := new(Configuration)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("failed to decode configuration: %v", err)
+		return nil
+	}
+
+	return newConfig
 }
 
 type Plugin struct {
@@ -62,7 +71,7 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 	p.log = log
 }
 
-func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestRequest) (*workloadattestorv1.AttestResponse, error) {
+func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest) (*workloadattestorv1.AttestResponse, error) {
 	config, err := p.getConfig()
 	if err != nil {
 		return nil, err
@@ -176,13 +185,26 @@ func (p *Plugin) newProcessInfo(pid int32, queryPath bool) (*processInfo, error)
 	return processInfo, nil
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config := new(Configuration)
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to decode configuration: %v", err)
+func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, buildConfig)
+	if err != nil {
+		return nil, err
 	}
-	p.setConfig(config)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = newConfig
+
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 func (p *Plugin) getConfig() (*Configuration, error) {
@@ -193,12 +215,6 @@ func (p *Plugin) getConfig() (*Configuration, error) {
 		return nil, status.Error(codes.FailedPrecondition, "not configured")
 	}
 	return config, nil
-}
-
-func (p *Plugin) setConfig(config *Configuration) {
-	p.mu.Lock()
-	p.config = config
-	p.mu.Unlock()
 }
 
 type processQueryer interface {
@@ -235,15 +251,18 @@ type processQueryer interface {
 	GetProcessExe(windows.Handle) (string, error)
 }
 
-type processQuery struct {
-}
+type processQuery struct{}
 
 func (q *processQuery) OpenProcess(pid int32) (handle windows.Handle, err error) {
-	return windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	pidUint32, err := util.CheckedCast[uint32](pid)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value for PID: %w", err)
+	}
+	return windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pidUint32)
 }
 
 func (q *processQuery) OpenProcessToken(h windows.Handle, token *windows.Token) (err error) {
-	return windows.OpenProcessToken(h, syscall.TOKEN_QUERY, token)
+	return windows.OpenProcessToken(h, windows.TOKEN_QUERY, token)
 }
 
 func (q *processQuery) LookupAccount(sid *windows.SID) (account, domain string, err error) {
@@ -272,8 +291,8 @@ func (q *processQuery) CloseProcessToken(t windows.Token) error {
 }
 
 func (q *processQuery) GetProcessExe(h windows.Handle) (string, error) {
-	buf := make([]uint16, syscall.MAX_LONG_PATH)
-	size := uint32(syscall.MAX_LONG_PATH)
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(windows.MAX_LONG_PATH)
 
 	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
 		return "", err

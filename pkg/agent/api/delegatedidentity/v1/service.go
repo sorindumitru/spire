@@ -12,7 +12,7 @@ import (
 	delegatedidentityv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/agent/delegatedidentity/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/agent/api/rpccontext"
-	workload_attestor "github.com/spiffe/spire/pkg/agent/attestor/workload"
+	workloadattestor "github.com/spiffe/spire/pkg/agent/attestor/workload"
 	"github.com/spiffe/spire/pkg/agent/client"
 	"github.com/spiffe/spire/pkg/agent/endpoints"
 	"github.com/spiffe/spire/pkg/agent/manager"
@@ -20,6 +20,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/bundleutil"
 	"github.com/spiffe/spire/pkg/common/idutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/telemetry/agent/adminapi"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/proto/spire/common"
@@ -39,8 +40,9 @@ type attestor interface {
 
 type Config struct {
 	Log                 logrus.FieldLogger
+	Metrics             telemetry.Metrics
 	Manager             manager.Manager
-	Attestor            workload_attestor.Attestor
+	Attestor            workloadattestor.Attestor
 	AuthorizedDelegates []string
 }
 
@@ -52,9 +54,11 @@ func New(config Config) *Service {
 	}
 
 	return &Service{
-		manager:             config.Manager,
-		attestor:            endpoints.PeerTrackerAttestor{Attestor: config.Attestor},
-		authorizedDelegates: AuthorizedDelegates,
+		manager:                  config.Manager,
+		peerAttestor:             endpoints.PeerTrackerAttestor{Attestor: config.Attestor},
+		delegateWorkloadAttestor: config.Attestor,
+		metrics:                  config.Metrics,
+		authorizedDelegates:      AuthorizedDelegates,
 	}
 }
 
@@ -62,8 +66,10 @@ func New(config Config) *Service {
 type Service struct {
 	delegatedidentityv1.UnsafeDelegatedIdentityServer
 
-	manager  manager.Manager
-	attestor attestor
+	manager                  manager.Manager
+	peerAttestor             attestor
+	delegateWorkloadAttestor workloadattestor.Attestor
+	metrics                  telemetry.Metrics
 
 	// SPIFFE IDs of delegates that are authorized to use this API
 	authorizedDelegates map[string]bool
@@ -75,13 +81,14 @@ func (s *Service) isCallerAuthorized(ctx context.Context, log logrus.FieldLogger
 	callerSelectors := cachedSelectors
 
 	if callerSelectors == nil {
-		callerSelectors, err = s.attestor.Attest(ctx)
+		callerSelectors, err = s.peerAttestor.Attest(ctx)
 		if err != nil {
 			log.WithError(err).Error("Workload attestation failed")
 			return nil, status.Error(codes.Internal, "workload attestation failed")
 		}
 	}
 
+	log = log.WithField("delegate_selectors", callerSelectors)
 	entries := s.manager.MatchingRegistrationEntries(callerSelectors)
 	numRegisteredEntries := len(entries)
 
@@ -92,11 +99,12 @@ func (s *Service) isCallerAuthorized(ctx context.Context, log logrus.FieldLogger
 
 	for _, entry := range entries {
 		if _, ok := s.authorizedDelegates[entry.SpiffeId]; ok {
+			log.WithField("delegate_id", entry.SpiffeId).Debug("Caller authorized as delegate")
 			return callerSelectors, nil
 		}
 	}
 
-	// caller has identity associeted with but none is authorized
+	// caller has identity associated with but none is authorized
 	log.WithFields(logrus.Fields{
 		"num_registered_entries": numRegisteredEntries,
 		"default_id":             entries[0].SpiffeId,
@@ -105,20 +113,73 @@ func (s *Service) isCallerAuthorized(ctx context.Context, log logrus.FieldLogger
 	return nil, status.Error(codes.PermissionDenied, "caller not configured as an authorized delegate")
 }
 
+func (s *Service) constructValidSelectorsFromReq(ctx context.Context, log logrus.FieldLogger, reqPid int32, reqSelectors []*types.Selector) ([]*common.Selector, error) {
+	// If you set
+	// - both pid and selector args
+	// - neither of them
+	// it's an error
+	// NOTE: the default value of int32 is naturally 0 in protobuf, which is also a valid PID.
+	// However, we will still treat that as an error, as we do not expect to ever be asked to attest
+	// pid 0.
+
+	if (len(reqSelectors) != 0 && reqPid != 0) || (len(reqSelectors) == 0 && reqPid == 0) {
+		log.Error("Invalid argument; must provide either selectors or non-zero PID, but not both")
+		return nil, status.Error(codes.InvalidArgument, "must provide either selectors or non-zero PID, but not both")
+	}
+
+	var selectors []*common.Selector
+	var err error
+
+	if len(reqSelectors) != 0 {
+		// Delegate authorized, if the delegate gives us selectors, we treat them as attested.
+		selectors, err = api.SelectorsFromProto(reqSelectors)
+		if err != nil {
+			log.WithError(err).Error("Invalid argument; could not parse provided selectors")
+			return nil, status.Error(codes.InvalidArgument, "could not parse provided selectors")
+		}
+	} else {
+		// Delegate authorized, use PID the delegate gave us to try and attest on-behalf-of
+		selectors, err = s.delegateWorkloadAttestor.Attest(ctx, int(reqPid))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return selectors, nil
+}
+
+// Attempt to attest and authorize the delegate, and then
+//
+// - Take a pre-atttested set of selectors from the delegate
+// - the PID the delegate gave us and attempt to attest that into a set of selectors
+//
+// and provide a SVID subscription for those selectors.
+//
+// NOTE:
+// - If supplying a PID, the trusted delegate is responsible for ensuring the PID is valid and not recycled,
+// from initiation of this call until the termination of the response stream, and if it is,
+// must discard any stream contents provided by this call as invalid.
+// - If supplying selectors, the trusted delegate is responsible for ensuring they are correct.
 func (s *Service) SubscribeToX509SVIDs(req *delegatedidentityv1.SubscribeToX509SVIDsRequest, stream delegatedidentityv1.DelegatedIdentity_SubscribeToX509SVIDsServer) error {
+	latency := adminapi.StartFirstX509SVIDUpdateLatency(s.metrics)
 	ctx := stream.Context()
 	log := rpccontext.Logger(ctx)
+	var receivedFirstUpdate bool
 
 	cachedSelectors, err := s.isCallerAuthorized(ctx, log, nil)
 	if err != nil {
 		return err
 	}
 
-	selectors, err := api.SelectorsFromProto(req.Selectors)
+	selectors, err := s.constructValidSelectorsFromReq(ctx, log, req.Pid, req.Selectors)
 	if err != nil {
-		log.WithError(err).Error("Invalid argument; could not parse provided selectors")
-		return status.Error(codes.InvalidArgument, "could not parse provided selectors")
+		return err
 	}
+
+	log.WithFields(logrus.Fields{
+		"delegate_selectors": cachedSelectors,
+		"request_selectors":  selectors,
+	}).Info("Subscribing to cache changes")
 
 	subscriber, err := s.manager.SubscribeToCacheChanges(ctx, selectors)
 	if err != nil {
@@ -130,6 +191,12 @@ func (s *Service) SubscribeToX509SVIDs(req *delegatedidentityv1.SubscribeToX509S
 	for {
 		select {
 		case update := <-subscriber.Updates():
+			if len(update.Identities) > 0 && !receivedFirstUpdate {
+				// emit latency metric for first update containing an SVID.
+				latency.Measure()
+				receivedFirstUpdate = true
+			}
+
 			if _, err := s.isCallerAuthorized(ctx, log, cachedSelectors); err != nil {
 				return err
 			}
@@ -153,6 +220,22 @@ func sendX509SVIDResponse(update *cache.WorkloadUpdate, stream delegatedidentity
 	if err := stream.Send(resp); err != nil {
 		log.WithError(err).Error("Failed to send X.509 SVID response")
 		return err
+	}
+
+	log = log.WithField(telemetry.Count, len(resp.X509Svids))
+
+	// log details on each SVID
+	// a response has already been sent so nothing is
+	// blocked on this logic
+	for i, svid := range resp.X509Svids {
+		// Ideally ID Proto parsing should succeed, but if it fails,
+		// ignore the error and still log with empty spiffe_id.
+		id, _ := idutil.IDProtoString(svid.X509Svid.Id)
+		ttl := time.Until(update.Identities[i].SVID[0].NotAfter)
+		log.WithFields(logrus.Fields{
+			telemetry.SPIFFEID: id,
+			telemetry.TTL:      ttl.Seconds(),
+		}).Debug("Fetched X.509 SVID for delegated identity")
 	}
 
 	return nil
@@ -196,6 +279,7 @@ func composeX509SVIDBySelectors(update *cache.WorkloadUpdate) (*delegatedidentit
 				Id:        id,
 				CertChain: x509util.RawCertsFromCertificates(identity.SVID),
 				ExpiresAt: identity.SVID[0].NotAfter.Unix(),
+				Hint:      identity.Entry.Hint,
 			},
 			X509SvidKey: keyData,
 		}
@@ -204,7 +288,7 @@ func composeX509SVIDBySelectors(update *cache.WorkloadUpdate) (*delegatedidentit
 	return resp, nil
 }
 
-func (s *Service) SubscribeToX509Bundles(req *delegatedidentityv1.SubscribeToX509BundlesRequest, stream delegatedidentityv1.DelegatedIdentity_SubscribeToX509BundlesServer) error {
+func (s *Service) SubscribeToX509Bundles(_ *delegatedidentityv1.SubscribeToX509BundlesRequest, stream delegatedidentityv1.DelegatedIdentity_SubscribeToX509BundlesServer) error {
 	ctx := stream.Context()
 	log := rpccontext.Logger(ctx)
 
@@ -218,7 +302,7 @@ func (s *Service) SubscribeToX509Bundles(req *delegatedidentityv1.SubscribeToX50
 	// send initial update....
 	caCerts := make(map[string][]byte)
 	for td, bundle := range subscriber.Value() {
-		caCerts[td.IDString()] = marshalBundle(bundle.RootCAs())
+		caCerts[td.IDString()] = marshalBundle(bundle.X509Authorities())
 	}
 
 	resp := &delegatedidentityv1.SubscribeToX509BundlesResponse{
@@ -237,7 +321,7 @@ func (s *Service) SubscribeToX509Bundles(req *delegatedidentityv1.SubscribeToX50
 			}
 
 			for td, bundle := range subscriber.Next() {
-				caCerts[td.IDString()] = marshalBundle(bundle.RootCAs())
+				caCerts[td.IDString()] = marshalBundle(bundle.X509Authorities())
 			}
 
 			resp := &delegatedidentityv1.SubscribeToX509BundlesResponse{
@@ -254,6 +338,18 @@ func (s *Service) SubscribeToX509Bundles(req *delegatedidentityv1.SubscribeToX50
 	}
 }
 
+// Attempt to attest and authorize the delegate, and then
+//
+// - Take a pre-atttested set of selectors from the delegate
+// - the PID the delegate gave us and attempt to attest that into a set of selectors
+//
+// and provide a JWT SVID for those selectors.
+//
+// NOTE:
+// - If supplying a PID, the trusted delegate is responsible for ensuring the PID is valid and not recycled,
+// from initiation of this call until the response is returned, and if it is,
+// must discard any response provided by this call as invalid.
+// - If supplying selectors, the trusted delegate is responsible for ensuring they are correct.
 func (s *Service) FetchJWTSVIDs(ctx context.Context, req *delegatedidentityv1.FetchJWTSVIDsRequest) (resp *delegatedidentityv1.FetchJWTSVIDsResponse, err error) {
 	log := rpccontext.Logger(ctx)
 	if len(req.Audience) == 0 {
@@ -265,12 +361,12 @@ func (s *Service) FetchJWTSVIDs(ctx context.Context, req *delegatedidentityv1.Fe
 		return nil, err
 	}
 
-	selectors, err := api.SelectorsFromProto(req.Selectors)
+	selectors, err := s.constructValidSelectorsFromReq(ctx, log, req.Pid, req.Selectors)
 	if err != nil {
-		log.WithError(err).Error("Invalid argument; could not parse provided selectors")
-		return nil, status.Error(codes.InvalidArgument, "could not parse provided selectors")
+		return nil, err
 	}
-	var spiffeIDs []spiffeid.ID
+
+	resp = new(delegatedidentityv1.FetchJWTSVIDsResponse)
 
 	entries := s.manager.MatchingRegistrationEntries(selectors)
 	for _, entry := range entries {
@@ -280,20 +376,10 @@ func (s *Service) FetchJWTSVIDs(ctx context.Context, req *delegatedidentityv1.Fe
 			return nil, status.Errorf(codes.InvalidArgument, "invalid requested SPIFFE ID: %v", err)
 		}
 
-		spiffeIDs = append(spiffeIDs, spiffeID)
-	}
-
-	if len(spiffeIDs) == 0 {
-		log.Error("No identity issued")
-		return nil, status.Error(codes.PermissionDenied, "no identity issued")
-	}
-
-	resp = new(delegatedidentityv1.FetchJWTSVIDsResponse)
-	for _, id := range spiffeIDs {
-		loopLog := log.WithField(telemetry.SPIFFEID, id.String())
+		loopLog := log.WithField(telemetry.SPIFFEID, spiffeID.String())
 
 		var svid *client.JWTSVID
-		svid, err = s.manager.FetchJWTSVID(ctx, id, req.Audience)
+		svid, err = s.manager.FetchJWTSVID(ctx, entry, req.Audience)
 		if err != nil {
 			loopLog.WithError(err).Error("Could not fetch JWT-SVID")
 			return nil, status.Errorf(codes.Unavailable, "could not fetch JWT-SVID: %v", err)
@@ -301,21 +387,27 @@ func (s *Service) FetchJWTSVIDs(ctx context.Context, req *delegatedidentityv1.Fe
 		resp.Svids = append(resp.Svids, &types.JWTSVID{
 			Token: svid.Token,
 			Id: &types.SPIFFEID{
-				TrustDomain: id.TrustDomain().String(),
-				Path:        id.Path(),
+				TrustDomain: spiffeID.TrustDomain().Name(),
+				Path:        spiffeID.Path(),
 			},
 			ExpiresAt: svid.ExpiresAt.Unix(),
 			IssuedAt:  svid.IssuedAt.Unix(),
+			Hint:      entry.Hint,
 		})
 
 		ttl := time.Until(svid.ExpiresAt)
 		loopLog.WithField(telemetry.TTL, ttl.Seconds()).Debug("Fetched JWT SVID")
 	}
 
+	if len(resp.Svids) == 0 {
+		log.Error("No identity issued")
+		return nil, status.Error(codes.PermissionDenied, "no identity issued")
+	}
+
 	return resp, nil
 }
 
-func (s *Service) SubscribeToJWTBundles(req *delegatedidentityv1.SubscribeToJWTBundlesRequest, stream delegatedidentityv1.DelegatedIdentity_SubscribeToJWTBundlesServer) error {
+func (s *Service) SubscribeToJWTBundles(_ *delegatedidentityv1.SubscribeToJWTBundlesRequest, stream delegatedidentityv1.DelegatedIdentity_SubscribeToJWTBundlesServer) error {
 	ctx := stream.Context()
 	log := rpccontext.Logger(ctx)
 

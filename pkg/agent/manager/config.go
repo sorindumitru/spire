@@ -16,28 +16,35 @@ import (
 	"github.com/spiffe/spire/pkg/agent/storage"
 	"github.com/spiffe/spire/pkg/agent/svid"
 	"github.com/spiffe/spire/pkg/agent/workloadkey"
+	"github.com/spiffe/spire/pkg/common/rotationutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/tlspolicy"
 )
 
 // Config holds a cache manager configuration
 type Config struct {
 	// Agent SVID and key resulting from successful attestation.
-	SVID             []*x509.Certificate
-	SVIDKey          keymanager.Key
-	Bundle           *managerCache.Bundle
-	Reattestable     bool
-	Catalog          catalog.Catalog
-	TrustDomain      spiffeid.TrustDomain
-	Log              logrus.FieldLogger
-	Metrics          telemetry.Metrics
-	ServerAddr       string
-	Storage          storage.Storage
-	WorkloadKeyType  workloadkey.KeyType
-	SyncInterval     time.Duration
-	RotationInterval time.Duration
-	SVIDStoreCache   *storecache.Cache
-	SVIDCacheMaxSize int
-	NodeAttestor     nodeattestor.NodeAttestor
+	SVID                     []*x509.Certificate
+	SVIDKey                  keymanager.Key
+	Bundle                   *managerCache.Bundle
+	Reattestable             bool
+	Catalog                  catalog.Catalog
+	TrustDomain              spiffeid.TrustDomain
+	Log                      logrus.FieldLogger
+	Metrics                  telemetry.Metrics
+	ServerAddr               string
+	Storage                  storage.Storage
+	WorkloadKeyType          workloadkey.KeyType
+	SyncInterval             time.Duration
+	UseSyncAuthorizedEntries bool
+	RotationInterval         time.Duration
+	SVIDStoreCache           *storecache.Cache
+	X509SVIDCacheMaxSize     int
+	JWTSVIDCacheMaxSize      int
+	DisableLRUCache          bool
+	NodeAttestor             nodeattestor.NodeAttestor
+	RotationStrategy         *rotationutil.RotationStrategy
+	TLSPolicy                tlspolicy.Policy
 
 	// Clk is the clock the manager will use to get time
 	Clk clock.Clock
@@ -61,29 +68,24 @@ func newManager(c *Config) *manager {
 		c.Clk = clock.New()
 	}
 
-	var cache Cache
-	if c.SVIDCacheMaxSize > 0 {
-		// use LRU cache implementation
-		cache = managerCache.NewLRUCache(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
-			c.Metrics, c.SVIDCacheMaxSize, c.Clk)
-	} else {
-		cache = managerCache.New(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
-			c.Metrics)
-	}
+	cache := managerCache.NewLRUCache(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
+		c.Metrics, c.X509SVIDCacheMaxSize, c.JWTSVIDCacheMaxSize, c.Clk)
 
 	rotCfg := &svid.RotatorConfig{
-		SVIDKeyManager: keymanager.ForSVID(c.Catalog.GetKeyManager()),
-		Log:            c.Log,
-		Metrics:        c.Metrics,
-		SVID:           c.SVID,
-		SVIDKey:        c.SVIDKey,
-		BundleStream:   cache.SubscribeToBundleChanges(),
-		ServerAddr:     c.ServerAddr,
-		TrustDomain:    c.TrustDomain,
-		Interval:       c.RotationInterval,
-		Clk:            c.Clk,
-		NodeAttestor:   c.NodeAttestor,
-		Reattestable:   c.Reattestable,
+		SVIDKeyManager:   keymanager.ForSVID(c.Catalog.GetKeyManager()),
+		Log:              c.Log,
+		Metrics:          c.Metrics,
+		SVID:             c.SVID,
+		SVIDKey:          c.SVIDKey,
+		BundleStream:     cache.SubscribeToBundleChanges(),
+		ServerAddr:       c.ServerAddr,
+		TrustDomain:      c.TrustDomain,
+		Interval:         c.RotationInterval,
+		Clk:              c.Clk,
+		NodeAttestor:     c.NodeAttestor,
+		Reattestable:     c.Reattestable,
+		RotationStrategy: c.RotationStrategy,
+		TLSPolicy:        c.TLSPolicy,
 	}
 	svidRotator, client := svid.NewRotator(rotCfg)
 
@@ -96,6 +98,9 @@ func newManager(c *Config) *manager {
 		client:         client,
 		clk:            c.Clk,
 		svidStoreCache: c.SVIDStoreCache,
+
+		processedTaintedX509Authorities: make(map[string]struct{}),
+		processedTaintedJWTAuthorities:  make(map[string]struct{}),
 	}
 
 	return m

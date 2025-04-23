@@ -5,19 +5,19 @@ import (
 	"errors"
 	"net"
 
-	discovery_v2 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
 	secret_v3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 	"github.com/sirupsen/logrus"
 	workload_pb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
+
 	healthv1 "github.com/spiffe/spire/pkg/agent/api/health/v1"
-	"github.com/spiffe/spire/pkg/agent/endpoints/sdsv2"
 	"github.com/spiffe/spire/pkg/agent/endpoints/sdsv3"
 	"github.com/spiffe/spire/pkg/agent/endpoints/workload"
 	"github.com/spiffe/spire/pkg/common/api/middleware"
 	"github.com/spiffe/spire/pkg/common/peertracker"
 	"github.com/spiffe/spire/pkg/common/telemetry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 type Server interface {
@@ -29,7 +29,6 @@ type Endpoints struct {
 	log               logrus.FieldLogger
 	metrics           telemetry.Metrics
 	workloadAPIServer workload_pb.SpiffeWorkloadAPIServer
-	sdsv2Server       discovery_v2.SecretDiscoveryServiceServer
 	sdsv3Server       secret_v3.SecretDiscoveryServiceServer
 	healthServer      grpc_health_v1.HealthServer
 
@@ -45,11 +44,6 @@ func New(c Config) *Endpoints {
 	if c.newWorkloadAPIServer == nil {
 		c.newWorkloadAPIServer = func(c workload.Config) workload_pb.SpiffeWorkloadAPIServer {
 			return workload.New(c)
-		}
-	}
-	if c.newSDSv2Server == nil {
-		c.newSDSv2Server = func(c sdsv2.Config) discovery_v2.SecretDiscoveryServiceServer {
-			return sdsv2.New(c)
 		}
 	}
 	if c.newSDSv3Server == nil {
@@ -76,13 +70,6 @@ func New(c Config) *Endpoints {
 		TrustDomain:                   c.TrustDomain,
 	})
 
-	sdsv2Server := c.newSDSv2Server(sdsv2.Config{
-		Attestor:          attestor,
-		Manager:           c.Manager,
-		DefaultSVIDName:   c.DefaultSVIDName,
-		DefaultBundleName: c.DefaultBundleName,
-	})
-
 	sdsv3Server := c.newSDSv3Server(sdsv3.Config{
 		Attestor:                    attestor,
 		Manager:                     c.Manager,
@@ -101,7 +88,6 @@ func New(c Config) *Endpoints {
 		log:               c.Log,
 		metrics:           c.Metrics,
 		workloadAPIServer: workloadAPIServer,
-		sdsv2Server:       sdsv2Server,
 		sdsv3Server:       sdsv3Server,
 		healthServer:      healthServer,
 	}
@@ -119,9 +105,10 @@ func (e *Endpoints) ListenAndServe(ctx context.Context) error {
 	)
 
 	workload_pb.RegisterSpiffeWorkloadAPIServer(server, e.workloadAPIServer)
-	discovery_v2.RegisterSecretDiscoveryServiceServer(server, e.sdsv2Server)
 	secret_v3.RegisterSecretDiscoveryServiceServer(server, e.sdsv3Server)
 	grpc_health_v1.RegisterHealthServer(server, e.healthServer)
+
+	reflection.Register(server)
 
 	l, err := e.createListener()
 	if err != nil {

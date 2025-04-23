@@ -11,11 +11,15 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/iam"
 	"cloud.google.com/go/iam/apiv1/iampb"
@@ -31,6 +35,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+var lastUpdateFilterRegexp = regexp.MustCompile(fmt.Sprintf(`labels.%s < ([[:digit:]]+)`, labelNameLastUpdate))
 
 type fakeCryptoKeyIterator struct {
 	mu sync.RWMutex
@@ -97,9 +103,7 @@ func (fck *fakeCryptoKey) fetchFakeCryptoKeyVersions() map[string]*fakeCryptoKey
 	}
 
 	fakeCryptoKeyVersions := make(map[string]*fakeCryptoKeyVersion, len(fck.fakeCryptoKeyVersions))
-	for key, fakeCryptoKeyVersion := range fck.fakeCryptoKeyVersions {
-		fakeCryptoKeyVersions[key] = fakeCryptoKeyVersion
-	}
+	maps.Copy(fakeCryptoKeyVersions, fck.fakeCryptoKeyVersions)
 	return fakeCryptoKeyVersions
 }
 
@@ -155,9 +159,7 @@ func (fs *fakeStore) fetchFakeCryptoKeys() map[string]*fakeCryptoKey {
 	}
 
 	fakeCryptoKeys := make(map[string]*fakeCryptoKey, len(fs.fakeCryptoKeys))
-	for key, fakeCryptoKey := range fs.fakeCryptoKeys {
-		fakeCryptoKeys[key] = fakeCryptoKey
-	}
+	maps.Copy(fakeCryptoKeys, fs.fakeCryptoKeys)
 	return fakeCryptoKeys
 }
 
@@ -245,7 +247,7 @@ func (h3 *fakeIAMHandle3) Policy(context.Context) (*iam.Policy3, error) {
 	return &iam.Policy3{}, nil
 }
 
-func (h3 *fakeIAMHandle3) SetPolicy(ctx context.Context, policy *iam.Policy3) error {
+func (h3 *fakeIAMHandle3) SetPolicy(_ context.Context, policy *iam.Policy3) error {
 	h3.mu.Lock()
 	defer h3.mu.Unlock()
 
@@ -333,7 +335,7 @@ func (k *fakeKMSClient) setGetPublicKeySequentialErrs(fakeError error, count int
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	fakeErrors := make([]error, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		fakeErrors[i] = fakeError
 	}
 	k.getPublicKeyErrs = fakeErrors
@@ -385,7 +387,7 @@ func (k *fakeKMSClient) setUpdateCryptoKeyErr(fakeError error) {
 	k.updateCryptoKeyErr = fakeError
 }
 
-func (k *fakeKMSClient) AsymmetricSign(ctx context.Context, signReq *kmspb.AsymmetricSignRequest, opts ...gax.CallOption) (*kmspb.AsymmetricSignResponse, error) {
+func (k *fakeKMSClient) AsymmetricSign(_ context.Context, signReq *kmspb.AsymmetricSignRequest, _ ...gax.CallOption) (*kmspb.AsymmetricSignResponse, error) {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -457,7 +459,7 @@ func (k *fakeKMSClient) Close() error {
 	return k.closeErr
 }
 
-func (k *fakeKMSClient) CreateCryptoKey(ctx context.Context, req *kmspb.CreateCryptoKeyRequest, opts ...gax.CallOption) (*kmspb.CryptoKey, error) {
+func (k *fakeKMSClient) CreateCryptoKey(_ context.Context, req *kmspb.CreateCryptoKeyRequest, _ ...gax.CallOption) (*kmspb.CryptoKey, error) {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -487,7 +489,7 @@ func (k *fakeKMSClient) CreateCryptoKey(ctx context.Context, req *kmspb.CreateCr
 	return cryptoKey, nil
 }
 
-func (k *fakeKMSClient) CreateCryptoKeyVersion(ctx context.Context, req *kmspb.CreateCryptoKeyVersionRequest, opts ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
+func (k *fakeKMSClient) CreateCryptoKeyVersion(_ context.Context, req *kmspb.CreateCryptoKeyVersionRequest, _ ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
@@ -513,7 +515,7 @@ func (k *fakeKMSClient) CreateCryptoKeyVersion(ctx context.Context, req *kmspb.C
 	}, nil
 }
 
-func (k *fakeKMSClient) DestroyCryptoKeyVersion(ctx context.Context, req *kmspb.DestroyCryptoKeyVersionRequest, opts ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
+func (k *fakeKMSClient) DestroyCryptoKeyVersion(_ context.Context, req *kmspb.DestroyCryptoKeyVersionRequest, _ ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
 	if k.destroyCryptoKeyVersionErr != nil {
 		return nil, k.destroyCryptoKeyVersionErr
 	}
@@ -548,7 +550,7 @@ func (k *fakeKMSClient) DestroyCryptoKeyVersion(ctx context.Context, req *kmspb.
 	return cryptoKeyVersion, nil
 }
 
-func (k *fakeKMSClient) GetCryptoKeyVersion(ctx context.Context, req *kmspb.GetCryptoKeyVersionRequest, opts ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
+func (k *fakeKMSClient) GetCryptoKeyVersion(_ context.Context, req *kmspb.GetCryptoKeyVersionRequest, _ ...gax.CallOption) (*kmspb.CryptoKeyVersion, error) {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -567,7 +569,7 @@ func (k *fakeKMSClient) GetCryptoKeyVersion(ctx context.Context, req *kmspb.GetC
 	return fakeCryptoKeyVersion.CryptoKeyVersion, nil
 }
 
-func (k *fakeKMSClient) GetPublicKey(ctx context.Context, req *kmspb.GetPublicKeyRequest, opts ...gax.CallOption) (*kmspb.PublicKey, error) {
+func (k *fakeKMSClient) GetPublicKey(_ context.Context, req *kmspb.GetPublicKeyRequest, _ ...gax.CallOption) (*kmspb.PublicKey, error) {
 	getPublicKeyErr := k.nextGetPublicKeySequentialErr()
 
 	if getPublicKeyErr != nil {
@@ -594,7 +596,7 @@ func (k *fakeKMSClient) GetTokeninfo() (*oauth2.Tokeninfo, error) {
 	return k.tokeninfo, k.getTokeninfoErr
 }
 
-func (k *fakeKMSClient) ListCryptoKeys(ctx context.Context, req *kmspb.ListCryptoKeysRequest, opts ...gax.CallOption) cryptoKeyIterator {
+func (k *fakeKMSClient) ListCryptoKeys(_ context.Context, req *kmspb.ListCryptoKeysRequest, _ ...gax.CallOption) cryptoKeyIterator {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -614,15 +616,37 @@ func (k *fakeKMSClient) ListCryptoKeys(ctx context.Context, req *kmspb.ListCrypt
 		}
 
 		// We Have a simplified filtering logic in this fake implementation,
-		// where we only care about the spire-active label.
+		// where we only care about the spire-active and spire-last-update labels.
 		if req.Filter != "" {
 			if !strings.Contains(req.Filter, "labels.spire-active = true") {
-				{
-					k.t.Fatal("Unsupported filter in ListCryptoKeys request")
+				k.t.Fatal("Unsupported filter in ListCryptoKeys request")
+			}
+
+			lastUpdateRegexpResults := lastUpdateFilterRegexp.FindStringSubmatch(req.Filter)
+			var lastUpdateTimeFilter time.Time
+			var keyLastUpdateTime time.Time
+			if len(lastUpdateRegexpResults) == 2 {
+				lastUpdate := lastUpdateRegexpResults[1]
+				lastUpdateUnix, err := strconv.ParseInt(lastUpdate, 10, 64)
+				if err != nil {
+					k.t.Fatalf("Failed to parse last update time in request filter: %s", err)
 				}
-				if fck.Labels[labelNameActive] != "true" {
-					continue
+
+				lastUpdateTimeFilter = time.Unix(lastUpdateUnix, 0)
+
+				if keyLastUpdate, ok := fck.Labels[labelNameLastUpdate]; ok {
+					keyLastUpdateUnix, err := strconv.ParseInt(keyLastUpdate, 10, 64)
+					if err != nil {
+						k.t.Fatalf("Failed to parse last update time in crypto key: %s", err)
+					}
+
+					keyLastUpdateTime = time.Unix(keyLastUpdateUnix, 0)
 				}
+			}
+
+			if fck.Labels[labelNameActive] != "true" ||
+				(!lastUpdateTimeFilter.IsZero() && !keyLastUpdateTime.IsZero() && !keyLastUpdateTime.Before(lastUpdateTimeFilter)) {
+				continue
 			}
 		}
 
@@ -632,7 +656,7 @@ func (k *fakeKMSClient) ListCryptoKeys(ctx context.Context, req *kmspb.ListCrypt
 	return &fakeCryptoKeyIterator{cryptoKeys: cryptoKeys}
 }
 
-func (k *fakeKMSClient) ListCryptoKeyVersions(ctx context.Context, req *kmspb.ListCryptoKeyVersionsRequest, opts ...gax.CallOption) cryptoKeyVersionIterator {
+func (k *fakeKMSClient) ListCryptoKeyVersions(_ context.Context, req *kmspb.ListCryptoKeyVersionsRequest, _ ...gax.CallOption) cryptoKeyVersionIterator {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -670,7 +694,7 @@ func (k *fakeKMSClient) ResourceIAM(string) iamHandler {
 	return k.fakeIAMHandle
 }
 
-func (k *fakeKMSClient) UpdateCryptoKey(ctx context.Context, req *kmspb.UpdateCryptoKeyRequest, opts ...gax.CallOption) (*kmspb.CryptoKey, error) {
+func (k *fakeKMSClient) UpdateCryptoKey(_ context.Context, req *kmspb.UpdateCryptoKeyRequest, _ ...gax.CallOption) (*kmspb.CryptoKey, error) {
 	if k.updateCryptoKeyErr != nil {
 		return nil, k.updateCryptoKeyErr
 	}

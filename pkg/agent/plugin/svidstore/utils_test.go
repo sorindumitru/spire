@@ -82,6 +82,17 @@ func TestParseMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "multiples selectors",
+			secretData: []string{
+				"a:b:c",
+				"d:e-f:g-h",
+			},
+			expect: map[string]string{
+				"a": "b:c",
+				"d": "e-f:g-h",
+			},
+		},
+		{
 			name:       "no data",
 			secretData: []string{},
 			expect:     map[string]string{},
@@ -92,7 +103,6 @@ func TestParseMetadata(t *testing.T) {
 			expectErr:  `metadata does not contain a colon: "invalid"`,
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := svidstore.ParseMetadata(tt.secretData)
 			if tt.expectErr != "" {
@@ -238,7 +248,6 @@ func TestSecretFromProto(t *testing.T) {
 			err: "failed to parse FederatedBundle \"federated1\": x509: malformed certificate",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			resp, err := svidstore.SecretFromProto(tt.req)
 			if tt.err != "" {

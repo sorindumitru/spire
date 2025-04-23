@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -12,25 +11,21 @@ import (
 	"github.com/andres-erbsen/clock"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/telemetry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
-	// testDialTimeout is the duration to wait for a test dial
-	testDialTimeout = 30 * time.Second
-
-	readyCheckInterval = time.Minute
+	readyCheckInitialInterval = time.Second
+	readyCheckInterval        = time.Minute
 )
 
 // State is the health state of a subsystem.
 type State struct {
-	// Live is whether or not the subsystem is live (i.e. in a good state
+	// Live is whether the subsystem is live (i.e. in a good state
 	// or in a state it can recover from while remaining alive). Global
 	// liveness is only reported true if all subsystems report live.
 	Live bool
 
-	// Ready is whether or not the subsystem is ready (i.e. ready to perform
+	// Ready is whether the subsystem is ready (i.e. ready to perform
 	// its function). Global readiness is only reported true if all subsystems
 	// report ready.
 	Ready bool
@@ -38,10 +33,10 @@ type State struct {
 	// Subsystems can return whatever details they want here as long as it is
 	// serializable via json.Marshal.
 	// LiveDetails are opaque details related to the live check.
-	LiveDetails interface{}
+	LiveDetails any
 
 	// ReadyDetails are opaque details related to the live check.
-	ReadyDetails interface{}
+	ReadyDetails any
 }
 
 // Checkable is the interface implemented by subsystems that the checker uses
@@ -139,50 +134,25 @@ func (c *checker) ListenAndServe(ctx context.Context) error {
 	return nil
 }
 
-// WaitForTestDial tries to create a client connection to the given target
-// with a blocking dial and a timeout specified in testDialTimeout.
-// Nothing is done with the connection, which is just closed in case it
-// is created.
-func WaitForTestDial(ctx context.Context, addr net.Addr) {
-	ctx, cancel := context.WithTimeout(ctx, testDialTimeout)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx,
-		addr.String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, name string) (net.Conn, error) {
-			return net.DialUnix("unix", nil, &net.UnixAddr{
-				Net:  "unix",
-				Name: name,
-			})
-		}),
-		grpc.WithBlock())
-	if err != nil {
-		return
-	}
-
-	_ = conn.Close()
-}
-
 // LiveState returns the global live state and details.
-func (c *checker) LiveState() (bool, interface{}) {
+func (c *checker) LiveState() (bool, any) {
 	live, _, details, _ := c.checkStates()
 
 	return live, details
 }
 
 // ReadyState returns the global ready state and details.
-func (c *checker) ReadyState() (bool, interface{}) {
+func (c *checker) ReadyState() (bool, any) {
 	_, ready, _, details := c.checkStates()
 
 	return ready, details
 }
 
-func (c *checker) checkStates() (bool, bool, interface{}, interface{}) {
+func (c *checker) checkStates() (bool, bool, any, any) {
 	isLive, isReady := true, true
 
-	liveDetails := make(map[string]interface{})
-	readyDetails := make(map[string]interface{})
+	liveDetails := make(map[string]any)
+	readyDetails := make(map[string]any)
 	for subsystemName, subsystemState := range c.cache.getStatuses() {
 		state := subsystemState.details
 		if !state.Live {
@@ -200,7 +170,7 @@ func (c *checker) checkStates() (bool, bool, interface{}, interface{}) {
 	return isLive, isReady, liveDetails, readyDetails
 }
 
-func (c *checker) liveHandler(w http.ResponseWriter, req *http.Request) {
+func (c *checker) liveHandler(w http.ResponseWriter, _ *http.Request) {
 	live, details := c.LiveState()
 
 	statusCode := http.StatusOK
@@ -213,7 +183,7 @@ func (c *checker) liveHandler(w http.ResponseWriter, req *http.Request) {
 	_ = json.NewEncoder(w).Encode(details)
 }
 
-func (c *checker) readyHandler(w http.ResponseWriter, req *http.Request) {
+func (c *checker) readyHandler(w http.ResponseWriter, _ *http.Request) {
 	ready, details := c.ReadyState()
 
 	statusCode := http.StatusOK

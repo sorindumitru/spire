@@ -1,7 +1,13 @@
 package agent
 
 import (
+	"github.com/spiffe/spire/pkg/agent/client"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+)
+
+const (
+	CacheTypeWorkload  = "workload"
+	CacheTypeSVIDStore = "svid_store"
 )
 
 // Call Counters (timing and success metrics)
@@ -28,7 +34,7 @@ func StartManagerFetchSVIDsUpdatesCall(m telemetry.Metrics) *telemetry.CallCount
 // AddCacheManagerExpiredSVIDsSample count of expiring SVIDs according to
 // agent cache manager
 func AddCacheManagerExpiredSVIDsSample(m telemetry.Metrics, cacheType string, count float32) {
-	key := []string{telemetry.CacheManager, cacheType, telemetry.ExpiringSVIDs}
+	key := []string{telemetry.CacheManager, telemetry.ExpiringSVIDs}
 	if cacheType != "" {
 		key = append(key, cacheType)
 	}
@@ -45,4 +51,32 @@ func AddCacheManagerOutdatedSVIDsSample(m telemetry.Metrics, cacheType string, c
 	m.AddSample(key, count)
 }
 
+// AddCacheManagerTaintedX509SVIDsSample count of tainted X509-SVIDs according to
+// agent cache manager
+func AddCacheManagerTaintedX509SVIDsSample(m telemetry.Metrics, cacheType string, count float32) {
+	key := []string{telemetry.CacheManager, telemetry.TaintedX509SVIDs}
+	if cacheType != "" {
+		key = append(key, cacheType)
+	}
+	m.AddSample(key, count)
+}
+
+// AddCacheManagerTaintedJWTSVIDsSample count of tainted JWT-SVIDs according to
+// agent cache manager
+func AddCacheManagerTaintedJWTSVIDsSample(m telemetry.Metrics, cacheType string, count float32) {
+	key := []string{telemetry.CacheManager, telemetry.TaintedJWTSVIDs}
+	if cacheType != "" {
+		key = append(key, cacheType)
+	}
+	m.AddSample(key, count)
+}
+
 // End Add Samples
+
+func SetSyncStats(m telemetry.Metrics, stats client.SyncStats) {
+	m.SetGauge([]string{telemetry.SyncBundlesTotal}, float32(stats.Bundles.Total))
+	m.SetGauge([]string{telemetry.SyncEntriesTotal}, float32(stats.Entries.Total))
+	m.SetGauge([]string{telemetry.SyncEntriesMissing}, float32(stats.Entries.Missing))
+	m.SetGauge([]string{telemetry.SyncEntriesStale}, float32(stats.Entries.Stale))
+	m.SetGauge([]string{telemetry.SyncEntriesDropped}, float32(stats.Entries.Dropped))
+}

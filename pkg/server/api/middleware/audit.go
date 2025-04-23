@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/peertracker"
 	"github.com/spiffe/spire/pkg/common/telemetry"
@@ -25,7 +25,7 @@ type auditLogMiddleware struct {
 	localTrackerEnabled bool
 }
 
-func (m auditLogMiddleware) Preprocess(ctx context.Context, fullMethod string, req interface{}) (context.Context, error) {
+func (m auditLogMiddleware) Preprocess(ctx context.Context, _ string, _ any) (context.Context, error) {
 	log := rpccontext.Logger(ctx)
 	if rpccontext.CallerIsLocal(ctx) && m.localTrackerEnabled {
 		fields, err := fieldsFromTracker(ctx)
@@ -43,7 +43,7 @@ func (m auditLogMiddleware) Preprocess(ctx context.Context, fullMethod string, r
 	return ctx, nil
 }
 
-func (m auditLogMiddleware) Postprocess(ctx context.Context, fullMethod string, handlerInvoked bool, rpcErr error) {
+func (m auditLogMiddleware) Postprocess(ctx context.Context, _ string, _ bool, rpcErr error) {
 	if rpcErr != nil {
 		if auditLog, ok := rpccontext.AuditLog(ctx); ok {
 			auditLog.AuditWithError(rpcErr)

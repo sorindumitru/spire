@@ -10,31 +10,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestJoinTokenNodeAttestorCannotBeOverriden(t *testing.T) {
+func TestJoinTokenNodeAttestorCannotBeOverridden(t *testing.T) {
 	dir := t.TempDir()
 	log, _ := test.NewNullLogger()
 
 	minimalConfig := func() catalog.Config {
 		return catalog.Config{
 			Log: log,
-			PluginConfig: catalog.HCLPluginConfigMap{
-				"KeyManager": {
-					"memory": {},
+			PluginConfigs: catalog.PluginConfigs{
+				{
+					Type: "KeyManager",
+					Name: "memory",
 				},
-				"NodeAttestor": {
-					"join_token": {},
+				{
+					Type: "NodeAttestor",
+					Name: "join_token",
 				},
-				"WorkloadAttestor": {
-					"docker": {},
+				{
+					Type: "WorkloadAttestor",
+					Name: "docker",
 				},
 			},
 		}
 	}
 
 	config := minimalConfig()
-	config.PluginConfig["NodeAttestor"]["join_token"] = catalog.HCLPluginConfig{
-		PluginCmd: filepath.Join(dir, "does-not-exist"),
-	}
+	config.PluginConfigs[1].Path = filepath.Join(dir, "does-not-exist")
 
 	repo, err := catalog.Load(context.Background(), config)
 	if repo != nil {

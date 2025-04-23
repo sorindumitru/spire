@@ -1,14 +1,16 @@
 //go:build !windows
-// +build !windows
 
 package run
 
 import (
 	"bytes"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
+	"path"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/spiffe/spire/pkg/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -27,6 +30,8 @@ const (
 )
 
 func TestCommand_Run(t *testing.T) {
+	availablePort, err := getAvailablePort()
+	require.NoError(t, err)
 	testTempDir := t.TempDir()
 	testLogFile := testTempDir + "/spire-server.log"
 
@@ -74,6 +79,7 @@ func TestCommand_Run(t *testing.T) {
 			args: args{
 				args: []string{
 					"-config", startConfigFile,
+					"-serverPort", availablePort,
 					"-namedPipeName", "\\spire-agent\\public\\api",
 				},
 			},
@@ -95,6 +101,7 @@ func TestCommand_Run(t *testing.T) {
 			args: args{
 				args: []string{
 					"-config", crashConfigFile,
+					"-serverPort", availablePort,
 					"-dataDir", fmt.Sprintf("%s/crash/data", testTempDir),
 					"-expandEnv", "true",
 				},
@@ -116,6 +123,7 @@ func TestCommand_Run(t *testing.T) {
 			name: "create data dir when config is loaded and server stops",
 			args: args{
 				args: []string{
+					"-serverPort", availablePort,
 					"-config", startConfigFile,
 					"-dataDir", fmt.Sprintf("%s/data", testTempDir),
 					"-expandEnv", "true",
@@ -162,8 +170,8 @@ func TestCommand_Run(t *testing.T) {
 			}
 			if testCase.want.dataDirCreated != "" {
 				assert.DirExistsf(t, testCase.want.dataDirCreated, "data directory should be created")
-				currentUmask := syscall.Umask(0)
-				assert.Equalf(t, currentUmask, 0027, "spire-server process should have been created with 0027 umask")
+				currentUmask := unix.Umask(0)
+				assert.Equalf(t, currentUmask, 0o027, "spire-server process should have been created with 0027 umask")
 			} else {
 				assert.NoDirExistsf(t, testCase.want.dataDirCreated, "data directory should not be created")
 			}
@@ -198,7 +206,6 @@ func killServerOnStart(t *testing.T, testLogFile string) {
 				panic("server did not start in time")
 			case <-ticker.C:
 				logs, err := os.ReadFile(testLogFile)
-
 				if err != nil {
 					continue
 				}
@@ -209,14 +216,14 @@ func killServerOnStart(t *testing.T, testLogFile string) {
 			}
 		}
 
-		err := syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+		err := unix.Kill(unix.Getpid(), unix.SIGINT)
 		if err != nil {
 			t.Errorf("Failed to kill process: %v", err)
 		}
 	}()
 }
 
-func mergeInputCasesOS(t *testing.T) []mergeInputCase {
+func mergeInputCasesOS(*testing.T) []mergeInputCase {
 	return []mergeInputCase{
 		{
 			msg: "socket_path should be configurable by file",
@@ -229,7 +236,7 @@ func mergeInputCasesOS(t *testing.T) []mergeInputCase {
 			},
 		},
 		{
-			msg:       "socket_path should be configuable by CLI flag",
+			msg:       "socket_path should be configurable by CLI flag",
 			fileInput: func(c *Config) {},
 			cliFlags:  []string{"-socketPath=foo"},
 			test: func(t *testing.T, c *Config) {
@@ -249,7 +256,9 @@ func mergeInputCasesOS(t *testing.T) []mergeInputCase {
 	}
 }
 
-func newServerConfigCasesOS() []newServerConfigCase {
+func newServerConfigCasesOS(t *testing.T) []newServerConfigCase {
+	testDir := t.TempDir()
+
 	return []newServerConfigCase{
 		{
 			msg: "socket_path should be correctly configured",
@@ -261,9 +270,34 @@ func newServerConfigCasesOS() []newServerConfigCase {
 				require.Equal(t, "unix", c.BindLocalAddress.Network())
 			},
 		},
+		{
+			msg: "log_file allows to reopen",
+			input: func(c *Config) {
+				c.Server.LogFile = path.Join(testDir, "foo")
+			},
+			test: func(t *testing.T, c *server.Config) {
+				require.NotNil(t, c.Log)
+				require.NotNil(t, c.LogReopener)
+			},
+		},
 	}
 }
 
 func testParseConfigGoodOS(t *testing.T, c *Config) {
 	assert.Equal(t, c.Server.SocketPath, "/tmp/spire-server/private/api-test.sock")
+}
+
+func getAvailablePort() (string, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	defer l.Close()
+
+	addrPort, err := netip.ParseAddrPort(l.Addr().String())
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.Itoa(int(addrPort.Port())), nil
 }

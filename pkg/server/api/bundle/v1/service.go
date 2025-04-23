@@ -3,6 +3,7 @@ package bundle
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -58,12 +59,12 @@ func New(config Config) *Service {
 }
 
 // RegisterService registers the bundle service on the gRPC server.
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	bundlev1.RegisterBundleServer(s, service)
 }
 
 // CountBundles returns the total number of bundles.
-func (s *Service) CountBundles(ctx context.Context, req *bundlev1.CountBundlesRequest) (*bundlev1.CountBundlesResponse, error) {
+func (s *Service) CountBundles(ctx context.Context, _ *bundlev1.CountBundlesRequest) (*bundlev1.CountBundlesResponse, error) {
 	count, err := s.ds.CountBundles(ctx)
 	if err != nil {
 		log := rpccontext.Logger(ctx)
@@ -76,7 +77,7 @@ func (s *Service) CountBundles(ctx context.Context, req *bundlev1.CountBundlesRe
 
 // GetBundle returns the bundle associated with the given trust domain.
 func (s *Service) GetBundle(ctx context.Context, req *bundlev1.GetBundleRequest) (*types.Bundle, error) {
-	rpccontext.AddRPCAuditFields(ctx, logrus.Fields{telemetry.TrustDomainID: s.td.String()})
+	rpccontext.AddRPCAuditFields(ctx, logrus.Fields{telemetry.TrustDomainID: s.td.Name()})
 	log := rpccontext.Logger(ctx)
 
 	commonBundle, err := s.ds.FetchBundle(dscache.WithCache(ctx), s.td.IDString())
@@ -102,13 +103,9 @@ func (s *Service) GetBundle(ctx context.Context, req *bundlev1.GetBundleRequest)
 func (s *Service) AppendBundle(ctx context.Context, req *bundlev1.AppendBundleRequest) (*types.Bundle, error) {
 	parseRequest := func() logrus.Fields {
 		fields := logrus.Fields{}
-		for k, v := range api.FieldsFromJwtAuthoritiesProto(req.JwtAuthorities) {
-			fields[k] = v
-		}
+		maps.Copy(fields, api.FieldsFromJwtAuthoritiesProto(req.JwtAuthorities))
 
-		for k, v := range api.FieldsFromX509AuthoritiesProto(req.X509Authorities) {
-			fields[k] = v
-		}
+		maps.Copy(fields, api.FieldsFromX509AuthoritiesProto(req.X509Authorities))
 
 		return fields
 	}
@@ -120,7 +117,7 @@ func (s *Service) AppendBundle(ctx context.Context, req *bundlev1.AppendBundleRe
 		return nil, api.MakeErr(log, codes.InvalidArgument, "no authorities to append", nil)
 	}
 
-	log = log.WithField(telemetry.TrustDomainID, s.td.String())
+	log = log.WithField(telemetry.TrustDomainID, s.td.Name())
 
 	jwtAuth, err := api.ParseJWTAuthorities(req.JwtAuthorities)
 	if err != nil {

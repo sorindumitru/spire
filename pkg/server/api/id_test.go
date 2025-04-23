@@ -29,7 +29,7 @@ func TestIDFromProto(t *testing.T) {
 		expectLogs []spiretest.LogEntry
 	}
 
-	// These test cases are common to all of the *IDFromProto methods
+	// These test cases are common to all the *IDFromProto methods
 	baseCases := []testCase{
 		{
 			name:      "no SPIFFE ID",
@@ -47,10 +47,9 @@ func TestIDFromProto(t *testing.T) {
 		},
 	}
 
-	// runTests exercises all of the test cases against the given function
+	// runTests exercises all the test cases against the given function
 	runTests := func(t *testing.T, fn func(ctx context.Context, td spiffeid.TrustDomain, protoID *types.SPIFFEID) (spiffeid.ID, error), testCases []testCase) {
 		for _, testCase := range append(baseCases, testCases...) {
-			testCase := testCase
 			t.Run(testCase.name, func(t *testing.T) {
 				log, logHook := test.NewNullLogger()
 
@@ -233,7 +232,6 @@ func TestAttestedNodeToProto(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			agent, err := api.AttestedNodeToProto(testCase.attNode, testCase.selectors)
 			if testCase.err != "" {

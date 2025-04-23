@@ -16,6 +16,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"github.com/spiffe/spire/pkg/server/plugin/upstreamauthority"
 	"github.com/spiffe/spire/proto/spire/common"
@@ -148,7 +149,7 @@ func TestConfigure(t *testing.T) {
 			name:            "Malformed configuration",
 			plainConfig:     "invalid-config",
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "unable to decode configuration:",
+			expectMsgPrefix: "plugin configuration is malformed",
 		},
 		{
 			name:            "Required parameters are not given / k8s_auth_role_name",
@@ -165,7 +166,6 @@ func TestConfigure(t *testing.T) {
 			expectMsgPrefix: "token_path is required",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			var err error
 
@@ -178,7 +178,7 @@ func TestConfigure(t *testing.T) {
 				return v, ok
 			}
 
-			plainConfig := ""
+			var plainConfig string
 			if tt.plainConfig != "" {
 				plainConfig = tt.plainConfig
 			} else {
@@ -259,7 +259,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -283,7 +283,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -306,7 +306,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -329,7 +329,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -355,7 +355,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              CERT,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -380,7 +380,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              APPROLE,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -405,7 +405,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              K8S,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -430,7 +430,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              CERT,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -455,7 +455,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              APPROLE,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -480,7 +480,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              K8S,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -503,7 +503,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -526,14 +526,14 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
 				fakeServer.LookupSelfResponse = []byte(testLookupSelfResponse)
 				fakeServer.CertAuthResponse = []byte{}
 				fakeServer.AppRoleAuthResponse = []byte{}
-				fakeServer.SignIntermediateResponse = []byte(testSignIntermediateResponseNoChain)
+				fakeServer.SignIntermediateResponse = []byte(testLegacySignIntermediateResponseNoChain)
 
 				return fakeServer
 			},
@@ -549,7 +549,7 @@ func TestMintX509CA(t *testing.T) {
 				},
 			},
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer: func() *FakeVaultServerConfig {
 				fakeServer := setupSuccessFakeVaultServer()
@@ -565,7 +565,7 @@ func TestMintX509CA(t *testing.T) {
 			name:                    "Plugin is not configured",
 			csr:                     csr.Raw,
 			authMethod:              TOKEN,
-			expectX509CA:            []string{"spiffe://intermediate-vault", "spiffe://intermediate"},
+			expectX509CA:            []string{"spiffe://intermediate-spire", "spiffe://intermediate-vault"},
 			expectedX509Authorities: []string{"spiffe://root"},
 			fakeServer:              setupSuccessFakeVaultServer,
 			expectCode:              codes.FailedPrecondition,
@@ -666,7 +666,6 @@ func TestMintX509CA(t *testing.T) {
 			expectMsgPrefix: "upstreamauthority(vault): failed to parse CSR data:",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			fakeVaultServer := tt.fakeServer()
 
@@ -713,7 +712,7 @@ func TestMintX509CA(t *testing.T) {
 			x509CAIDs := certChainURIs(x509CA)
 			require.Equal(t, tt.expectX509CA, x509CAIDs)
 
-			x509AuthoritiesIDs := certChainURIs(x509Authorities)
+			x509AuthoritiesIDs := authChainURIs(x509Authorities)
 			require.Equal(t, tt.expectedX509Authorities, x509AuthoritiesIDs)
 
 			if p.cc.clientParams.Namespace != "" {
@@ -838,6 +837,14 @@ func certChainURIs(chain []*x509.Certificate) []string {
 	var uris []string
 	for _, cert := range chain {
 		uris = append(uris, certURI(cert))
+	}
+	return uris
+}
+
+func authChainURIs(chain []*x509certificate.X509Authority) []string {
+	var uris []string
+	for _, authority := range chain {
+		uris = append(uris, certURI(authority.Certificate))
 	}
 	return uris
 }

@@ -21,14 +21,22 @@ import (
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/uptime"
 	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/pkg/common/version"
 	"github.com/spiffe/spire/pkg/server/authpolicy"
 	bundle_client "github.com/spiffe/spire/pkg/server/bundle/client"
+	ds_pubmanager "github.com/spiffe/spire/pkg/server/bundle/datastore"
+	"github.com/spiffe/spire/pkg/server/bundle/pubmanager"
 	"github.com/spiffe/spire/pkg/server/ca"
+	"github.com/spiffe/spire/pkg/server/ca/manager"
+	"github.com/spiffe/spire/pkg/server/ca/rotator"
 	"github.com/spiffe/spire/pkg/server/catalog"
+	"github.com/spiffe/spire/pkg/server/credtemplate"
+	"github.com/spiffe/spire/pkg/server/credvalidator"
 	"github.com/spiffe/spire/pkg/server/datastore"
 	"github.com/spiffe/spire/pkg/server/endpoints"
 	"github.com/spiffe/spire/pkg/server/hostservice/agentstore"
 	"github.com/spiffe/spire/pkg/server/hostservice/identityprovider"
+	"github.com/spiffe/spire/pkg/server/plugin/bundlepublisher"
 	"github.com/spiffe/spire/pkg/server/registration"
 	"github.com/spiffe/spire/pkg/server/svid"
 	"google.golang.org/grpc"
@@ -64,8 +72,10 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) run(ctx context.Context) (err error) {
 	// Log configuration values that are useful for debugging
 	s.config.Log.WithFields(logrus.Fields{
-		telemetry.AdminIDs: s.config.AdminIDs,
-		telemetry.DataDir:  s.config.DataDir,
+		telemetry.AdminIDs:       s.config.AdminIDs,
+		telemetry.DataDir:        s.config.DataDir,
+		telemetry.LaunchLogLevel: s.config.Log.GetLevel(),
+		telemetry.Version:        version.Version(),
 	}).Info("Configured")
 
 	// create the data directory if needed
@@ -82,12 +92,13 @@ func (s *Server) run(ctx context.Context) (err error) {
 		FileConfig:  s.config.Telemetry,
 		Logger:      s.config.Log.WithField(telemetry.SubsystemName, telemetry.Telemetry),
 		ServiceName: telemetry.SpireServer,
+		TrustDomain: s.config.TrustDomain.Name(),
 	})
 	if err != nil {
 		return err
 	}
 
-	telemetry.EmitVersion(metrics)
+	telemetry.EmitStarted(metrics, s.config.TrustDomain)
 	uptime.ReportMetrics(ctx, metrics)
 
 	// Create the identity provider host service. It will not be functional
@@ -111,16 +122,38 @@ func (s *Server) run(ctx context.Context) (err error) {
 	}
 	defer cat.Close()
 
+	bundlePublishingManager, err := s.newBundlePublishingManager(cat.BundlePublishers, cat.DataStore)
+	if err != nil {
+		return err
+	}
+	cat.DataStore = ds_pubmanager.WithBundleUpdateCallback(cat.DataStore, bundlePublishingManager.BundleUpdated)
+
 	err = s.validateTrustDomain(ctx, cat.GetDataStore())
 	if err != nil {
 		return err
 	}
 
-	serverCA := s.newCA(metrics, healthChecker)
+	credBuilder, err := s.newCredBuilder(cat)
+	if err != nil {
+		return err
+	}
+
+	credValidator, err := s.newCredValidator()
+	if err != nil {
+		return err
+	}
+
+	serverCA := s.newCA(metrics, credBuilder, credValidator, healthChecker)
 
 	// CA manager needs to be initialized before the rotator, otherwise the
 	// server CA plugin won't be able to sign CSRs
-	caManager, err := s.newCAManager(ctx, cat, metrics, serverCA, healthChecker)
+	caManager, err := s.newCAManager(ctx, cat, metrics, serverCA, credBuilder, credValidator)
+	if err != nil {
+		return err
+	}
+	defer caManager.Close()
+
+	caSync, err := s.newCASync(ctx, healthChecker, caManager)
 	if err != nil {
 		return err
 	}
@@ -130,7 +163,7 @@ func (s *Server) run(ctx context.Context) (err error) {
 		return err
 	}
 
-	authPolicyEngine, err := authpolicy.NewEngineFromConfigOrDefault(ctx, s.config.AuthOpaPolicyEngineConfig)
+	authPolicyEngine, err := authpolicy.NewEngineFromConfigOrDefault(ctx, s.config.Log, s.config.AuthOpaPolicyEngineConfig)
 	if err != nil {
 		return fmt.Errorf("unable to obtain authpolicy engine: %w", err)
 	}
@@ -171,14 +204,15 @@ func (s *Server) run(ctx context.Context) (err error) {
 	}
 
 	tasks := []func(context.Context) error{
-		caManager.Run,
+		caSync.Run,
 		svidRotator.Run,
 		endpointsServer.ListenAndServe,
 		metrics.ListenAndServe,
 		bundleManager.Run,
 		registrationManager.Run,
-		util.SerialRun(s.waitForTestDial, healthChecker.ListenAndServe),
-		scanForBadEntries(s.config.Log, metrics, cat.GetDataStore()),
+		bundlePublishingManager.Run,
+		catalog.ReconfigureTask(s.config.Log.WithField(telemetry.SubsystemName, "reconfigurer"), cat),
+		healthChecker.ListenAndServe,
 	}
 
 	if s.config.LogReopener != nil {
@@ -250,49 +284,82 @@ func (s *Server) setupProfiling(ctx context.Context) (stop func()) {
 }
 
 func (s *Server) loadCatalog(ctx context.Context, metrics telemetry.Metrics, identityProvider *identityprovider.IdentityProvider, agentStore *agentstore.AgentStore,
-	healthChecker health.Checker) (*catalog.Repository, error) {
+	healthChecker health.Checker,
+) (*catalog.Repository, error) {
 	return catalog.Load(ctx, catalog.Config{
 		Log:              s.config.Log.WithField(telemetry.SubsystemName, telemetry.Catalog),
 		Metrics:          metrics,
 		TrustDomain:      s.config.TrustDomain,
-		PluginConfig:     s.config.PluginConfigs,
+		PluginConfigs:    s.config.PluginConfigs,
 		IdentityProvider: identityProvider,
 		AgentStore:       agentStore,
 		HealthChecker:    healthChecker,
 	})
 }
 
-func (s *Server) newCA(metrics telemetry.Metrics, healthChecker health.Checker) *ca.CA {
-	return ca.NewCA(ca.Config{
-		Metrics:         metrics,
-		X509SVIDTTL:     s.config.X509SVIDTTL,
-		JWTSVIDTTL:      s.config.JWTSVIDTTL,
-		JWTIssuer:       s.config.JWTIssuer,
-		TrustDomain:     s.config.TrustDomain,
-		CASubject:       s.config.CASubject,
-		HealthChecker:   healthChecker,
-		OmitX509SVIDUID: s.config.OmitX509SVIDUID,
+func (s *Server) newCredBuilder(cat catalog.Catalog) (*credtemplate.Builder, error) {
+	return credtemplate.NewBuilder(credtemplate.Config{
+		TrustDomain:                  s.config.TrustDomain,
+		X509CASubject:                s.config.CASubject,
+		X509CATTL:                    s.config.CATTL,
+		AgentSVIDTTL:                 s.config.AgentTTL,
+		X509SVIDTTL:                  s.config.X509SVIDTTL,
+		JWTSVIDTTL:                   s.config.JWTSVIDTTL,
+		JWTIssuer:                    s.config.JWTIssuer,
+		CredentialComposers:          cat.GetCredentialComposers(),
+		UseLegacyDownstreamX509CATTL: s.config.UseLegacyDownstreamX509CATTL,
+		TLSPolicy:                    s.config.TLSPolicy,
 	})
 }
 
-func (s *Server) newCAManager(ctx context.Context, cat catalog.Catalog, metrics telemetry.Metrics, serverCA *ca.CA, healthChecker health.Checker) (*ca.Manager, error) {
-	caManager := ca.NewManager(ca.ManagerConfig{
+func (s *Server) newCredValidator() (*credvalidator.Validator, error) {
+	return credvalidator.New(credvalidator.Config{
+		TrustDomain: s.config.TrustDomain,
+	})
+}
+
+func (s *Server) newCA(metrics telemetry.Metrics, credBuilder *credtemplate.Builder, credValidator *credvalidator.Validator, healthChecker health.Checker) *ca.CA {
+	return ca.NewCA(ca.Config{
+		Log:           s.config.Log.WithField(telemetry.SubsystemName, telemetry.CA),
+		Metrics:       metrics,
+		TrustDomain:   s.config.TrustDomain,
+		CredBuilder:   credBuilder,
+		CredValidator: credValidator,
+		HealthChecker: healthChecker,
+	})
+}
+
+func (s *Server) newCAManager(ctx context.Context, cat catalog.Catalog, metrics telemetry.Metrics, serverCA *ca.CA, credBuilder *credtemplate.Builder, credValidator *credvalidator.Validator) (*manager.Manager, error) {
+	caManager, err := manager.NewManager(ctx, manager.Config{
 		CA:            serverCA,
 		Catalog:       cat,
 		TrustDomain:   s.config.TrustDomain,
 		Log:           s.config.Log.WithField(telemetry.SubsystemName, telemetry.CAManager),
 		Metrics:       metrics,
-		CATTL:         s.config.CATTL,
-		CASubject:     s.config.CASubject,
+		CredBuilder:   credBuilder,
+		CredValidator: credValidator,
 		Dir:           s.config.DataDir,
 		X509CAKeyType: s.config.CAKeyType,
 		JWTKeyType:    s.config.JWTKeyType,
-		HealthChecker: healthChecker,
 	})
-	if err := caManager.Initialize(ctx); err != nil {
+	if err != nil {
 		return nil, err
 	}
+
 	return caManager, nil
+}
+
+func (s *Server) newCASync(ctx context.Context, healthChecker health.Checker, caManager *manager.Manager) (*rotator.Rotator, error) {
+	caSync := rotator.NewRotator(rotator.Config{
+		Log:           s.config.Log.WithField(telemetry.SubsystemName, telemetry.CAManager),
+		Manager:       caManager,
+		HealthChecker: healthChecker,
+	})
+	if err := caSync.Initialize(ctx); err != nil {
+		return nil, err
+	}
+
+	return caSync, nil
 }
 
 func (s *Server) newRegistrationManager(cat catalog.Catalog, metrics telemetry.Metrics) *registration.Manager {
@@ -306,11 +373,10 @@ func (s *Server) newRegistrationManager(cat catalog.Catalog, metrics telemetry.M
 
 func (s *Server) newSVIDRotator(ctx context.Context, serverCA ca.ServerCA, metrics telemetry.Metrics) (*svid.Rotator, error) {
 	svidRotator := svid.NewRotator(&svid.RotatorConfig{
-		ServerCA:    serverCA,
-		Log:         s.config.Log.WithField(telemetry.SubsystemName, telemetry.SVIDRotator),
-		Metrics:     metrics,
-		TrustDomain: s.config.TrustDomain,
-		KeyType:     s.config.CAKeyType,
+		ServerCA: serverCA,
+		Log:      s.config.Log.WithField(telemetry.SubsystemName, telemetry.SVIDRotator),
+		Metrics:  metrics,
+		KeyType:  s.config.CAKeyType,
 	})
 	if err := svidRotator.Initialize(ctx); err != nil {
 		return nil, err
@@ -318,30 +384,36 @@ func (s *Server) newSVIDRotator(ctx context.Context, serverCA ca.ServerCA, metri
 	return svidRotator, nil
 }
 
-func (s *Server) newEndpointsServer(ctx context.Context, catalog catalog.Catalog, svidObserver svid.Observer, serverCA ca.ServerCA, metrics telemetry.Metrics, caManager *ca.Manager, authPolicyEngine *authpolicy.Engine, bundleManager *bundle_client.Manager) (endpoints.Server, error) {
+func (s *Server) newEndpointsServer(ctx context.Context, catalog catalog.Catalog, svidObserver svid.Observer, serverCA ca.ServerCA, metrics telemetry.Metrics, authorityManager manager.AuthorityManager, authPolicyEngine *authpolicy.Engine, bundleManager *bundle_client.Manager) (endpoints.Server, error) {
 	config := endpoints.Config{
-		TCPAddr:             s.config.BindAddress,
-		LocalAddr:           s.config.BindLocalAddress,
-		SVIDObserver:        svidObserver,
-		TrustDomain:         s.config.TrustDomain,
-		Catalog:             catalog,
-		ServerCA:            serverCA,
-		AgentTTL:            s.config.AgentTTL,
-		Log:                 s.config.Log.WithField(telemetry.SubsystemName, telemetry.Endpoints),
-		Metrics:             metrics,
-		Manager:             caManager,
-		RateLimit:           s.config.RateLimit,
-		Uptime:              uptime.Uptime,
-		Clock:               clock.New(),
-		CacheReloadInterval: s.config.CacheReloadInterval,
-		AuditLogEnabled:     s.config.AuditLogEnabled,
-		AuthPolicyEngine:    authPolicyEngine,
-		BundleManager:       bundleManager,
-		AdminIDs:            s.config.AdminIDs,
+		TCPAddr:                      s.config.BindAddress,
+		LocalAddr:                    s.config.BindLocalAddress,
+		SVIDObserver:                 svidObserver,
+		TrustDomain:                  s.config.TrustDomain,
+		Catalog:                      catalog,
+		ServerCA:                     serverCA,
+		Log:                          s.config.Log.WithField(telemetry.SubsystemName, telemetry.Endpoints),
+		RootLog:                      s.config.Log,
+		Metrics:                      metrics,
+		AuthorityManager:             authorityManager,
+		RateLimit:                    s.config.RateLimit,
+		Uptime:                       uptime.Uptime,
+		Clock:                        clock.New(),
+		CacheReloadInterval:          s.config.CacheReloadInterval,
+		EventsBasedCache:             s.config.EventsBasedCache,
+		PruneEventsOlderThan:         s.config.PruneEventsOlderThan,
+		SQLTransactionTimeout:        s.config.SQLTransactionTimeout,
+		AuditLogEnabled:              s.config.AuditLogEnabled,
+		AuthPolicyEngine:             authPolicyEngine,
+		BundleManager:                bundleManager,
+		AdminIDs:                     s.config.AdminIDs,
+		UseLegacyDownstreamX509CATTL: s.config.UseLegacyDownstreamX509CATTL,
 	}
 	if s.config.Federation.BundleEndpoint != nil {
 		config.BundleEndpoint.Address = s.config.Federation.BundleEndpoint.Address
+		config.BundleEndpoint.RefreshHint = s.config.Federation.BundleEndpoint.RefreshHint
 		config.BundleEndpoint.ACME = s.config.Federation.BundleEndpoint.ACME
+		config.BundleEndpoint.DiskCertManager = s.config.Federation.BundleEndpoint.DiskCertManager
 	}
 	return endpoints.New(ctx, config)
 }
@@ -359,16 +431,26 @@ func (s *Server) newBundleManager(cat catalog.Catalog, metrics telemetry.Metrics
 	})
 }
 
+func (s *Server) newBundlePublishingManager(bundlePublishers []bundlepublisher.BundlePublisher, ds datastore.DataStore) (*pubmanager.Manager, error) {
+	log := s.config.Log.WithField(telemetry.SubsystemName, "bundle_publishing")
+	return pubmanager.NewManager(&pubmanager.ManagerConfig{
+		BundlePublishers: bundlePublishers,
+		DataStore:        ds,
+		TrustDomain:      s.config.TrustDomain,
+		Log:              log,
+	})
+}
+
 func (s *Server) validateTrustDomain(ctx context.Context, ds datastore.DataStore) error {
-	trustDomain := s.config.TrustDomain.String()
+	trustDomain := s.config.TrustDomain.Name()
 
 	// Get only first page with a single element
 	fetchResponse, err := ds.ListRegistrationEntries(ctx, &datastore.ListRegistrationEntriesRequest{
 		Pagination: &datastore.Pagination{
 			Token:    "",
 			PageSize: pageSize,
-		}})
-
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -389,7 +471,8 @@ func (s *Server) validateTrustDomain(ctx context.Context, ds datastore.DataStore
 		Pagination: &datastore.Pagination{
 			Token:    "",
 			PageSize: pageSize,
-		}})
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -406,14 +489,6 @@ func (s *Server) validateTrustDomain(ctx context.Context, ds datastore.DataStore
 			s.config.Log.Warn(msg)
 		}
 	}
-	return nil
-}
-
-// waitForTestDial calls health.WaitForTestDial to wait for a connection to the
-// SPIRE Server API socket. This function always returns nil, even if
-// health.WaitForTestDial exited due to a timeout.
-func (s *Server) waitForTestDial(ctx context.Context) error {
-	health.WaitForTestDial(ctx, s.config.BindLocalAddress)
 	return nil
 }
 
@@ -438,9 +513,14 @@ func (s *Server) CheckHealth() health.State {
 }
 
 func (s *Server) tryGetBundle() error {
-	client, err := server_util.NewServerClient(s.config.BindLocalAddress)
+	addr, err := util.GetTargetName(s.config.BindLocalAddress)
 	if err != nil {
-		return errors.New("cannot create registration client")
+		return fmt.Errorf("cannot get local gRPC address: %w", err)
+	}
+
+	client, err := server_util.NewServerClient(addr)
+	if err != nil {
+		return fmt.Errorf("cannot create registration client: %w", err)
 	}
 	defer client.Release()
 
@@ -451,7 +531,7 @@ func (s *Server) tryGetBundle() error {
 	// As currently coded however, the API isn't served until after
 	// the server CA has been signed by upstream.
 	if _, err := bundleClient.GetBundle(context.Background(), &bundlev1.GetBundleRequest{}); err != nil {
-		return errors.New("unable to fetch bundle")
+		return fmt.Errorf("unable to fetch bundle: %w", err)
 	}
 	return nil
 }

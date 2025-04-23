@@ -1,13 +1,13 @@
 package dscache
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/andres-erbsen/clock"
 	"github.com/spiffe/spire/pkg/server/datastore"
 	"github.com/spiffe/spire/proto/spire/common"
-	"golang.org/x/net/context"
 )
 
 const (
@@ -99,6 +99,34 @@ func (ds *DatastoreCache) DeleteBundle(ctx context.Context, td string, mode data
 func (ds *DatastoreCache) SetBundle(ctx context.Context, b *common.Bundle) (bundle *common.Bundle, err error) {
 	if bundle, err = ds.DataStore.SetBundle(ctx, b); err == nil {
 		ds.invalidateBundleEntry(b.TrustDomainId)
+	}
+	return
+}
+
+func (ds *DatastoreCache) TaintX509CA(ctx context.Context, trustDomainID string, subjectKeyIDToTaint string) (err error) {
+	if err = ds.DataStore.TaintX509CA(ctx, trustDomainID, subjectKeyIDToTaint); err == nil {
+		ds.invalidateBundleEntry(trustDomainID)
+	}
+	return
+}
+
+func (ds *DatastoreCache) RevokeX509CA(ctx context.Context, trustDomainID string, subjectKeyIDToRevoke string) (err error) {
+	if err = ds.DataStore.RevokeX509CA(ctx, trustDomainID, subjectKeyIDToRevoke); err == nil {
+		ds.invalidateBundleEntry(trustDomainID)
+	}
+	return
+}
+
+func (ds *DatastoreCache) TaintJWTKey(ctx context.Context, trustDomainID string, authorityID string) (taintedKey *common.PublicKey, err error) {
+	if taintedKey, err = ds.DataStore.TaintJWTKey(ctx, trustDomainID, authorityID); err == nil {
+		ds.invalidateBundleEntry(trustDomainID)
+	}
+	return
+}
+
+func (ds *DatastoreCache) RevokeJWTKey(ctx context.Context, trustDomainID string, authorityID string) (revokedKey *common.PublicKey, err error) {
+	if revokedKey, err = ds.DataStore.RevokeJWTKey(ctx, trustDomainID, authorityID); err == nil {
+		ds.invalidateBundleEntry(trustDomainID)
 	}
 	return
 }

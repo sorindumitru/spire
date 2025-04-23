@@ -51,7 +51,7 @@ func New(ctx context.Context) *Client {
 
 	// Create connection
 	tlsConfig := tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeAny())
-	conn, err := grpc.DialContext(ctx, *serverAddrFlag, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+	conn, err := grpc.NewClient(*serverAddrFlag, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	if err != nil {
 		source.Close()
 		log.Fatalf("Error creating dial: %v", err)
@@ -65,12 +65,13 @@ func New(ctx context.Context) *Client {
 	}
 }
 
-func NewInsecure(ctx context.Context) *Client {
+func NewInsecure() *Client {
 	flag.Parse()
 	tlsConfig := tls.Config{
-		InsecureSkipVerify: true, // nolint: gosec // this is intentional for the integration test
+		InsecureSkipVerify: true, //nolint: gosec // this is intentional for the integration test
 	}
-	conn, err := grpc.DialContext(ctx, *serverAddrFlag, grpc.WithTransportCredentials(credentials.NewTLS(&tlsConfig)))
+	conn, err := grpc.NewClient(*serverAddrFlag,
+		grpc.WithTransportCredentials(credentials.NewTLS(&tlsConfig)))
 	if err != nil {
 		log.Fatalf("Error creating dial: %v", err)
 	}
@@ -81,7 +82,7 @@ func NewInsecure(ctx context.Context) *Client {
 	}
 }
 
-func NewWithCert(ctx context.Context, cert *x509.Certificate, key crypto.Signer) *Client {
+func NewWithCert(cert *x509.Certificate, key crypto.Signer) *Client {
 	flag.Parse()
 
 	tlsConfig := tls.Config{
@@ -91,9 +92,10 @@ func NewWithCert(ctx context.Context, cert *x509.Certificate, key crypto.Signer)
 				PrivateKey:  key,
 			}, nil
 		},
-		InsecureSkipVerify: true, // nolint: gosec // this is intentional for the integration test
+		InsecureSkipVerify: true, //nolint: gosec // this is intentional for the integration test
 	}
-	conn, err := grpc.DialContext(ctx, *serverAddrFlag, grpc.WithTransportCredentials(credentials.NewTLS(&tlsConfig)))
+	conn, err := grpc.NewClient(*serverAddrFlag,
+		grpc.WithTransportCredentials(credentials.NewTLS(&tlsConfig)))
 	if err != nil {
 		log.Fatalf("Error creating dial: %v", err)
 	}
@@ -147,13 +149,22 @@ func (c *LocalServerClient) AgentClient() agent.AgentClient {
 	return agent.NewAgentClient(c.connection)
 }
 
+func (c *LocalServerClient) BundleClient() bundle.BundleClient {
+	return bundle.NewBundleClient(c.connection)
+}
+
+func (c *LocalServerClient) EntryClient() entry.EntryClient {
+	return entry.NewEntryClient(c.connection)
+}
+
 func (c *LocalServerClient) Release() {
 	c.connection.Close()
 }
 
-func NewLocalServerClient(ctx context.Context) *LocalServerClient {
+func NewLocalServerClient() *LocalServerClient {
 	flag.Parse()
-	conn, err := grpc.DialContext(ctx, *serverSocketPathFlag, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*serverSocketPathFlag,
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Error creating dial: %v", err)
 	}
@@ -165,18 +176,18 @@ func NewLocalServerClient(ctx context.Context) *LocalServerClient {
 
 type logger struct{}
 
-func (l *logger) Debugf(format string, args ...interface{}) {
+func (l *logger) Debugf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func (l *logger) Infof(format string, args ...interface{}) {
+func (l *logger) Infof(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func (l *logger) Warnf(format string, args ...interface{}) {
+func (l *logger) Warnf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func (l *logger) Errorf(format string, args ...interface{}) {
+func (l *logger) Errorf(format string, args ...any) {
 	log.Printf(format, args...)
 }

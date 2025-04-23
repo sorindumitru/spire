@@ -26,7 +26,7 @@ const (
 )
 
 // RegisterService registers debug service on provided server
-func RegisterService(s *grpc.Server, service *Service) {
+func RegisterService(s grpc.ServiceRegistrar, service *Service) {
 	debugv1.RegisterDebugServer(s, service)
 }
 
@@ -70,20 +70,19 @@ type getInfoResp struct {
 }
 
 // GetInfo gets SPIRE Server debug information
-func (s *Service) GetInfo(ctx context.Context, req *debugv1.GetInfoRequest) (*debugv1.GetInfoResponse, error) {
+func (s *Service) GetInfo(ctx context.Context, _ *debugv1.GetInfoRequest) (*debugv1.GetInfoResponse, error) {
 	log := rpccontext.Logger(ctx)
 
 	s.getInfoResp.mtx.Lock()
 	defer s.getInfoResp.mtx.Unlock()
 
-	// Update cache when expired or does not exists
+	// Update cache when expired or does not exist
 	if s.getInfoResp.ts.IsZero() || s.clock.Now().Sub(s.getInfoResp.ts) >= cacheExpiry {
-		nodes, err := s.ds.CountAttestedNodes(ctx)
+		nodes, err := s.ds.CountAttestedNodes(ctx, &datastore.CountAttestedNodesRequest{})
 		if err != nil {
 			return nil, api.MakeErr(log, codes.Internal, "failed to count agents", err)
 		}
-
-		entries, err := s.ds.CountRegistrationEntries(ctx)
+		entries, err := s.ds.CountRegistrationEntries(ctx, &datastore.CountRegistrationEntriesRequest{})
 		if err != nil {
 			return nil, api.MakeErr(log, codes.Internal, "failed to count entries", err)
 		}
@@ -163,7 +162,7 @@ func spiffeIDFromCert(cert *x509.Certificate) *types.SPIFFEID {
 	}
 
 	return &types.SPIFFEID{
-		TrustDomain: id.TrustDomain().String(),
+		TrustDomain: id.TrustDomain().Name(),
 		Path:        id.Path(),
 	}
 }

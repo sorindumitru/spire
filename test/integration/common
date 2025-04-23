@@ -37,7 +37,7 @@ docker-up() {
     else
         log-debug "bringing up $*..."
     fi
-    docker-compose up -d "$@" || fail-now "failed to bring up services."
+    docker compose up -d "$@" || fail-now "failed to bring up services."
 }
 
 docker-wait-for-healthy() {
@@ -70,17 +70,25 @@ docker-stop() {
     else
         log-debug "stopping $*..."
     fi
-    docker-compose stop "$@"
+    docker compose stop "$@"
 }
 
 docker-down() {
     log-debug "bringing down services..."
-    docker-compose down
+    docker compose down
 }
 
 docker-cleanup() {
     log-debug "cleaning up services..."
-    docker-compose down -v --remove-orphans
+    docker compose down -v --remove-orphans
+}
+
+docker-spire-server-up() {
+    docker-up "$@"
+
+    for container in "$@"; do
+        check-server-started ${container}
+    done
 }
 
 fingerprint() {
@@ -90,6 +98,40 @@ fingerprint() {
 	openssl x509 -in "$1" -outform DER | openssl sha1 -r | awk '{print $1}'
 }
 
+check-server-started() {
+  # Check at most 20 times (with one second in between) that the server has
+  # successfully started.
+  MAXCHECKS=20
+  CHECKINTERVAL=1
+  for ((i=1;i<=MAXCHECKS;i++)); do
+      log-info "checking for starting server APIs ($i of $MAXCHECKS max)..."
+      docker compose logs "$1"
+      if docker compose logs "$1" | grep "Starting Server APIs"; then
+          return 0
+      fi
+      sleep "${CHECKINTERVAL}"
+  done
+
+  fail-now "timed out waiting for server to start"
+}
+
+check-log-line() {
+  # Check at most 30 times (with one second in between) that the agent has
+  # successfully synced down the workload entry.
+  MAXCHECKS=30
+  CHECKINTERVAL=1
+  for ((i=1;i<=MAXCHECKS;i++)); do
+      log-info "checking for log line ($i of $MAXCHECKS max)..."
+      if docker compose logs "$1" | grep -E "$2"; then
+          return 0
+      fi
+      sleep "${CHECKINTERVAL}"
+  done
+
+  docker compose logs "$1"
+  fail-now "timed out waiting for "$2" in log in container $1"
+}
+
 check-synced-entry() {
   # Check at most 30 times (with one second in between) that the agent has
   # successfully synced down the workload entry.
@@ -97,8 +139,8 @@ check-synced-entry() {
   CHECKINTERVAL=1
   for ((i=1;i<=MAXCHECKS;i++)); do
       log-info "checking for synced entry ($i of $MAXCHECKS max)..."
-      docker-compose logs "$1"
-      if docker-compose logs "$1" | grep "$2"; then
+      docker compose logs "$1"
+      if docker compose logs "$1" | grep "$2"; then
           return 0
       fi
       sleep "${CHECKINTERVAL}"
@@ -112,8 +154,8 @@ check-x509-svid-count() {
   CHECKINTERVAL=1
 
   for ((i=1;i<=MAXCHECKS;i++)); do
-    log-info "check X.509-SVID count on agent debug endpoint ($(($i)) of $MAXCHECKS max)..."
-    COUNT=$(docker-compose exec -T $1 /opt/spire/conf/agent/debugclient -testCase "printDebugPage" | jq '.svidsCount')
+    log-info "check X.509-SVID count on agent debug endpoint ($((i)) of $MAXCHECKS max)..."
+    COUNT=$(docker compose exec -T "$1" /opt/spire/conf/agent/debugclient -testCase "printDebugPage" | jq '.svidsCount')
     log-info "X.509-SVID Count: ${COUNT}"
     if [ "$COUNT" -eq "$2" ]; then
       log-info "X.509-SVID count of $COUNT from cache matches the expected count of $2"
@@ -122,7 +164,7 @@ check-x509-svid-count() {
     sleep "${CHECKINTERVAL}"
   done
 
-  if (( $i>$MAXCHECKS )); then
+  if (( i>MAXCHECKS )); then
       fail-now "X.509-SVID count validation failed"
   fi
 }
@@ -133,10 +175,11 @@ build-mashup-image() {
 
     cat > Dockerfile <<EOF
 FROM spire-agent:latest-local as spire-agent
-FROM envoyproxy/envoy-alpine:${ENVOY_IMAGE_TAG} AS envoy-agent-mashup
+FROM envoyproxy/envoy:${ENVOY_IMAGE_TAG} AS envoy-agent-mashup
 COPY --from=spire-agent /opt/spire/bin/spire-agent /opt/spire/bin/spire-agent
-RUN apk --no-cache add dumb-init
-RUN apk --no-cache add supervisor
+RUN apt-get update
+RUN apt-get install -y dumb-init
+RUN apt-get install -y supervisor
 COPY conf/supervisord.conf /etc/
 ENTRYPOINT ["/usr/bin/dumb-init", "supervisord", "--nodaemon", "--configuration", "/etc/supervisord.conf"]
 CMD []
@@ -170,7 +213,7 @@ envoy-releases() {
     # earlier than v1.13, which is the first release to adopt the v3 API (v2 is
     # deprecated).
     for release in ${ALL_ENVOY_RELEASES}; do
-        if ! curl --silent -f -lSL "https://hub.docker.com/v2/repositories/envoyproxy/envoy-alpine/tags/${release}-latest" > /dev/null 2>/dev/null; then
+        if ! curl --silent -f -lSL "https://hub.docker.com/v2/repositories/envoyproxy/envoy/tags/${release}-latest" > /dev/null 2>/dev/null; then
             continue
         fi
 
@@ -190,44 +233,93 @@ download-bin() {
     local bin_path=$1
     local bin_url=$2
     if [ ! -f "${bin_path}" ] ; then
-        log-info "downloading $(basename ${bin_path}) from ${bin_url}..."
+        log-info "downloading $(basename "${bin_path}") from ${bin_url}..."
         curl -# -f -Lo "${bin_path}" "${bin_url}"
         chmod +x "${bin_path}"
     fi
 }
 
 download-kind() {
-    KINDVERSION=v0.11.1
+    KINDVERSION=${KINDVERSION:-v0.27.0}
     KINDPATH=$(command -v kind || echo)
     UNAME=$(uname | awk '{print tolower($0)}')
-    KINDURL="https://github.com/kubernetes-sigs/kind/releases/download/$KINDVERSION/kind-$UNAME-amd64"
+    ARCH=$(uname -m)
+    if [ "${ARCH}" = "x86_64" ]; then
+        ARCH=amd64
+    elif [ "${ARCH}" = "aarch64" ]; then
+        ARCH=arm64
+    fi
+    echo "Ensuring kind version $KINDVERSION is available..." 
+    KINDURL="https://github.com/kubernetes-sigs/kind/releases/download/$KINDVERSION/kind-$UNAME-$ARCH"
 
-    local kind_path=$1
+    local kind_link_or_path=$1
     # Ensure kind exists at the expected version
     if [ -x "${KINDPATH}" ] && "${KINDPATH}" version | grep -q "${KINDVERSION}"; then
-        ln -s "${KINDPATH}" "${kind_path}"
+        ln -s "${KINDPATH}" "${kind_link_or_path}"
     else
-        download-bin "${kind_path}" "${KINDURL}"
+        download-bin "${kind_link_or_path}" "${KINDURL}"
+    fi
+}
+
+download-helm() {
+    HELMVERSION=${HELMVERSION:-v3.17.1}
+    HELMPATH=$(command -v helm || echo)
+    UNAME=$(uname | awk '{print tolower($0)}')
+    ARCH=$(uname -m)
+    if [ "${ARCH}" = "x86_64" ]; then
+        ARCH=amd64
+    elif [ "${ARCH}" = "aarch64" ]; then
+        ARCH=arm64
+    fi
+
+    echo "Ensuring helm version $HELMVERSION is available..." 
+    HELMURL="https://get.helm.sh/helm-${HELMVERSION}-${UNAME}-${ARCH}.tar.gz"
+
+    local helm_link_or_path=$1
+    # Ensure helm exists at the expected version
+    if [ -x "${HELMPATH}" ] && "${HELMPATH}" version | grep -q "${HELMSION}"; then
+        ln -s "${HELMPATH}" "${helm_link_or_path}"
+    else
+        curl -# -f -LO "${HELMURL}"
+        tar zxvf "helm-${HELMVERSION}-${UNAME}-${ARCH}.tar.gz"
+        cp "${UNAME}-${ARCH}"/helm "${helm_link_or_path}"
+        chmod +x "${helm_link_or_path}"
+        ls -l "${helm_link_or_path}"
     fi
 }
 
 download-kubectl() {
-    KUBECTLVERSION=v1.21.1
+    WANTVERSION=${KUBECTLVERSION:-v1.30.10}
     KUBECTLPATH=$(command -v kubectl || echo)
     UNAME=$(uname | awk '{print tolower($0)}')
-    KUBECTLURL="https://storage.googleapis.com/kubernetes-release/release/$KUBECTLVERSION/bin/$UNAME/amd64/kubectl"
+    ARCH=$(uname -m)
+    if [ "${ARCH}" = "x86_64" ]; then
+        ARCH=amd64
+    elif [ "${ARCH}" = "aarch64" ]; then
+        ARCH=arm64
+    fi
 
-    local kubectl_path=$1
+    KUBECTLURL="https://dl.k8s.io/release/$WANTVERSION/bin/$UNAME/$ARCH/kubectl"
+
+    HAVEVERSION=""
+    if [ -x "${KUBECTLPATH}" ]; then
+        HAVEVERSION="$("${KUBECTLPATH}" version --client --output=json | jq -r .clientVersion.gitVersion)"
+    fi
+
+    echo "Want kubectl version: ${WANTVERSION}"
+    echo "Have kubectl version: ${HAVEVERSION}"
+
+    local kubectl_link_or_path=$1
     # Ensure kubectl exists at the expected version
-    if [ -x "${KUBECTLPATH}" ] && "${KUBECTLPATH}" version --short --client=true | grep -q "${KUBECTLVERSION}"; then
-        ln -s "${KUBECTLPATH}" "${kubectl_path}"
+    if [ "${HAVEVERSION}" = "${WANTVERSION}" ]; then
+        ln -s "${KUBECTLPATH}" "${kubectl_link_or_path}"
     else
-        download-bin "${kubectl_path}" "${KUBECTLURL}"
+        download-bin "${kubectl_link_or_path}" "${KUBECTLURL}"
     fi
 }
 
 start-kind-cluster() {
-    K8SIMAGE=kindest/node:v1.21.1@sha256:fae9a58f17f18f06aeac9772ca8b5ac680ebbed985e266f711d936e91d113bad
+    K8SIMAGE=${K8SIMAGE:-kindest/node:v1.30.10}
 
     local kind_path=$1
     local kind_name=$2

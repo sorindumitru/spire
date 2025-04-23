@@ -19,8 +19,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/keymanager/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+	"github.com/spiffe/spire/pkg/common/catalog"
 	"github.com/spiffe/spire/pkg/server/plugin/keymanager"
 	keymanagertest "github.com/spiffe/spire/pkg/server/plugin/keymanager/test"
 	"github.com/spiffe/spire/test/plugintest"
@@ -31,7 +33,7 @@ import (
 
 const (
 	// Defaults used for testing
-	validAccessKeyID     = "AKIAIOSFODNN7EXAMPLE"
+	validAccessKeyID     = "AKIAIOSFODNN7EXAMPLE" //nolint:gosec // This is a fake access key ID only used as test input
 	validSecretAccessKey = "secret"
 	validRegion          = "us-west-2"
 	validServerIDFile    = "server_id_test"
@@ -85,20 +87,23 @@ func TestKeyManagerContract(t *testing.T) {
 		dir := spiretest.TempDir(t)
 		c := clock.NewMock()
 		fakeKMSClient := newKMSClientFake(t, c)
-		fakeSTSClient := newSTSClientFake(t)
+		fakeSTSClient := newSTSClientFake()
 		p := newPlugin(
 			func(aws.Config) (kmsClient, error) { return fakeKMSClient, nil },
 			func(aws.Config) (stsClient, error) { return fakeSTSClient, nil },
 		)
 		km := new(keymanager.V1)
-		keyMetadataFile := filepath.Join(dir, "metadata.json")
+		keyIdentifierFile := filepath.Join(dir, "metadata")
 		if isWindows {
-			keyMetadataFile = filepath.ToSlash(keyMetadataFile)
+			keyIdentifierFile = filepath.ToSlash(keyIdentifierFile)
 		}
-		plugintest.Load(t, builtin(p), km, plugintest.Configuref(`
+		plugintest.Load(t, builtin(p), km, plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
+			plugintest.Configuref(`
 			region = "fake-region"
-			key_metadata_file = %q
-		`, keyMetadataFile))
+			key_identifier_file = %q
+		`, keyIdentifierFile))
 		return km
 	}
 
@@ -127,7 +132,7 @@ func setupTest(t *testing.T) *pluginTest {
 
 	c := clock.NewMock()
 	fakeKMSClient := newKMSClientFake(t, c)
-	fakeSTSClient := newSTSClientFake(t)
+	fakeSTSClient := newSTSClientFake()
 	p := newPlugin(
 		func(aws.Config) (kmsClient, error) { return fakeKMSClient, nil },
 		func(aws.Config) (stsClient, error) { return fakeSTSClient, nil },
@@ -164,42 +169,42 @@ func TestConfigure(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
 				{
 					AliasName: aws.String(aliasName + "01"),
 					KeyID:     aws.String(keyID + "01"),
-					KeySpec:   types.CustomerMasterKeySpecRsa2048,
+					KeySpec:   types.KeySpecRsa2048,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
 				{
 					AliasName: aws.String(aliasName + "02"),
 					KeyID:     aws.String(keyID + "02"),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
 				{
 					AliasName: aws.String(aliasName + "03"),
 					KeyID:     aws.String(keyID + "03"),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
 				{
 					AliasName: aws.String(aliasName + "04"),
 					KeyID:     aws.String(keyID + "04"),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:   types.KeySpecEccNistP384,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
 				{
 					AliasName: aws.String("alias/SPIRE_SERVER/wrong_prefix"),
 					KeyID:     aws.String("foo_id"),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:   types.KeySpecEccNistP384,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -210,38 +215,70 @@ func TestConfigure(t *testing.T) {
 			configureRequest: configureRequestWithDefaults(t),
 		},
 		{
+			name:             "pass with key identifier file",
+			configureRequest: configureRequestWithVars("", "secret_access_key", "region", KeyIdentifierFile, getKeyIdentifierFile(t), ""),
+		},
+		{
+			name:             "pass with key identifier value",
+			configureRequest: configureRequestWithVars("", "secret_access_key", "region", KeyIdentifierValue, "server-id", ""),
+		},
+		{
 			name:             "missing access key id",
-			configureRequest: configureRequestWithVars("", "secret_access_key", "region", getKeyMetadataFile(t), ""),
+			configureRequest: configureRequestWithVars("", "secret_access_key", "region", KeyIdentifierFile, getKeyIdentifierFile(t), ""),
 		},
 		{
 			name:             "missing secret access key",
-			configureRequest: configureRequestWithVars("access_key", "", "region", getKeyMetadataFile(t), ""),
+			configureRequest: configureRequestWithVars("access_key", "", "region", KeyIdentifierFile, getKeyIdentifierFile(t), ""),
 		},
 		{
 			name:             "missing region",
-			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "", getKeyMetadataFile(t), ""),
+			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "", KeyIdentifierFile, getKeyIdentifierFile(t), ""),
 			err:              "configuration is missing a region",
 			code:             codes.InvalidArgument,
 		},
 		{
-			name:             "missing server id file path",
-			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "region", "", ""),
-			err:              "configuration is missing server id file path",
+			name:             "missing key identifier file and key identifier value",
+			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, "", ""),
+			err:              "configuration requires a key identifier file or a key identifier value",
+			code:             codes.InvalidArgument,
+		},
+		{
+			name:             "both key identifier file and key identifier value",
+			configureRequest: configureRequestWithString(`{"access_key_id":"access_key_id","secret_access_key":"secret_access_key","region":"region","key_identifier_file":"key_identifier_file","key_identifier_value":"key_identifier_value","key_policy_file":""}`),
+			err:              "configuration can't have a key identifier file and a key identifier value at the same time",
+			code:             codes.InvalidArgument,
+		},
+		{
+			name:             "key identifier value invalid character",
+			configureRequest: configureRequestWithString(`{"access_key_id":"access_key_id","secret_access_key":"secret_access_key","region":"region","key_identifier_value":"@key_identifier_value@","key_policy_file":""}`),
+			err:              "Key identifier must contain only alphanumeric characters, forward slashes (/), underscores (_), and dashes (-)",
+			code:             codes.InvalidArgument,
+		},
+		{
+			name:             "key identifier value too long",
+			configureRequest: configureRequestWithString(`{"access_key_id":"access_key_id","secret_access_key":"secret_access_key","region":"region","key_identifier_value":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","key_policy_file":""}`),
+			err:              "Key identifier must not be longer than 256 characters",
+			code:             codes.InvalidArgument,
+		},
+		{
+			name:             "key identifier value starts with illegal alias",
+			configureRequest: configureRequestWithString(`{"access_key_id":"access_key_id","secret_access_key":"secret_access_key","region":"region","key_identifier_value":"alias/aws/key_identifier_value","key_policy_file":""}`),
+			err:              "Key identifier must not start with alias/aws/",
 			code:             codes.InvalidArgument,
 		},
 		{
 			name:             "custom policy file does not exists",
-			configureRequest: configureRequestWithVars("access_key", "secret_access_key", "region", getEmptyKeyMetadataFile(t), "non-existent-file.json"),
+			configureRequest: configureRequestWithVars("access_key", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), "non-existent-file.json"),
 			err:              fmt.Sprintf("failed to read file configured in 'key_policy_file': open non-existent-file.json: %s", spiretest.FileNotFound()),
 			code:             codes.Internal,
 		},
 		{
 			name:             "use custom policy file",
-			configureRequest: configureRequestWithVars("access_key", "secret_access_key", "region", getEmptyKeyMetadataFile(t), getCustomPolicyFile(t)),
+			configureRequest: configureRequestWithVars("access_key", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), getCustomPolicyFile(t)),
 		},
 		{
 			name:             "new server id file path",
-			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "region", getEmptyKeyMetadataFile(t), ""),
+			configureRequest: configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), ""),
 		},
 		{
 			name:             "decode error",
@@ -251,21 +288,21 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			name:             "list aliases error",
+			configureRequest: configureRequestWithDefaults(t),
 			err:              "failed to fetch aliases: fake list aliases error",
 			code:             codes.Internal,
-			configureRequest: configureRequestWithDefaults(t),
 			listAliasesErr:   "fake list aliases error",
 		},
 		{
 			name:             "describe key error",
+			configureRequest: configureRequestWithDefaults(t),
 			err:              "failed to describe key: describe key error",
 			code:             codes.Internal,
-			configureRequest: configureRequestWithDefaults(t),
 			fakeEntries: []fakeKeyEntry{
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa2048,
+					KeySpec:   types.KeySpecRsa2048,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -274,9 +311,9 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			name:             "unsupported key error",
+			configureRequest: configureRequestWithDefaults(t),
 			err:              "unsupported key spec: unsupported key spec",
 			code:             codes.Internal,
-			configureRequest: configureRequestWithDefaults(t),
 			fakeEntries: []fakeKeyEntry{
 				{
 					AliasName: aws.String(aliasName),
@@ -289,14 +326,14 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			name:             "get public key error",
+			configureRequest: configureRequestWithDefaults(t),
 			err:              "failed to fetch aliases: failed to get public key: get public key error",
 			code:             codes.Internal,
-			configureRequest: configureRequestWithDefaults(t),
 			fakeEntries: []fakeKeyEntry{
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -306,21 +343,20 @@ func TestConfigure(t *testing.T) {
 
 		{
 			name:             "disabled key",
+			configureRequest: configureRequestWithDefaults(t),
 			err:              "failed to fetch aliases: found disabled SPIRE key: \"arn:aws:kms:region:1234:key/abcd-fghi\", alias: \"arn:aws:kms:region:1234:alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/spireKeyID\"",
 			code:             codes.FailedPrecondition,
-			configureRequest: configureRequestWithDefaults(t),
 			fakeEntries: []fakeKeyEntry{
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   false,
 					PublicKey: []byte("foo"),
 				},
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -382,7 +418,7 @@ func TestGenerateKey(t *testing.T) {
 				KeyId:   spireKeyID,
 				KeyType: keymanagerv1.KeyType_EC_P256,
 			},
-			configureReq:      configureRequestWithVars("access_key_id", "secret_access_key", "region", getEmptyKeyMetadataFile(t), ""),
+			configureReq:      configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), ""),
 			instanceAccountID: "example-account-id",
 			instanceRoleARN:   "arn:aws:sts::example-account-id:assumed-role/example-assumed-role-name/example-instance-id",
 			expectedKeyPolicy: &roleBasedPolicy,
@@ -393,7 +429,7 @@ func TestGenerateKey(t *testing.T) {
 				KeyId:   spireKeyID,
 				KeyType: keymanagerv1.KeyType_EC_P256,
 			},
-			configureReq:      configureRequestWithVars("access_key_id", "secret_access_key", "region", getEmptyKeyMetadataFile(t), getCustomPolicyFile(t)),
+			configureReq:      configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), getCustomPolicyFile(t)),
 			instanceAccountID: "example-account-id",
 			instanceRoleARN:   "arn:aws:sts::example-account-id:assumed-role/example-assumed-role-name/example-instance-id",
 			expectedKeyPolicy: &customPolicy,
@@ -408,7 +444,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName:            aws.String(aliasName),
 					KeyID:                aws.String(keyID),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					AliasLastUpdatedDate: &unixEpoch,
@@ -435,7 +471,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/bundle-acme-foo_2ebar_2brsa"),
 					KeyID:                aws.String(keyID),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					AliasLastUpdatedDate: &unixEpoch,
@@ -524,7 +560,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -551,7 +587,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -579,7 +615,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -607,7 +643,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -635,7 +671,7 @@ func TestGenerateKey(t *testing.T) {
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:   types.KeySpecEccNistP256,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -665,7 +701,7 @@ func TestGenerateKey(t *testing.T) {
 				KeyId:   spireKeyID,
 				KeyType: keymanagerv1.KeyType_EC_P256,
 			},
-			configureReq:         configureRequestWithVars("access_key_id", "secret_access_key", "region", getEmptyKeyMetadataFile(t), ""),
+			configureReq:         configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), ""),
 			getCallerIdentityErr: "something went wrong",
 			err:                  "cannot get caller identity: something went wrong",
 			code:                 codes.Internal,
@@ -676,12 +712,13 @@ func TestGenerateKey(t *testing.T) {
 				KeyId:   spireKeyID,
 				KeyType: keymanagerv1.KeyType_EC_P256,
 			},
-			configureReq:    configureRequestWithVars("access_key_id", "secret_access_key", "region", getEmptyKeyMetadataFile(t), ""),
+			configureReq:    configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getEmptyKeyIdentifierFile(t), ""),
 			instanceRoleARN: "arn:aws:sts::example-account-id",
 			logs: []spiretest.LogEntry{
 				{
 					Level:   logrus.WarnLevel,
-					Message: "In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instace.",
+					Message: "In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instance.",
+					Data:    logrus.Fields{reasonTag: `incomplete resource, expected 'resource-type/resource-id' but got "example-account-id"`},
 				},
 			},
 		},
@@ -691,17 +728,17 @@ func TestGenerateKey(t *testing.T) {
 				KeyId:   spireKeyID,
 				KeyType: keymanagerv1.KeyType_EC_P256,
 			},
-			configureReq:    configureRequestWithVars("access_key_id", "secret_access_key", "region", getKeyMetadataFile(t), ""),
+			configureReq:    configureRequestWithVars("access_key_id", "secret_access_key", "region", KeyIdentifierFile, getKeyIdentifierFile(t), ""),
 			instanceRoleARN: "arn:aws:sts::example-account-id:user/development",
 			logs: []spiretest.LogEntry{
 				{
 					Level:   logrus.WarnLevel,
-					Message: "In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instace.",
+					Message: "In a future version of SPIRE, it will be mandatory for the SPIRE servers to assume an AWS IAM Role when using the default AWS KMS key policy. Please assign an IAM role to this SPIRE Server instance.",
+					Data:    logrus.Fields{reasonTag: `arn does not contain an assumed role: "arn:aws:sts::example-account-id:user/development"`},
 				},
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1024,7 +1061,6 @@ func TestSignData(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1060,11 +1096,10 @@ func TestGetPublicKey(t *testing.T) {
 			name:  "existing key",
 			keyID: spireKeyID,
 			fakeEntries: []fakeKeyEntry{
-
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -1077,7 +1112,7 @@ func TestGetPublicKey(t *testing.T) {
 				{
 					AliasName: aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/bundle-acme-foo_2ebar_2brsa"),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -1095,7 +1130,6 @@ func TestGetPublicKey(t *testing.T) {
 			code: codes.InvalidArgument,
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1127,11 +1161,10 @@ func TestGetPublicKeys(t *testing.T) {
 		{
 			name: "existing key",
 			fakeEntries: []fakeKeyEntry{
-
 				{
 					AliasName: aws.String(aliasName),
 					KeyID:     aws.String(keyID),
-					KeySpec:   types.CustomerMasterKeySpecRsa4096,
+					KeySpec:   types.KeySpecRsa4096,
 					Enabled:   true,
 					PublicKey: []byte("foo"),
 				},
@@ -1141,7 +1174,6 @@ func TestGetPublicKeys(t *testing.T) {
 			name: "non existing keys",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1183,7 +1215,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1198,7 +1230,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1207,7 +1239,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_02"),
 					KeyID:                aws.String("key_id_02"),
-					KeySpec:              types.CustomerMasterKeySpecRsa2048,
+					KeySpec:              types.KeySpecRsa2048,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1216,7 +1248,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server_id/id_03"),
 					KeyID:                aws.String("key_id_03"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1225,7 +1257,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_04"),
 					KeyID:                aws.String("key_id_04"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1234,7 +1266,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/another_server_id/id_05"),
 					KeyID:                aws.String("key_id_05"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1243,7 +1275,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated"),
 					KeyID:                aws.String("key_id_06"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1252,7 +1284,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated/unrelated/id_07"),
 					KeyID:                aws.String("key_id_07"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1261,7 +1293,7 @@ func TestRefreshAliases(t *testing.T) {
 				{
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_08"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1313,7 +1345,6 @@ func TestRefreshAliases(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1382,7 +1413,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1391,7 +1422,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_02"),
 					KeyID:                aws.String("key_id_02"),
-					KeySpec:              types.CustomerMasterKeySpecRsa2048,
+					KeySpec:              types.KeySpecRsa2048,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1400,7 +1431,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server_id/id_03"),
 					KeyID:                aws.String("key_id_03"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1409,7 +1440,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_04"),
 					KeyID:                aws.String("key_id_04"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1418,7 +1449,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/another_server/id_05"),
 					KeyID:                aws.String("key_id_05"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1427,7 +1458,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated"),
 					KeyID:                aws.String("key_id_06"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1436,7 +1467,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated/unrelated/id_07"),
 					KeyID:                aws.String("key_id_07"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1445,7 +1476,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_08"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1454,7 +1485,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server_id/id_09"),
 					KeyID:                aws.String("key_id_09"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              false,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1502,7 +1533,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1519,7 +1550,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1536,7 +1567,7 @@ func TestDisposeAliases(t *testing.T) {
 				{
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server/id_01"),
 					KeyID:                aws.String("key_id_01"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1545,7 +1576,6 @@ func TestDisposeAliases(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1624,7 +1654,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_01"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1634,7 +1664,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_02"),
 					KeyID:                aws.String("key_id_02"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa2048,
+					KeySpec:              types.KeySpecRsa2048,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1644,7 +1674,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/another_server_id/id_03"),
 					KeyID:                aws.String("key_id_03"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1654,7 +1684,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_04"),
 					KeyID:                aws.String("key_id_04"),
 					Description:          aws.String("SPIRE_SERVER_KEY/another_td"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1664,7 +1694,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/another_td/another_server_id/id_05"),
 					KeyID:                aws.String("key_id_05"),
 					Description:          aws.String("SPIRE_SERVER_KEY/another_td"),
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1674,7 +1704,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated"),
 					KeyID:                aws.String("key_id_06"),
 					Description:          nil,
-					KeySpec:              types.CustomerMasterKeySpecEccNistP256,
+					KeySpec:              types.KeySpecEccNistP256,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1684,7 +1714,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/unrelated/unrelated/id_07"),
 					KeyID:                aws.String("key_id_07"),
 					Description:          nil,
-					KeySpec:              types.CustomerMasterKeySpecEccNistP384,
+					KeySpec:              types.KeySpecEccNistP384,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1694,7 +1724,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_08"),
 					Description:          nil,
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1704,7 +1734,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            aws.String("alias/SPIRE_SERVER/test_example_org/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/id_01"),
 					KeyID:                aws.String("key_id_09"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1714,7 +1744,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_10"),
 					Description:          aws.String("SPIRE_SERVER_KEY/another_td"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1724,7 +1754,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_11"),
 					Description:          aws.String("SPIRE_SERVER_KEY/"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1734,7 +1764,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_12"),
 					Description:          aws.String("SPIRE_SERVER_KEY"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1744,7 +1774,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_13"),
 					Description:          aws.String("test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1754,7 +1784,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_14"),
 					Description:          aws.String("unrelated"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1764,7 +1794,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_15"),
 					Description:          aws.String("disabled key"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              false,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1774,7 +1804,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_16"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org/extra"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1840,7 +1870,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_01"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1858,7 +1888,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_01"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1876,7 +1906,7 @@ func TestDisposeKeys(t *testing.T) {
 					AliasName:            nil,
 					KeyID:                aws.String("key_id_01"),
 					Description:          aws.String("SPIRE_SERVER_KEY/test_example_org"),
-					KeySpec:              types.CustomerMasterKeySpecRsa4096,
+					KeySpec:              types.KeySpecRsa4096,
 					Enabled:              true,
 					PublicKey:            []byte("foo"),
 					CreationDate:         &unixEpoch,
@@ -1885,7 +1915,6 @@ func TestDisposeKeys(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			// setup
 			ts := setupTest(t)
@@ -1934,52 +1963,62 @@ func TestDisposeKeys(t *testing.T) {
 
 func configureRequestWithString(config string) *configv1.ConfigureRequest {
 	return &configv1.ConfigureRequest{
-		HclConfiguration: config,
+		CoreConfiguration: &configv1.CoreConfiguration{TrustDomain: "test.example.org"},
+		HclConfiguration:  config,
 	}
 }
 
-func configureRequestWithVars(accessKeyID, secretAccessKey, region, keyMetadataFile, keyPolicyFile string) *configv1.ConfigureRequest {
+type KeyIdentifierConfigName string
+
+const (
+	KeyIdentifierFile  KeyIdentifierConfigName = "key_identifier_file"
+	KeyIdentifierValue KeyIdentifierConfigName = "key_identifier_value"
+)
+
+func configureRequestWithVars(accessKeyID, secretAccessKey, region, keyIdentifierConfigName KeyIdentifierConfigName, keyIdentifierConfigValue, keyPolicyFile string) *configv1.ConfigureRequest {
 	return &configv1.ConfigureRequest{
+		CoreConfiguration: &configv1.CoreConfiguration{TrustDomain: "test.example.org"},
 		HclConfiguration: fmt.Sprintf(`{
 			"access_key_id": "%s",
 			"secret_access_key": "%s",
 			"region":"%s",
-			"key_metadata_file":"%s",
+			"%s":"%s",
 			"key_policy_file":"%s"
 			}`,
 			accessKeyID,
 			secretAccessKey,
 			region,
-			keyMetadataFile,
+			keyIdentifierConfigName,
+			keyIdentifierConfigValue,
 			keyPolicyFile),
-		CoreConfiguration: &configv1.CoreConfiguration{TrustDomain: "test.example.org"},
 	}
 }
 
 func configureRequestWithDefaults(t *testing.T) *configv1.ConfigureRequest {
 	return &configv1.ConfigureRequest{
-		HclConfiguration:  serializedConfiguration(validAccessKeyID, validSecretAccessKey, validRegion, getKeyMetadataFile(t)),
 		CoreConfiguration: &configv1.CoreConfiguration{TrustDomain: "test.example.org"},
+		HclConfiguration:  serializedConfiguration(validAccessKeyID, validSecretAccessKey, validRegion, KeyIdentifierFile, getKeyIdentifierFile(t)),
 	}
 }
 
-func serializedConfiguration(accessKeyID, secretAccessKey, region string, keyMetadataFile string) string {
+func serializedConfiguration(accessKeyID, secretAccessKey, region string, keyIdentifierConfigName KeyIdentifierConfigName, keyIdentifierConfigValue string) string {
 	return fmt.Sprintf(`{
 		"access_key_id": "%s",
 		"secret_access_key": "%s",
 		"region":"%s",
-		"key_metadata_file":"%s"
+		"%s":"%s"
 		}`,
 		accessKeyID,
 		secretAccessKey,
 		region,
-		keyMetadataFile)
+		keyIdentifierConfigName,
+		keyIdentifierConfigValue)
 }
 
-func getKeyMetadataFile(t *testing.T) string {
+func getKeyIdentifierFile(t *testing.T) string {
 	tempDir := t.TempDir()
 	tempFilePath := path.Join(tempDir, validServerIDFile)
-	err := os.WriteFile(tempFilePath, []byte(validServerID), 0600)
+	err := os.WriteFile(tempFilePath, []byte(validServerID), 0o600)
 	if err != nil {
 		t.Error(err)
 	}
@@ -1989,19 +2028,19 @@ func getKeyMetadataFile(t *testing.T) string {
 	return tempFilePath
 }
 
-func getEmptyKeyMetadataFile(t *testing.T) string {
+func getEmptyKeyIdentifierFile(t *testing.T) string {
 	tempDir := t.TempDir()
-	keyMetadataFile := path.Join(tempDir, validServerIDFile)
+	keyIdentifierFile := path.Join(tempDir, validServerIDFile)
 	if isWindows {
-		keyMetadataFile = filepath.ToSlash(keyMetadataFile)
+		keyIdentifierFile = filepath.ToSlash(keyIdentifierFile)
 	}
-	return keyMetadataFile
+	return keyIdentifierFile
 }
 
 func getCustomPolicyFile(t *testing.T) string {
 	tempDir := t.TempDir()
 	tempFilePath := path.Join(tempDir, validPolicyFile)
-	err := os.WriteFile(tempFilePath, []byte(customPolicy), 0600)
+	err := os.WriteFile(tempFilePath, []byte(customPolicy), 0o600)
 	if err != nil {
 		t.Error(err)
 	}

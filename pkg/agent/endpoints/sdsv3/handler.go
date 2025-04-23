@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strconv"
 
@@ -14,16 +15,14 @@ import (
 	tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	secret_v3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
-	"github.com/golang/protobuf/ptypes/any"
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire/pkg/agent/api/rpccontext"
 	"github.com/spiffe/spire/pkg/agent/manager/cache"
-	"github.com/spiffe/spire/pkg/common/bundleutil"
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/proto/spire/common"
-	"github.com/zeebo/errs"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -100,8 +99,9 @@ func (h *Handler) StreamSecrets(stream secret_v3.SecretDiscoveryService_StreamSe
 	}()
 
 	var versionCounter int64
-	var versionInfo = strconv.FormatInt(versionCounter, 10)
+	versionInfo := strconv.FormatInt(versionCounter, 10)
 	var lastNonce string
+	var lastNode *core_v3.Node
 	var upd *cache.WorkloadUpdate
 	var lastReq *discovery_v3.DiscoveryRequest
 	for {
@@ -142,11 +142,15 @@ func (h *Handler) StreamSecrets(stream secret_v3.SecretDiscoveryService_StreamSe
 						telemetry.Expect:      versionInfo,
 					}).Error("Client rejected expected version and rolled back")
 				}
+				// If the current request does not contain node information, use the information from a previous request (if any)
+				if newReq.Node == nil {
+					newReq.Node = lastNode
+				}
 			}
 
 			// We need to send updates if the requested resource list has changed
 			// either explicitly, or implicitly because this is the first request.
-			var sendUpdates = lastReq == nil || subListChanged(lastReq.ResourceNames, newReq.ResourceNames)
+			sendUpdates := lastReq == nil || subListChanged(lastReq.ResourceNames, newReq.ResourceNames)
 
 			// save request so that all future workload updates lead to SDS updates for the last request
 			lastReq = newReq
@@ -168,7 +172,9 @@ func (h *Handler) StreamSecrets(stream secret_v3.SecretDiscoveryService_StreamSe
 				continue
 			}
 		case err := <-errch:
-			log.WithError(err).Error("Received error from stream secrets server")
+			if err != nil {
+				log.WithError(err).Error("Received error from stream secrets server")
+			}
 			return err
 		}
 
@@ -190,6 +196,11 @@ func (h *Handler) StreamSecrets(stream secret_v3.SecretDiscoveryService_StreamSe
 
 		// remember the last nonce
 		lastNonce = resp.Nonce
+
+		// Remember Node info if it exists
+		if lastReq.Node != nil {
+			lastNode = lastReq.Node
+		}
 	}
 }
 
@@ -197,7 +208,7 @@ func subListChanged(oldSubs []string, newSubs []string) (b bool) {
 	if len(oldSubs) != len(newSubs) {
 		return true
 	}
-	var subMap = make(map[string]bool)
+	subMap := make(map[string]bool)
 	for _, sub := range oldSubs {
 		subMap[sub] = true
 	}
@@ -267,17 +278,17 @@ func (h *Handler) buildResponse(versionInfo string, req *discovery_v3.DiscoveryR
 	// TODO: verify the type url
 	if upd.Bundle != nil {
 		switch {
-		case returnAllEntries || names[upd.Bundle.TrustDomainID()]:
-			validationContext, err := builder.buildOne(upd.Bundle.TrustDomainID(), upd.Bundle.TrustDomainID())
+		case returnAllEntries || names[upd.Bundle.TrustDomain().IDString()]:
+			validationContext, err := builder.buildOne(upd.Bundle.TrustDomain().IDString(), upd.Bundle.TrustDomain().IDString())
 			if err != nil {
 				return nil, err
 			}
 
-			delete(names, upd.Bundle.TrustDomainID())
+			delete(names, upd.Bundle.TrustDomain().IDString())
 			resp.Resources = append(resp.Resources, validationContext)
 
 		case names[h.c.DefaultBundleName]:
-			validationContext, err := builder.buildOne(h.c.DefaultBundleName, upd.Bundle.TrustDomainID())
+			validationContext, err := builder.buildOne(h.c.DefaultBundleName, upd.Bundle.TrustDomain().IDString())
 			if err != nil {
 				return nil, err
 			}
@@ -297,12 +308,12 @@ func (h *Handler) buildResponse(versionInfo string, req *discovery_v3.DiscoveryR
 	}
 
 	for td, federatedBundle := range upd.FederatedBundles {
-		if returnAllEntries || names[federatedBundle.TrustDomainID()] {
+		if returnAllEntries || names[federatedBundle.TrustDomain().IDString()] {
 			validationContext, err := builder.buildOne(td.IDString(), td.IDString())
 			if err != nil {
 				return nil, err
 			}
-			delete(names, federatedBundle.TrustDomainID())
+			delete(names, federatedBundle.TrustDomain().IDString())
 			resp.Resources = append(resp.Resources, validationContext)
 		}
 	}
@@ -340,27 +351,29 @@ func (h *Handler) triggerReceivedHook() {
 }
 
 type validationContextBuilder interface {
-	buildOne(resourceName, trustDomainID string) (*any.Any, error)
-	buildAll(resourceName string) (*any.Any, error)
+	buildOne(resourceName, trustDomainID string) (*anypb.Any, error)
+	buildAll(resourceName string) (*anypb.Any, error)
 }
 
 func (h *Handler) getValidationContextBuilder(req *discovery_v3.DiscoveryRequest, upd *cache.WorkloadUpdate) (validationContextBuilder, error) {
+	federatedBundles := make(map[spiffeid.TrustDomain]*spiffebundle.Bundle)
+	maps.Copy(federatedBundles, upd.FederatedBundles)
 	if !h.isSPIFFECertValidationDisabled(req) && supportsSPIFFEAuthExtension(req) {
-		return newSpiffeBuilder(upd.Bundle, upd.FederatedBundles)
+		return newSpiffeBuilder(upd.Bundle, federatedBundles)
 	}
 
-	return newRootCABuilder(upd.Bundle, upd.FederatedBundles), nil
+	return newRootCABuilder(upd.Bundle, federatedBundles), nil
 }
 
 type rootCABuilder struct {
-	bundles map[string]*bundleutil.Bundle
+	bundles map[string]*spiffebundle.Bundle
 }
 
-func newRootCABuilder(bundle *bundleutil.Bundle, federatedBundles map[spiffeid.TrustDomain]*bundleutil.Bundle) validationContextBuilder {
-	bundles := make(map[string]*bundleutil.Bundle, len(federatedBundles)+1)
+func newRootCABuilder(bundle *spiffebundle.Bundle, federatedBundles map[spiffeid.TrustDomain]*spiffebundle.Bundle) validationContextBuilder {
+	bundles := make(map[string]*spiffebundle.Bundle, len(federatedBundles)+1)
 	// Only include tdBundle if it is not nil, which shouldn't ever be the case. This is purely defensive.
 	if bundle != nil {
-		bundles[bundle.TrustDomainID()] = bundle
+		bundles[bundle.TrustDomain().IDString()] = bundle
 	}
 
 	for td, federatedBundle := range federatedBundles {
@@ -372,12 +385,12 @@ func newRootCABuilder(bundle *bundleutil.Bundle, federatedBundles map[spiffeid.T
 	}
 }
 
-func (b *rootCABuilder) buildOne(resourceName, trustDomain string) (*any.Any, error) {
+func (b *rootCABuilder) buildOne(resourceName, trustDomain string) (*anypb.Any, error) {
 	bundle, ok := b.bundles[trustDomain]
 	if !ok {
 		return nil, status.Errorf(codes.Internal, "no bundle found for trust domain: %q", trustDomain)
 	}
-	caBytes := pemutil.EncodeCertificates(bundle.RootCAs())
+	caBytes := pemutil.EncodeCertificates(bundle.X509Authorities())
 	return anypb.New(&tls_v3.Secret{
 		Name: resourceName,
 		Type: &tls_v3.Secret_ValidationContext{
@@ -392,37 +405,31 @@ func (b *rootCABuilder) buildOne(resourceName, trustDomain string) (*any.Any, er
 	})
 }
 
-func (b *rootCABuilder) buildAll(resourceName string) (*any.Any, error) {
+func (b *rootCABuilder) buildAll(string) (*anypb.Any, error) {
 	return nil, status.Error(codes.Internal, `unable to use "SPIFFE validator" on Envoy below 1.17`)
 }
 
 type spiffeBuilder struct {
-	bundles map[spiffeid.TrustDomain]*bundleutil.Bundle
+	bundles map[spiffeid.TrustDomain]*spiffebundle.Bundle
 }
 
-func newSpiffeBuilder(tdBundle *bundleutil.Bundle, federatedBundles map[spiffeid.TrustDomain]*bundleutil.Bundle) (validationContextBuilder, error) {
-	bundles := make(map[spiffeid.TrustDomain]*bundleutil.Bundle, len(federatedBundles)+1)
+func newSpiffeBuilder(tdBundle *spiffebundle.Bundle, federatedBundles map[spiffeid.TrustDomain]*spiffebundle.Bundle) (validationContextBuilder, error) {
+	bundles := make(map[spiffeid.TrustDomain]*spiffebundle.Bundle, len(federatedBundles)+1)
 
 	// Only include tdBundle if it is not nil, which shouldn't ever be the case. This is purely defensive.
 	if tdBundle != nil {
-		td, err := spiffeid.TrustDomainFromString(tdBundle.TrustDomainID())
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to parse bundle's trust domain: %v", err)
-		}
-		bundles[td] = tdBundle
+		bundles[tdBundle.TrustDomain()] = tdBundle
 	}
 
 	// Add all federated bundles
-	for td, bundle := range federatedBundles {
-		bundles[td] = bundle
-	}
+	maps.Copy(bundles, federatedBundles)
 
 	return &spiffeBuilder{
 		bundles: bundles,
 	}, nil
 }
 
-func (b *spiffeBuilder) buildOne(resourceName, trustDomainID string) (*any.Any, error) {
+func (b *spiffeBuilder) buildOne(resourceName, trustDomainID string) (*anypb.Any, error) {
 	td, err := spiffeid.TrustDomainFromString(trustDomainID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to parse trustdomain: %v", err)
@@ -432,11 +439,11 @@ func (b *spiffeBuilder) buildOne(resourceName, trustDomainID string) (*any.Any, 
 		return nil, status.Errorf(codes.NotFound, "no bundle found for trust domain: %q", trustDomainID)
 	}
 
-	caBytes := pemutil.EncodeCertificates(bundle.RootCAs())
+	caBytes := pemutil.EncodeCertificates(bundle.X509Authorities())
 	typedConfig, err := anypb.New(&tls_v3.SPIFFECertValidatorConfig{
 		TrustDomains: []*tls_v3.SPIFFECertValidatorConfig_TrustDomain{
 			{
-				Name: td.String(),
+				Name: td.Name(),
 				TrustBundle: &core_v3.DataSource{
 					Specifier: &core_v3.DataSource_InlineBytes{
 						InlineBytes: caBytes,
@@ -462,15 +469,15 @@ func (b *spiffeBuilder) buildOne(resourceName, trustDomainID string) (*any.Any, 
 	})
 }
 
-func (b *spiffeBuilder) buildAll(resourceName string) (*any.Any, error) {
+func (b *spiffeBuilder) buildAll(resourceName string) (*anypb.Any, error) {
 	configTrustDomains := []*tls_v3.SPIFFECertValidatorConfig_TrustDomain{}
 
 	// Create SPIFFE validator config
 	for td, bundle := range b.bundles {
 		// bundle := bundles[td]
-		caBytes := pemutil.EncodeCertificates(bundle.RootCAs())
+		caBytes := pemutil.EncodeCertificates(bundle.X509Authorities())
 		configTrustDomains = append(configTrustDomains, &tls_v3.SPIFFECertValidatorConfig_TrustDomain{
-			Name: td.String(),
+			Name: td.Name(),
 			TrustBundle: &core_v3.DataSource{
 				Specifier: &core_v3.DataSource_InlineBytes{
 					InlineBytes: caBytes,
@@ -509,7 +516,8 @@ func supportsSPIFFEAuthExtension(req *discovery_v3.DiscoveryRequest) bool {
 		version := buildVersion.Version
 		return (version.MajorNumber == 1 && version.MinorNumber > 17) || version.MajorNumber > 1
 	}
-	return false
+	// Support as default except
+	return true
 }
 
 func (h *Handler) isSPIFFECertValidationDisabled(req *discovery_v3.DiscoveryRequest) bool {
@@ -572,7 +580,7 @@ func nextNonce() (string, error) {
 	b := make([]byte, 4)
 	_, err := rand.Read(b)
 	if err != nil {
-		return "", errs.Wrap(err)
+		return "", err
 	}
 	return hex.EncodeToString(b), nil
 }

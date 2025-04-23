@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	prommetrics "github.com/armon/go-metrics/prometheus"
+	prommetrics "github.com/hashicorp/go-metrics/prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -82,6 +82,7 @@ func testPrometheusConfig() *MetricsConfig {
 	return &MetricsConfig{
 		Logger:      l,
 		ServiceName: "foo",
+		TrustDomain: "test.org",
 		FileConfig: FileConfig{
 			// Let prometheus listen on a random port
 			Prometheus: &PrometheusConfig{},

@@ -15,6 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/acmpca"
 	acmpcatypes "github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"github.com/spiffe/spire/pkg/server/plugin/upstreamauthority"
 	"github.com/spiffe/spire/proto/spire/common"
@@ -52,6 +55,9 @@ func TestConfigure(t *testing.T) {
 		expectDescribeErr      error
 		expectConfig           *configuration
 
+		// core config configurations
+		trustDomain string
+
 		// All allowed configurations
 		region                  string
 		endpoint                string
@@ -64,6 +70,7 @@ func TestConfigure(t *testing.T) {
 		{
 			test:                    "success",
 			expectedDescribeStatus:  "ACTIVE",
+			trustDomain:             "example.org",
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
 			caSigningTemplateARN:    validCASigningTemplateARN,
@@ -78,6 +85,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "using default signing algorithm",
+			trustDomain:             "example.org",
 			expectedDescribeStatus:  "ACTIVE",
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -92,6 +100,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "using default signing template ARN",
+			trustDomain:             "example.org",
 			expectedDescribeStatus:  "ACTIVE",
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -106,6 +115,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "DISABLED template",
+			trustDomain:             "example.org",
 			expectedDescribeStatus:  "DISABLED",
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -121,6 +131,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "Describe certificate fails",
+			trustDomain:             "example.org",
 			expectDescribeErr:       awsErr("Internal", "some error", errors.New("oh no")),
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -133,6 +144,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "Invalid supplemental bundle Path",
+			trustDomain:             "example.org",
 			expectedDescribeStatus:  "ACTIVE",
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -145,6 +157,7 @@ func TestConfigure(t *testing.T) {
 		},
 		{
 			test:                    "Missing region",
+			trustDomain:             "example.org",
 			expectedDescribeStatus:  "ACTIVE",
 			certificateAuthorityARN: validCertificateAuthorityARN,
 			caSigningTemplateARN:    validCASigningTemplateARN,
@@ -152,10 +165,11 @@ func TestConfigure(t *testing.T) {
 			assumeRoleARN:           validAssumeRoleARN,
 			supplementalBundlePath:  validSupplementalBundlePath,
 			expectCode:              codes.InvalidArgument,
-			expectMsgPrefix:         "configuration is missing a region",
+			expectMsgPrefix:         "plugin configuration is missing the region",
 		},
 		{
 			test:                   "Missing certificate ARN",
+			trustDomain:            "example.org",
 			expectedDescribeStatus: "ACTIVE",
 			region:                 validRegion,
 			caSigningTemplateARN:   validCASigningTemplateARN,
@@ -163,18 +177,20 @@ func TestConfigure(t *testing.T) {
 			assumeRoleARN:          validAssumeRoleARN,
 			supplementalBundlePath: validSupplementalBundlePath,
 			expectCode:             codes.InvalidArgument,
-			expectMsgPrefix:        "configuration is missing a certificate authority ARN",
+			expectMsgPrefix:        "plugin configuration is missing the certificate_authority_arn",
 		},
 		{
-			test: "Malformed config",
+			test:        "Malformed config",
+			trustDomain: "example.org",
 			overrideConfig: `{
 badjson
 }`,
 			expectCode:      codes.InvalidArgument,
-			expectMsgPrefix: "unable to decode configuration:",
+			expectMsgPrefix: "plugin configuration is malformed",
 		},
 		{
 			test:                    "Fail to create client",
+			trustDomain:             "example.org",
 			newClientErr:            awsErr("MissingEndpoint", "'Endpoint' configuration is required for this service", nil),
 			region:                  validRegion,
 			certificateAuthorityARN: validCertificateAuthorityARN,
@@ -186,7 +202,6 @@ badjson
 			expectMsgPrefix:         "failed to create client: MissingEndpoint: 'Endpoint' configuration is required for this service",
 		},
 	} {
-		tt := tt
 		t.Run(tt.test, func(t *testing.T) {
 			client := &pcaClientFake{t: t}
 			clock := clock.NewMock()
@@ -195,6 +210,12 @@ badjson
 
 			options := []plugintest.Option{
 				plugintest.CaptureConfigureError(&err),
+			}
+
+			if tt.trustDomain != "" {
+				options = append(options, plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString(tt.trustDomain),
+				}))
 			}
 
 			if tt.overrideConfig != "" {
@@ -250,7 +271,7 @@ func TestMintX509CA(t *testing.T) {
 		return csr
 	}
 
-	endcodeCSR := func(csr []byte) *bytes.Buffer {
+	encodeCSR := func(csr []byte) *bytes.Buffer {
 		encodedCsr := new(bytes.Buffer)
 		err := pem.Encode(encodedCsr, &pem.Block{
 			Type:  csrRequestType,
@@ -277,8 +298,9 @@ func TestMintX509CA(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		test   string
-		config *Configuration
+		test        string
+		trustDomain string
+		config      *Configuration
 
 		client *pcaClientFake
 
@@ -292,21 +314,27 @@ func TestMintX509CA(t *testing.T) {
 		getCertificateErr       error
 		expectMsgPrefix         string
 		expectX509CA            []*x509.Certificate
-		expectX509Authorities   []*x509.Certificate
+		expectX509Authorities   []*x509certificate.X509Authority
 		expectTTL               time.Duration
 	}{
 		{
-			test:                    "Successful mint",
-			config:                  successConfig,
-			csr:                     makeCSR("spiffe://example.com/foo"),
-			preferredTTL:            300 * time.Second,
-			expectX509CA:            []*x509.Certificate{expectCert, intermediateCert},
-			expectX509Authorities:   []*x509.Certificate{bundleCert},
+			test:         "Successful mint",
+			trustDomain:  "example.org",
+			config:       successConfig,
+			csr:          makeCSR("spiffe://example.com/foo"),
+			preferredTTL: 300 * time.Second,
+			expectX509CA: []*x509.Certificate{expectCert, intermediateCert},
+			expectX509Authorities: []*x509certificate.X509Authority{
+				{
+					Certificate: bundleCert,
+				},
+			},
 			getCertificateCert:      encodedCert.String(),
 			getCertificateCertChain: encodedCertChain.String(),
 		},
 		{
-			test: "With supplemental bundle",
+			test:        "With supplemental bundle",
+			trustDomain: "example.org",
 			config: &Configuration{
 				Region:                  validRegion,
 				CertificateAuthorityARN: validCertificateAuthorityARN,
@@ -315,15 +343,23 @@ func TestMintX509CA(t *testing.T) {
 				AssumeRoleARN:           validAssumeRoleARN,
 				SupplementalBundlePath:  supplementalBundlePath,
 			},
-			csr:                     makeCSR("spiffe://example.com/foo"),
-			preferredTTL:            300 * time.Second,
-			expectX509CA:            []*x509.Certificate{expectCert, intermediateCert},
-			expectX509Authorities:   []*x509.Certificate{bundleCert, supplementalCert[0]},
+			csr:          makeCSR("spiffe://example.com/foo"),
+			preferredTTL: 300 * time.Second,
+			expectX509CA: []*x509.Certificate{expectCert, intermediateCert},
+			expectX509Authorities: []*x509certificate.X509Authority{
+				{
+					Certificate: bundleCert,
+				},
+				{
+					Certificate: supplementalCert[0],
+				},
+			},
 			getCertificateCert:      encodedCert.String(),
 			getCertificateCertChain: encodedCertChain.String(),
 		},
 		{
 			test:            "Issuance fails",
+			trustDomain:     "example.org",
 			config:          successConfig,
 			csr:             makeCSR("spiffe://example.com/foo"),
 			preferredTTL:    300 * time.Second,
@@ -333,6 +369,7 @@ func TestMintX509CA(t *testing.T) {
 		},
 		{
 			test:            "Issuance wait fails",
+			trustDomain:     "example.org",
 			config:          successConfig,
 			csr:             makeCSR("spiffe://example.com/foo"),
 			preferredTTL:    300 * time.Second,
@@ -342,35 +379,37 @@ func TestMintX509CA(t *testing.T) {
 		},
 		{
 			test:              "Get certificate fails",
+			trustDomain:       "example.org",
 			config:            successConfig,
 			csr:               makeCSR("spiffe://example.com/foo"),
 			preferredTTL:      300 * time.Second,
 			getCertificateErr: awsErr("Internal", "some error", errors.New("oh no")),
 			expectCode:        codes.Internal,
-			expectMsgPrefix:   "upstreamauthority(aws_pca): failed to get cerficates: Internal: some error\ncaused by: oh no",
+			expectMsgPrefix:   "upstreamauthority(aws_pca): failed to get certificates: Internal: some error\ncaused by: oh no",
 		},
 		{
 			test:                    "Fails to parse certificate from GetCertificate",
+			trustDomain:             "example.org",
 			config:                  successConfig,
 			csr:                     makeCSR("spiffe://example.com/foo"),
 			preferredTTL:            300 * time.Second,
-			getCertificateCert:      "no a certificate",
+			getCertificateCert:      "not a certificate",
 			getCertificateCertChain: encodedCertChain.String(),
 			expectCode:              codes.Internal,
 			expectMsgPrefix:         "upstreamauthority(aws_pca): failed to parse certificate from response: no PEM blocks",
 		},
 		{
 			test:                    "Fails to parse certificate chain from GetCertificate",
+			trustDomain:             "example.org",
 			config:                  successConfig,
 			csr:                     makeCSR("spiffe://example.com/foo"),
 			preferredTTL:            300 * time.Second,
 			getCertificateCert:      encodedCert.String(),
-			getCertificateCertChain: "no a cert chain",
+			getCertificateCertChain: "not a cert chain",
 			expectCode:              codes.Internal,
 			expectMsgPrefix:         "upstreamauthority(aws_pca): failed to parse certificate chain from response: no PEM blocks",
 		},
 	} {
-		tt := tt
 		t.Run(tt.test, func(t *testing.T) {
 			client := &pcaClientFake{t: t}
 			clk := clock.NewMock()
@@ -385,12 +424,15 @@ func TestMintX509CA(t *testing.T) {
 
 			ua := new(upstreamauthority.V1)
 			plugintest.Load(t, builtin(p), ua,
+				plugintest.CoreConfig(catalog.CoreConfig{
+					TrustDomain: spiffeid.RequireTrustDomainFromString(tt.trustDomain),
+				}),
 				plugintest.ConfigureJSON(tt.config),
 			)
 
 			var expectPem []byte
 			if len(tt.csr) > 0 {
-				expectPem = endcodeCSR(tt.csr).Bytes()
+				expectPem = encodeCSR(tt.csr).Bytes()
 			}
 
 			// Setup expected responses and verify parameters to AWS client
@@ -408,7 +450,7 @@ func TestMintX509CA(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.expectX509CA, x509CA, "unexpected X509CA")
-			assert.Equal(t, tt.expectX509Authorities, x509Authorities, "unexected authorities")
+			assert.Equal(t, tt.expectX509Authorities, x509Authorities, "unexpected authorities")
 
 			// Plugin does not support streaming back changes so assert the
 			// stream returns EOF.
@@ -433,6 +475,9 @@ func TestPublishJWTKey(t *testing.T) {
 	var err error
 	plugintest.Load(t, builtin(p), ua,
 		plugintest.CaptureConfigureError(&err),
+		plugintest.CoreConfig(catalog.CoreConfig{
+			TrustDomain: spiffeid.RequireTrustDomainFromString("example.org"),
+		}),
 		plugintest.ConfigureJSON(&Configuration{
 			Region:                  validRegion,
 			CertificateAuthorityARN: validCertificateAuthorityARN,
@@ -482,7 +527,7 @@ func setupIssueCertificate(client *pcaClientFake, clk clock.Clock, csr []byte, e
 			Value: aws.Int64(clk.Now().Add(time.Second * testTTL).Unix()),
 		},
 	}
-	client.issueCertifcateErr = err
+	client.issueCertificateErr = err
 	client.issueCertificateOutput = &acmpca.IssueCertificateOutput{
 		CertificateArn: aws.String("certificateArn"),
 	}

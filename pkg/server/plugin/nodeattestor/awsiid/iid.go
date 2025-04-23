@@ -5,12 +5,16 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +27,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/fullsailor/pkcs7"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -31,6 +36,7 @@ import (
 	"github.com/spiffe/spire/pkg/common/agentpathtemplate"
 	"github.com/spiffe/spire/pkg/common/catalog"
 	caws "github.com/spiffe/spire/pkg/common/plugin/aws"
+	"github.com/spiffe/spire/pkg/common/pluginconf"
 	nodeattestorbase "github.com/spiffe/spire/pkg/server/plugin/nodeattestor/base"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -46,6 +52,15 @@ var (
 				"running",
 			},
 		},
+	}
+
+	defaultPartition = "aws"
+	// No constant was found in the sdk, using the list of partitions defined on
+	// the page https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html
+	partitions = []string{
+		defaultPartition,
+		"aws-cn",
+		"aws-us-gov",
 	}
 )
 
@@ -87,10 +102,12 @@ type IIDAttestorPlugin struct {
 	mtx     sync.RWMutex
 	clients *clientsCache
 
+	orgValidation *orgValidator
+
 	// test hooks
 	hooks struct {
-		getAWSCAPublicKey func() (*rsa.PublicKey, error)
-		getenv            func(string) string
+		getAWSCACertificate func(string, PublicKeyType) (*x509.Certificate, error)
+		getenv              func(string) string
 	}
 
 	log hclog.Logger
@@ -99,21 +116,71 @@ type IIDAttestorPlugin struct {
 // IIDAttestorConfig holds hcl configuration for IID attestor plugin
 type IIDAttestorConfig struct {
 	SessionConfig                   `hcl:",squash"`
-	SkipBlockDevice                 bool     `hcl:"skip_block_device"`
-	DisableInstanceProfileSelectors bool     `hcl:"disable_instance_profile_selectors"`
-	LocalValidAcctIDs               []string `hcl:"account_ids_for_local_validation"`
-	AgentPathTemplate               string   `hcl:"agent_path_template"`
-	AssumeRole                      string   `hcl:"assume_role"`
+	SkipBlockDevice                 bool                 `hcl:"skip_block_device"`
+	DisableInstanceProfileSelectors bool                 `hcl:"disable_instance_profile_selectors"`
+	LocalValidAcctIDs               []string             `hcl:"account_ids_for_local_validation"`
+	AgentPathTemplate               string               `hcl:"agent_path_template"`
+	AssumeRole                      string               `hcl:"assume_role"`
+	Partition                       string               `hcl:"partition"`
+	ValidateOrgAccountID            *orgValidationConfig `hcl:"verify_organization"`
 	pathTemplate                    *agentpathtemplate.Template
 	trustDomain                     spiffeid.TrustDomain
-	awsCAPublicKey                  *rsa.PublicKey
+	getAWSCACertificate             func(string, PublicKeyType) (*x509.Certificate, error)
+}
+
+func (p *IIDAttestorPlugin) buildConfig(coreConfig catalog.CoreConfig, hclText string, status *pluginconf.Status) *IIDAttestorConfig {
+	newConfig := new(IIDAttestorConfig)
+	if err := hcl.Decode(newConfig, hclText); err != nil {
+		status.ReportErrorf("unable to decode configuration: %v", err)
+		return nil
+	}
+
+	// Function to get the AWS CA certificate. We do this lazily on configure so deployments
+	// not using this plugin don't pay for parsing it on startup. This
+	// operation should not fail, but we check the return value just in case.
+	newConfig.getAWSCACertificate = p.hooks.getAWSCACertificate
+
+	if err := newConfig.Validate(p.hooks.getenv(accessKeyIDVarName), p.hooks.getenv(secretAccessKeyVarName)); err != nil {
+		status.ReportError(err.Error())
+	}
+
+	newConfig.trustDomain = coreConfig.TrustDomain
+
+	newConfig.pathTemplate = defaultAgentPathTemplate
+	if len(newConfig.AgentPathTemplate) > 0 {
+		tmpl, err := agentpathtemplate.Parse(newConfig.AgentPathTemplate)
+		if err != nil {
+			status.ReportErrorf("failed to parse agent svid template: %q", newConfig.AgentPathTemplate)
+		} else {
+			newConfig.pathTemplate = tmpl
+		}
+	}
+
+	if newConfig.Partition == "" {
+		newConfig.Partition = defaultPartition
+	}
+
+	if !isValidAWSPartition(newConfig.Partition) {
+		status.ReportErrorf("invalid partition %q, must be one of: %v", newConfig.Partition, partitions)
+	}
+
+	// Check if Feature flag for account belongs to organization is enabled.
+	if newConfig.ValidateOrgAccountID != nil {
+		err := validateOrganizationConfig(newConfig)
+		if err != nil {
+			status.ReportError(err.Error())
+		}
+	}
+
+	return newConfig
 }
 
 // New creates a new IIDAttestorPlugin.
 func New() *IIDAttestorPlugin {
 	p := &IIDAttestorPlugin{}
+	p.orgValidation = newOrganizationValidationBase(&orgValidationConfig{})
 	p.clients = newClientsCache(defaultNewClientCallback)
-	p.hooks.getAWSCAPublicKey = getAWSCAPublicKey
+	p.hooks.getAWSCACertificate = getAWSCACertificate
 	p.hooks.getenv = os.Getenv
 	return p
 }
@@ -135,18 +202,32 @@ func (p *IIDAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 		return err
 	}
 
-	attestationData, err := unmarshalAndValidateIdentityDocument(payload, c.awsCAPublicKey)
+	attestationData, err := unmarshalAndValidateIdentityDocument(payload, c.getAWSCACertificate)
 	if err != nil {
 		return err
 	}
 
-	inTrustAcctList := false
-	for _, id := range c.LocalValidAcctIDs {
-		if attestationData.AccountID == id {
-			inTrustAcctList = true
-			break
+	// Feature account belongs to organization
+	// Get the account id of the node from attestation and then check if respective account belongs to organization
+	if c.ValidateOrgAccountID != nil {
+		ctxValidateOrg, cancel := context.WithTimeout(stream.Context(), awsTimeout)
+		defer cancel()
+		orgClient, err := p.clients.getClient(ctxValidateOrg, c.ValidateOrgAccountID.AccountRegion, c.ValidateOrgAccountID.AccountID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to get org client: %v", err)
+		}
+
+		valid, err := p.orgValidation.IsMemberAccount(ctxValidateOrg, orgClient, attestationData.AccountID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed aws ec2 attestation, issue while verifying if nodes account id: %v belong to org: %v", attestationData.AccountID, err)
+		}
+
+		if !valid {
+			return status.Errorf(codes.Internal, "failed aws ec2 attestation, nodes account id: %v is not part of configured organization or doesn't have ACTIVE status", attestationData.AccountID)
 		}
 	}
+
+	inTrustAcctList := slices.Contains(c.LocalValidAcctIDs, attestationData.AccountID)
 
 	ctx, cancel := context.WithTimeout(stream.Context(), awsTimeout)
 	defer cancel()
@@ -169,7 +250,7 @@ func (p *IIDAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 	// e.g. do it after the call to `p.AssessTOFU`, however, we may need
 	// the instance to construct tags used in the agent ID.
 	//
-	// This overhead will only effect agents attempting to re-attest which
+	// This overhead will only affect agents attempting to re-attest which
 	// should be a very small portion of the overall server workload. This
 	// is a potential DoS vector.
 	shouldCheckBlockDevice := !inTrustAcctList && !c.SkipBlockDevice
@@ -217,64 +298,57 @@ func (p *IIDAttestorPlugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServ
 }
 
 // Configure configures the IIDAttestorPlugin.
-func (p *IIDAttestorPlugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
-	config := new(IIDAttestorConfig)
-	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unable to decode configuration: %v", err)
-	}
-
-	// Get the AWS CA public key. We do this lazily on configure so deployments
-	// not using this plugin don't pay for parsing it on startup. This
-	// operation should not fail, but we check the return value just in case.
-	awsCAPublicKey, err := p.hooks.getAWSCAPublicKey()
+func (p *IIDAttestorPlugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
+	newConfig, _, err := pluginconf.Build(req, p.buildConfig)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to load the AWS CA public key: %v", err)
-	}
-	config.awsCAPublicKey = awsCAPublicKey
-
-	if err := config.Validate(p.hooks.getenv(accessKeyIDVarName), p.hooks.getenv(secretAccessKeyVarName)); err != nil {
 		return nil, err
-	}
-
-	if req.CoreConfiguration == nil {
-		return nil, status.Error(codes.InvalidArgument, "core configuration is required")
-	}
-	config.trustDomain, err = spiffeid.TrustDomainFromString(req.CoreConfiguration.TrustDomain)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "core configuration has invalid trust domain: %v", err)
-	}
-
-	config.pathTemplate = defaultAgentPathTemplate
-	if len(config.AgentPathTemplate) > 0 {
-		tmpl, err := agentpathtemplate.Parse(config.AgentPathTemplate)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to parse agent svid template: %q", config.AgentPathTemplate)
-		}
-		config.pathTemplate = tmpl
 	}
 
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
+	p.config = newConfig
 
-	p.config = config
-	p.clients.configure(config.SessionConfig)
+	if newConfig.ValidateOrgAccountID == nil {
+		// unconfigure existing clients
+		p.clients.configure(p.config.SessionConfig, orgValidationConfig{})
+	} else {
+		p.clients.configure(p.config.SessionConfig, *p.config.ValidateOrgAccountID)
+		// Setup required config, for validation and for bootstrapping org client
+		if err := p.orgValidation.configure(p.config.ValidateOrgAccountID); err != nil {
+			return nil, err
+		}
+	}
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *IIDAttestorPlugin) Validate(_ context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+	_, notes, err := pluginconf.Build(req, p.buildConfig)
+
+	return &configv1.ValidateResponse{
+		Valid: err == nil,
+		Notes: notes,
+	}, nil
 }
 
 // SetLogger sets this plugin's logger
 func (p *IIDAttestorPlugin) SetLogger(log hclog.Logger) {
 	p.log = log
+	p.orgValidation.setLogger(log)
 }
 
 func (p *IIDAttestorPlugin) checkBlockDevice(instance ec2types.Instance) error {
-	ifaceZeroDeviceIndex := *instance.NetworkInterfaces[0].Attachment.DeviceIndex
-
-	if ifaceZeroDeviceIndex != 0 {
-		return fmt.Errorf("the EC2 instance network interface attachment device index must be zero (has %d)", ifaceZeroDeviceIndex)
+	ifaceZeroIndex := slices.IndexFunc(
+		instance.NetworkInterfaces,
+		func(net ec2types.InstanceNetworkInterface) bool {
+			return *net.Attachment.DeviceIndex == 0
+		},
+	)
+	if ifaceZeroIndex == -1 {
+		return errors.New("the EC2 instance network interface with device index 0 is inaccessible")
 	}
 
-	ifaceZeroAttachTime := instance.NetworkInterfaces[0].Attachment.AttachTime
+	ifaceZeroAttachTime := instance.NetworkInterfaces[ifaceZeroIndex].Attachment.AttachTime
 
 	// skip anti-tampering mechanism when RootDeviceType is instance-store
 	// specifically, if device type is persistent, and the device was attached past
@@ -335,7 +409,7 @@ func tagsFromInstance(instance ec2types.Instance) instanceTags {
 	return tags
 }
 
-func unmarshalAndValidateIdentityDocument(data []byte, pubKey *rsa.PublicKey) (imds.InstanceIdentityDocument, error) {
+func unmarshalAndValidateIdentityDocument(data []byte, getAWSCACertificate func(string, PublicKeyType) (*x509.Certificate, error)) (imds.InstanceIdentityDocument, error) {
 	var attestationData caws.IIDAttestationData
 	if err := json.Unmarshal(data, &attestationData); err != nil {
 		return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "failed to unmarshal the attestation data: %v", err)
@@ -346,18 +420,87 @@ func unmarshalAndValidateIdentityDocument(data []byte, pubKey *rsa.PublicKey) (i
 		return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "failed to unmarshal the IID: %v", err)
 	}
 
-	docHash := sha256.Sum256([]byte(attestationData.Document))
+	var signature string
+	var publicKeyType PublicKeyType
 
-	sigBytes, err := base64.StdEncoding.DecodeString(attestationData.Signature)
-	if err != nil {
-		return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "failed to decode the IID signature: %v", err)
+	// Use the RSA-2048 signature if present, otherwise use the RSA-1024 signature
+	// This enables the support of new and old SPIRE agents, maintaining backwards compatibility.
+	if attestationData.SignatureRSA2048 != "" {
+		signature = attestationData.SignatureRSA2048
+		publicKeyType = RSA2048
+	} else {
+		signature = attestationData.Signature
+		publicKeyType = RSA1024
 	}
 
-	if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, docHash[:], sigBytes); err != nil {
-		return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "failed to verify the cryptographic signature: %v", err)
+	if signature == "" {
+		return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "instance identity cryptographic signature is required")
+	}
+
+	caCert, err := getAWSCACertificate(doc.Region, publicKeyType)
+	if err != nil {
+		return imds.InstanceIdentityDocument{}, status.Errorf(codes.Internal, "failed to load the AWS CA certificate for region %q: %v", doc.Region, err)
+	}
+
+	switch publicKeyType {
+	case RSA1024:
+		if err := verifyRSASignature(caCert.PublicKey.(*rsa.PublicKey), attestationData.Document, signature); err != nil {
+			return imds.InstanceIdentityDocument{}, status.Error(codes.InvalidArgument, err.Error())
+		}
+	case RSA2048:
+		pkcs7Sig, err := decodeAndParsePKCS7Signature(signature, caCert)
+		if err != nil {
+			return imds.InstanceIdentityDocument{}, status.Error(codes.InvalidArgument, err.Error())
+		}
+
+		if err := pkcs7Sig.Verify(); err != nil {
+			return imds.InstanceIdentityDocument{}, status.Errorf(codes.InvalidArgument, "failed verification of instance identity cryptographic signature: %v", err)
+		}
 	}
 
 	return doc, nil
+}
+
+func verifyRSASignature(pubKey *rsa.PublicKey, doc string, signature string) error {
+	docHash := sha256.Sum256([]byte(doc))
+
+	sigBytes, err := base64.StdEncoding.DecodeString(signature)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "failed to decode the IID signature: %v", err)
+	}
+
+	if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, docHash[:], sigBytes); err != nil {
+		return status.Errorf(codes.InvalidArgument, "failed to verify the cryptographic signature: %v", err)
+	}
+
+	return nil
+}
+
+func decodeAndParsePKCS7Signature(signature string, caCert *x509.Certificate) (*pkcs7.PKCS7, error) {
+	signaturePEM := addPKCS7HeaderAndFooter(signature)
+	signatureBlock, _ := pem.Decode([]byte(signaturePEM))
+	if signatureBlock == nil {
+		return nil, errors.New("failed to decode the instance identity cryptographic signature")
+	}
+
+	pkcs7Sig, err := pkcs7.Parse(signatureBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the instance identity cryptographic signature: %w", err)
+	}
+
+	// add the CA certificate to the PKCS7 signature to verify it
+	pkcs7Sig.Certificates = []*x509.Certificate{caCert}
+	return pkcs7Sig, nil
+}
+
+// AWS returns the PKCS7 signature without the header and footer. This function adds them to be able to parse
+// the signature as a PEM block.
+func addPKCS7HeaderAndFooter(signature string) string {
+	var sb strings.Builder
+	sb.WriteString("-----BEGIN PKCS7-----\n")
+	sb.WriteString(signature)
+	sb.WriteString("\n-----END PKCS7-----\n")
+	return sb.String()
 }
 
 func (p *IIDAttestorPlugin) resolveSelectors(parent context.Context, instancesDesc *ec2.DescribeInstancesOutput, iiDoc imds.InstanceIdentityDocument, client Client) ([]string, error) {
@@ -460,4 +603,43 @@ func instanceProfileNameFromArn(profileArn string) (string, error) {
 	name := strings.Split(m[1], "/")
 	// only the last element is the profile name
 	return name[len(name)-1], nil
+}
+
+func isValidAWSPartition(partition string) bool {
+	return slices.Contains(partitions, partition)
+}
+
+func validateOrganizationConfig(config *IIDAttestorConfig) error {
+	checkAccID := config.ValidateOrgAccountID.AccountID
+	checkAccRole := config.ValidateOrgAccountID.AccountRole
+	checkAccRegion := config.ValidateOrgAccountID.AccountRegion
+
+	if checkAccID == "" || checkAccRole == "" {
+		return status.Errorf(codes.InvalidArgument, "please ensure that %q & %q are present inside block or remove the block: %q for feature node attestation using account id verification", orgAccountID, orgAccountRole, "verify_organization")
+	}
+
+	if checkAccRegion == "" {
+		config.ValidateOrgAccountID.AccountRegion = orgDefaultAccRegion
+	}
+
+	// check TTL if specified
+	ttl := orgAccountDefaultListDuration
+	checkTTL := config.ValidateOrgAccountID.AccountListTTL
+	if checkTTL != "" {
+		t, err := time.ParseDuration(checkTTL)
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "please ensure that %q if configured, it should be in duration and is suffixed with required 'm' for time duration in minute ex. '5m'. Otherwise, remove the: %q, in the block: %q. Default TTL will be: %q", orgAccountListTTL, orgAccountListTTL, "verify_organization", orgAccountDefaultListTTL)
+		}
+
+		if t.Minutes() < orgAccountMinTTL.Minutes() {
+			return status.Errorf(codes.InvalidArgument, "please ensure that %q if configured, it should be greater than or equal to %q. Otherwise remove the: %q, in the block: %q. Default TTL will be: %q", orgAccountListTTL, orgAccountMinListTTL, orgAccountListTTL, "verify_organization", orgAccountDefaultListTTL)
+		}
+
+		ttl = t
+	}
+
+	// Assign default ttl if ttl doesnt exist.
+	config.ValidateOrgAccountID.AccountListTTL = ttl.String()
+
+	return nil
 }

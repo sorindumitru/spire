@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/common/util"
-	"github.com/zeebo/errs"
-	"gopkg.in/square/go-jose.v2"
 )
 
 const (
@@ -56,19 +55,19 @@ func NewWorkloadAPISource(config WorkloadAPISourceConfig) (*WorkloadAPISource, e
 	if config.Addr != nil {
 		o, err := util.GetWorkloadAPIClientOption(config.Addr)
 		if err != nil {
-			return nil, errs.Wrap(err)
+			return nil, err
 		}
 		opts = append(opts, o)
 	}
 
 	trustDomain, err := spiffeid.TrustDomainFromString(config.TrustDomain)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 
 	client, err := workloadapi.New(context.Background(), opts...)
 	if err != nil {
-		return nil, errs.Wrap(err)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

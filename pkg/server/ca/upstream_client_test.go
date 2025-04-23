@@ -2,6 +2,7 @@ package ca_test
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	upstreamauthorityv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/upstreamauthority/v1"
 	plugintypes "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/types"
+	"github.com/spiffe/spire/pkg/common/coretypes/x509certificate"
 	"github.com/spiffe/spire/pkg/server/ca"
+	"github.com/spiffe/spire/pkg/server/credtemplate"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/fakes/fakeupstreamauthority"
 	"github.com/spiffe/spire/test/spiretest"
@@ -22,7 +25,8 @@ import (
 )
 
 var (
-	csr, _      = ca.GenerateServerCACSR(testkey.MustEC256(), spiffeid.RequireTrustDomainFromString("example.org"), pkix.Name{CommonName: "FAKE CA"})
+	caKey       = testkey.MustEC256()
+	csr         = generateServerCACSR()
 	trustDomain = spiffeid.RequireTrustDomainFromString("example.org")
 )
 
@@ -96,7 +100,6 @@ func TestUpstreamClientMintX509CA_FailsOnBadFirstResponse(t *testing.T) {
 			expectMsg:  "X509 CA minted by upstream authority is invalid: oh no",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			client, _, _ := setUpUpstreamClientTest(t, fakeupstreamauthority.Config{
 				TrustDomain:              trustDomain,
@@ -169,20 +172,20 @@ type bundleUpdateErr struct {
 }
 
 type fakeBundleUpdater struct {
-	x509RootsCh chan []*x509.Certificate
+	x509RootsCh chan []*x509certificate.X509Authority
 	jwtKeysCh   chan []*common.PublicKey
 	errorCh     chan bundleUpdateErr
 }
 
 func newFakeBundleUpdater() *fakeBundleUpdater {
 	return &fakeBundleUpdater{
-		x509RootsCh: make(chan []*x509.Certificate, 1),
+		x509RootsCh: make(chan []*x509certificate.X509Authority, 1),
 		jwtKeysCh:   make(chan []*common.PublicKey, 1),
 		errorCh:     make(chan bundleUpdateErr, 1),
 	}
 }
 
-func (u *fakeBundleUpdater) AppendX509Roots(ctx context.Context, x509Roots []*x509.Certificate) error {
+func (u *fakeBundleUpdater) SyncX509Roots(ctx context.Context, x509Roots []*x509certificate.X509Authority) error {
 	select {
 	case u.x509RootsCh <- x509Roots:
 		return nil
@@ -191,7 +194,7 @@ func (u *fakeBundleUpdater) AppendX509Roots(ctx context.Context, x509Roots []*x5
 	}
 }
 
-func (u *fakeBundleUpdater) WaitForAppendedX509Roots(t *testing.T) []*x509.Certificate {
+func (u *fakeBundleUpdater) WaitForAppendedX509Roots(t *testing.T) []*x509certificate.X509Authority {
 	select {
 	case <-time.After(time.Minute):
 		require.FailNow(t, "timed out waiting for X.509 roots to be appended")
@@ -249,4 +252,28 @@ func makePublicKey(t *testing.T, kid string) *common.PublicKey {
 		Kid:       kid,
 		PkixBytes: pkixBytes,
 	}
+}
+
+func generateServerCACSR() []byte {
+	builder, err := credtemplate.NewBuilder(credtemplate.Config{
+		TrustDomain:   trustDomain,
+		X509CASubject: pkix.Name{CommonName: "FAKE CA"},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	template, err := builder.BuildUpstreamSignedX509CACSR(context.Background(), credtemplate.UpstreamSignedX509CAParams{
+		PublicKey: caKey.Public(),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	csr, err := x509.CreateCertificateRequest(rand.Reader, template, caKey)
+	if err != nil {
+		panic(err)
+	}
+
+	return csr
 }

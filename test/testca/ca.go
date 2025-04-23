@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/cryptosigner"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
@@ -21,11 +24,9 @@ import (
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/spiffe/spire/pkg/common/util"
+	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/test/testkey"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/cryptosigner"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 var (
@@ -111,7 +112,7 @@ func (ca *CA) CreateJWTSVID(id spiffeid.ID, audience []string) *jwtsvid.SVID {
 	)
 	require.NoError(ca.tb, err)
 
-	signedToken, err := jwt.Signed(jwtSigner).Claims(claims).CompactSerialize()
+	signedToken, err := jwt.Signed(jwtSigner).Claims(claims).Serialize()
 	require.NoError(ca.tb, err)
 
 	svid, err := jwtsvid.ParseInsecure(signedToken, audience)
@@ -148,6 +149,18 @@ func (ca *CA) JWTBundle() *jwtbundle.Bundle {
 	return jwtbundle.FromJWTAuthorities(ca.td, ca.JWTAuthorities())
 }
 
+func (ca *CA) GetSubjectKeyID() string {
+	return x509util.SubjectKeyIDToString(ca.cert.SubjectKeyId)
+}
+
+func (ca *CA) GetUpstreamAuthorityID() string {
+	authorityKeyID := ca.cert.AuthorityKeyId
+	if len(authorityKeyID) == 0 {
+		return ""
+	}
+	return x509util.SubjectKeyIDToString(authorityKeyID)
+}
+
 func (ca *CA) chain(includeRoot bool) []*x509.Certificate {
 	chain := []*x509.Certificate{}
 	next := ca
@@ -164,6 +177,7 @@ func CreateCACertificate(tb testing.TB, parent *x509.Certificate, parentKey cryp
 	now := time.Now()
 	serial := newSerial(tb)
 	key := testkey.NewEC256(tb)
+	ski, _ := x509util.GetSubjectKeyID(key.Public())
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -173,6 +187,7 @@ func CreateCACertificate(tb testing.TB, parent *x509.Certificate, parentKey cryp
 		IsCA:                  true,
 		NotBefore:             now,
 		NotAfter:              now.Add(time.Hour),
+		SubjectKeyId:          ski,
 	}
 
 	applyOptions(tmpl, options...)
@@ -180,7 +195,10 @@ func CreateCACertificate(tb testing.TB, parent *x509.Certificate, parentKey cryp
 	if parent == nil {
 		parent = tmpl
 		parentKey = key
+	} else {
+		tmpl.AuthorityKeyId = parent.SubjectKeyId
 	}
+
 	return CreateCertificate(tb, tmpl, parent, key.Public(), parentKey), key
 }
 
@@ -216,8 +234,8 @@ func CreateX509SVID(tb testing.TB, parent *x509.Certificate, parentKey crypto.Si
 	return CreateX509Certificate(tb, parent, parentKey, options...)
 }
 
-func CreateCertificate(tb testing.TB, tmpl, parent *x509.Certificate, pub, priv interface{}) *x509.Certificate {
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, priv)
+func CreateCertificate(tb testing.TB, tmpl, parent *x509.Certificate, publicKey, privateKey any) *x509.Certificate {
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, parent, publicKey, privateKey)
 	require.NoError(tb, err)
 	cert, err := x509.ParseCertificate(certDER)
 	require.NoError(tb, err)

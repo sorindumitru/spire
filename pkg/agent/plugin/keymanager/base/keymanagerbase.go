@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/keymanager/v1"
+	"github.com/spiffe/spire/pkg/common/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -37,10 +38,10 @@ type Config struct {
 }
 
 type Generator interface {
-	GenerateRSA2048Key() (*rsa.PrivateKey, error)
-	GenerateRSA4096Key() (*rsa.PrivateKey, error)
-	GenerateEC256Key() (*ecdsa.PrivateKey, error)
-	GenerateEC384Key() (*ecdsa.PrivateKey, error)
+	GenerateRSA2048Key() (crypto.Signer, error)
+	GenerateRSA4096Key() (crypto.Signer, error)
+	GenerateEC256Key() (crypto.Signer, error)
+	GenerateEC384Key() (crypto.Signer, error)
 }
 
 // Base is the base KeyManager implementation
@@ -84,7 +85,7 @@ func (m *Base) GenerateKey(ctx context.Context, req *keymanagerv1.GenerateKeyReq
 }
 
 // GetPublicKey implements the KeyManager RPC of the same name.
-func (m *Base) GetPublicKey(ctx context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
+func (m *Base) GetPublicKey(_ context.Context, req *keymanagerv1.GetPublicKeyRequest) (*keymanagerv1.GetPublicKeyResponse, error) {
 	if req.KeyId == "" {
 		return nil, status.Error(codes.InvalidArgument, "key id is required")
 	}
@@ -102,7 +103,7 @@ func (m *Base) GetPublicKey(ctx context.Context, req *keymanagerv1.GetPublicKeyR
 }
 
 // GetPublicKeys implements the KeyManager RPC of the same name.
-func (m *Base) GetPublicKeys(ctx context.Context, req *keymanagerv1.GetPublicKeysRequest) (*keymanagerv1.GetPublicKeysResponse, error) {
+func (m *Base) GetPublicKeys(context.Context, *keymanagerv1.GetPublicKeysRequest) (*keymanagerv1.GetPublicKeysResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -115,7 +116,7 @@ func (m *Base) GetPublicKeys(ctx context.Context, req *keymanagerv1.GetPublicKey
 }
 
 // SignData implements the KeyManager RPC of the same name.
-func (m *Base) SignData(ctx context.Context, req *keymanagerv1.SignDataRequest) (*keymanagerv1.SignDataResponse, error) {
+func (m *Base) SignData(_ context.Context, req *keymanagerv1.SignDataRequest) (*keymanagerv1.SignDataResponse, error) {
 	resp, err := m.signData(req)
 	return resp, prefixStatus(err, "failed to sign data")
 }
@@ -170,7 +171,7 @@ func (m *Base) signData(req *keymanagerv1.SignDataRequest) (*keymanagerv1.SignDa
 		if opts.HashAlgorithm == keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM {
 			return nil, status.Error(codes.InvalidArgument, "hash algorithm is required")
 		}
-		signerOpts = crypto.Hash(opts.HashAlgorithm)
+		signerOpts = util.MustCast[crypto.Hash](opts.HashAlgorithm)
 	case *keymanagerv1.SignDataRequest_PssOptions:
 		if opts.PssOptions == nil {
 			return nil, status.Error(codes.InvalidArgument, "PSS options are nil")
@@ -180,7 +181,7 @@ func (m *Base) signData(req *keymanagerv1.SignDataRequest) (*keymanagerv1.SignDa
 		}
 		signerOpts = &rsa.PSSOptions{
 			SaltLength: int(opts.PssOptions.SaltLength),
-			Hash:       crypto.Hash(opts.PssOptions.HashAlgorithm),
+			Hash:       util.MustCast[crypto.Hash](opts.PssOptions.HashAlgorithm),
 		}
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported signer opts type %T", opts)
@@ -299,19 +300,19 @@ func ecdsaKeyType(privateKey *ecdsa.PrivateKey) (keymanagerv1.KeyType, error) {
 
 type defaultGenerator struct{}
 
-func (defaultGenerator) GenerateRSA2048Key() (*rsa.PrivateKey, error) {
+func (defaultGenerator) GenerateRSA2048Key() (crypto.Signer, error) {
 	return rsa.GenerateKey(rand.Reader, 2048)
 }
 
-func (defaultGenerator) GenerateRSA4096Key() (*rsa.PrivateKey, error) {
+func (defaultGenerator) GenerateRSA4096Key() (crypto.Signer, error) {
 	return rsa.GenerateKey(rand.Reader, 4096)
 }
 
-func (defaultGenerator) GenerateEC256Key() (*ecdsa.PrivateKey, error) {
+func (defaultGenerator) GenerateEC256Key() (crypto.Signer, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
 
-func (defaultGenerator) GenerateEC384Key() (*ecdsa.PrivateKey, error) {
+func (defaultGenerator) GenerateEC384Key() (crypto.Signer, error) {
 	return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 }
 

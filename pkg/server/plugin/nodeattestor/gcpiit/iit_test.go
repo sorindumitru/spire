@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/cryptosigner"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	agentstorev1 "github.com/spiffe/spire-plugin-sdk/proto/spire/hostservice/server/agentstore/v1"
 	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
@@ -24,9 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/grpc/codes"
-	"gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/cryptosigner"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 const (
@@ -78,7 +78,7 @@ func (s *IITAttestorSuite) TestErrorOnMissingPayload() {
 
 func (s *IITAttestorSuite) TestErrorOnMissingKid() {
 	payload := s.signToken(testKey, "", buildDefaultClaims())
-	s.requireAttestError(s.T(), payload, codes.InvalidArgument, "nodeattestor(gcp_iit): failed to validate the identity token signature: square/go-jose: unsupported key type/format")
+	s.requireAttestError(s.T(), payload, codes.InvalidArgument, "nodeattestor(gcp_iit): failed to validate the identity token signature: go-jose/go-jose: JWK with matching kid not found in JWK Set")
 }
 
 func (s *IITAttestorSuite) TestErrorOnInvalidClaims() {
@@ -86,14 +86,14 @@ func (s *IITAttestorSuite) TestErrorOnInvalidClaims() {
 	claims.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Hour))
 
 	payload := s.signToken(testKey, "kid", claims)
-	s.requireAttestError(s.T(), payload, codes.PermissionDenied, "nodeattestor(gcp_iit): failed to validate the identity token claims: square/go-jose/jwt: validation failed, token is expired (exp)")
+	s.requireAttestError(s.T(), payload, codes.PermissionDenied, "nodeattestor(gcp_iit): failed to validate the identity token claims: go-jose/go-jose/jwt: validation failed, token is expired (exp)")
 }
 
 func (s *IITAttestorSuite) TestErrorOnInvalidAudience() {
 	claims := buildClaims(testProject, "invalid")
 
 	payload := s.signToken(testKey, "kid", claims)
-	s.requireAttestError(s.T(), payload, codes.PermissionDenied, `nodeattestor(gcp_iit): failed to validate the identity token claims: square/go-jose/jwt: validation failed, invalid audience claim (aud)`)
+	s.requireAttestError(s.T(), payload, codes.PermissionDenied, `nodeattestor(gcp_iit): failed to validate the identity token claims: go-jose/go-jose/jwt: validation failed, invalid audience claim (aud)`)
 }
 
 func (s *IITAttestorSuite) TestErrorOnAttestedBefore() {
@@ -118,11 +118,11 @@ func (s *IITAttestorSuite) TestErrorOnInvalidSignature() {
 
 	payload := s.signToken(alternativeKey, "kid", buildDefaultClaims())
 
-	s.requireAttestError(s.T(), payload, codes.InvalidArgument, "nodeattestor(gcp_iit): failed to validate the identity token signature: square/go-jose: error in cryptographic primitive")
+	s.requireAttestError(s.T(), payload, codes.InvalidArgument, "nodeattestor(gcp_iit): failed to validate the identity token signature: go-jose/go-jose: error in cryptographic primitive")
 }
 
 func (s *IITAttestorSuite) TestErrorOnInvalidPayload() {
-	s.requireAttestError(s.T(), []byte("secret"), codes.InvalidArgument, "nodeattestor(gcp_iit): unable to parse the identity token: square/go-jose: compact JWS format must have three parts")
+	s.requireAttestError(s.T(), []byte("secret"), codes.InvalidArgument, "nodeattestor(gcp_iit): unable to parse the identity token: go-jose/go-jose: compact JWS format must have three parts")
 }
 
 func (s *IITAttestorSuite) TestErrorOnServiceAccountFileMismatch() {
@@ -259,6 +259,7 @@ agent_path_template = "/{{ .InstanceID }}"
 
 func (s *IITAttestorSuite) TestConfigure() {
 	doConfig := func(t *testing.T, coreConfig catalog.CoreConfig, config string) error {
+		t.Logf("core config: %+v, config: %s\n", coreConfig, config)
 		var err error
 		plugintest.Load(t, BuiltIn(), nil,
 			plugintest.CaptureConfigureError(&err),
@@ -282,7 +283,7 @@ func (s *IITAttestorSuite) TestConfigure() {
 		err := doConfig(t, catalog.CoreConfig{}, `
 projectid_allow_list = ["bar"]
 		`)
-		spiretest.AssertGRPCStatusContains(t, err, codes.InvalidArgument, "trust_domain is required")
+		spiretest.AssertGRPCStatusContains(t, err, codes.InvalidArgument, "server core configuration must contain trust_domain")
 	})
 
 	s.T().Run("missing projectID allow list", func(t *testing.T) {
@@ -339,7 +340,7 @@ func (s *IITAttestorSuite) newPlugin() *IITAttestorPlugin {
 	return p
 }
 
-func (s *IITAttestorSuite) signToken(key crypto.Signer, kid string, claims interface{}) []byte {
+func (s *IITAttestorSuite) signToken(key crypto.Signer, kid string, claims any) []byte {
 	return signToken(s.T(), key, kid, claims)
 }
 
@@ -377,7 +378,7 @@ func (r *recvFailStream) Recv() (*nodeattestorv1.AttestRequest, error) {
 
 type testKeyRetriever struct{}
 
-func (testKeyRetriever) retrieveJWKS(ctx context.Context) (*jose.JSONWebKeySet, error) {
+func (testKeyRetriever) retrieveJWKS(context.Context) (*jose.JSONWebKeySet, error) {
 	return &jose.JSONWebKeySet{
 		Keys: []jose.JSONWebKey{
 			{
@@ -423,7 +424,7 @@ func (c *fakeComputeEngineClient) setInstance(instance *compute.Instance) {
 	c.instance = instance
 }
 
-func (c *fakeComputeEngineClient) fetchInstanceMetadata(ctx context.Context, projectID, zone, instanceName string, serviceAccountFile string) (*compute.Instance, error) {
+func (c *fakeComputeEngineClient) fetchInstanceMetadata(_ context.Context, projectID, zone, instanceName string, serviceAccountFile string) (*compute.Instance, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch {
@@ -446,11 +447,11 @@ func stringPtr(s string) *string {
 	return &s
 }
 
-func expectNoChallenge(ctx context.Context, challenge []byte) ([]byte, error) {
+func expectNoChallenge(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("challenge is not expected")
 }
 
-func signToken(t *testing.T, key crypto.Signer, kid string, claims interface{}) []byte {
+func signToken(t *testing.T, key crypto.Signer, kid string, claims any) []byte {
 	signer, err := jose.NewSigner(jose.SigningKey{
 		Algorithm: jose.RS256,
 		Key: &jose.JSONWebKey{
@@ -460,7 +461,7 @@ func signToken(t *testing.T, key crypto.Signer, kid string, claims interface{}) 
 	}, nil)
 	require.NoError(t, err)
 
-	token, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
 	require.NoError(t, err)
 	return []byte(token)
 }

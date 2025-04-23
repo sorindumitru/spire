@@ -122,6 +122,12 @@ const (
 
 	// Mint functionality related to minting identities
 	Mint = "mint"
+
+	// Taint functionality related with tainting a key from the bundle
+	Taint = "taint"
+
+	// Revoke functionality related with revoking a key from the bundle
+	Revoke = "revoke"
 )
 
 // Attribute metric tags or labels that are typically an attribute of a
@@ -160,11 +166,20 @@ const (
 	// ByBanned tags filtering by banned agents
 	ByBanned = "by_banned"
 
+	// ByCanReattest tags filtering by agents that can re-attest
+	ByCanReattest = "by_can_reattest"
+
 	// BySelectorMatch tags Match used when filtering by Selectors
 	BySelectorMatch = "by_selector_match"
 
 	// BySelectors tags selectors used when filtering
 	BySelectors = "by_selectors"
+
+	// CAJournal is a CA journal record
+	CAJournal = "ca_journal"
+
+	// CAJournalID tags a CA journal ID
+	CAJournalID = "ca_journal_id"
 
 	// CallerAddr labels an API caller address
 	CallerAddr = "caller_addr"
@@ -189,6 +204,12 @@ const (
 	// to add clarity
 	CallerPath = "caller_path"
 
+	// CertFilePath tags a certificate file path used for TLS connections.
+	CertFilePath = "cert_file_path"
+
+	// KeyFilePath tags a key file path used for TLS connections.
+	KeyFilePath = "key_file_path"
+
 	// CGroupPath tags a linux CGroup path, most likely for use in attestation
 	CGroupPath = "cgroup_path"
 
@@ -211,6 +232,9 @@ const (
 
 	// Count tags some basic count; should be used with other tags and clear messaging to add clarity
 	Count = "count"
+
+	// CreatedAt tags registration entry creation date
+	CreatedAt = "created_at"
 
 	// Csr represents a presented Csr in hashed format. It's hashed using the hex-encoded SHA256 checksum.
 	Csr = "csr"
@@ -245,12 +269,24 @@ const (
 	// ElapsedTime tags some duration of time.
 	ElapsedTime = "elapsed_time"
 
+	// EntryAdded is the counter key for when an entry is added to LRU cache
+	EntryAdded = "lru_cache_entry_add"
+
+	// EntryRemoved is the counter key for when an entry is removed from LRU cache
+	EntryRemoved = "lru_cache_entry_remove"
+
+	// EntryUpdated is the counter key for when an LRU cache entry is updated
+	EntryUpdated = "lru_cache_entry_update"
+
 	// EndpointSpiffeID tags endpoint SPIFFE ID
 	EndpointSpiffeID = "endpoint_spiffe_id"
 
 	// Error tag for some error that occurred. Limited usage, such as logging errors at
 	// non-error level.
 	Error = "error"
+
+	// EventID tags an event ID
+	EventID = "event_id"
 
 	// Expect tags an expected value, as opposed to the one received. Message should clarify
 	// what kind of value was expected, and a different field should show the received value
@@ -293,14 +329,23 @@ const (
 	// FederatesWithMatch tags a federates with match filter
 	FederatesWithMatch = "federates_with_match"
 
-	// FederationRelationship tags a federation relatioship
+	// FederationRelationship tags a federation relationship
 	FederationRelationship = "federation_relationship"
 
 	// Generation represents an objection generation (i.e. version)
 	Generation = "generation"
 
+	// Hash tags a hash
+	Hash = "hash"
+
+	// Hint tags registration entry hint
+	Hint = "hint"
+
 	// IDType tags some type of ID (eg. registration ID, SPIFFE ID...)
 	IDType = "id_type"
+
+	// ImageID tags the image identifier in the format "repository@sha256:digest"
+	ImageID = "image_id"
 
 	// IssuedAt tags an issuance timestamp
 	IssuedAt = "issued_at"
@@ -311,8 +356,11 @@ const (
 	// JWTAuthorityExpiresAt tags a JWT Authority expiration
 	JWTAuthorityExpiresAt = "jwt_authority_expires_at"
 
-	// JWTAuthorityPublicKey tags a JWT authority key ID
+	// JWTAuthorityKeyID tags a JWT authority key ID
 	JWTAuthorityKeyID = "jwt_authority_key_id"
+
+	// JWTAuthorityKeyIDs tags a list of JWT authority key IDs
+	JWTAuthorityKeyIDs = "jwt_authority_key_ids"
 
 	// JWTAuthorityPublicKeySHA256 tags a JWT Authority public key
 	JWTAuthorityPublicKeySHA256 = "jwt_authority_public_key_sha256"
@@ -324,11 +372,23 @@ const (
 	// Kid tags some key ID
 	Kid = "kid"
 
+	// LaunchLogLevel log level when service started
+	LaunchLogLevel = "launch_log_level"
+
+	// LocalAuthorityID tags a local authority ID
+	LocalAuthorityID = "local_authority_id"
+
 	// Mode tags a bundle deletion mode
 	Mode = "mode"
 
+	// NewLogLevel tags a new log level
+	NewLogLevel = "new_log_level"
+
 	// Network tags some network name ("tcp", "udp")
 	Network = "network"
+
+	// NewHash tags a new hash
+	NewHash = "new_hash"
 
 	// NewSerialNumber tags a certificate new serial number
 	NewSerialNumber = "new_serial_num"
@@ -339,8 +399,14 @@ const (
 	// Nonce tags some nonce for communication
 	Nonce = "nonce"
 
+	// OldHash tags a hash
+	OldHash = "old_hash"
+
 	// ParentID tags parent ID for an entry
 	ParentID = "parent_id"
+
+	// PartialSelectors is a partial set of selectors for a workload
+	PartialSelectors = "partial_selectors"
 
 	// Path declares some logic path, likely on the file system
 	Path = "path"
@@ -379,7 +445,7 @@ const (
 	Reason = "reason"
 
 	// Reattestable declares if the agent should reattest when its SVID expires
-	Reattestable = "rettestable"
+	Reattestable = "reattestable"
 
 	// Received tags a received value, as opposed to the one that is expected. Message should clarify
 	// what kind of value was received, and a different field should show the expected value.
@@ -394,6 +460,12 @@ const (
 	// ReceivedUID is like Received, specific to uid.
 	ReceivedUID = "received_uid"
 
+	// RecordMapSize is the gauge key to hold the size of the LRU cache entries map
+	RecordMapSize = "lru_cache_record_map_size"
+
+	// Reconfigurable tags whether something is reconfigurable.
+	Reconfigurable = "reconfigurable"
+
 	// RefreshHint tags a bundle refresh hint
 	RefreshHint = "refresh_hint"
 
@@ -406,6 +478,9 @@ const (
 
 	// RegistrationEntry tags a registration entry
 	RegistrationEntry = "registration_entry"
+
+	// RegistrationEntryEvent is a notice a registration entry has been created, modified, or deleted
+	RegistrationEntryEvent = "registration_entry_event"
 
 	// RequestID tags a request identifier
 	RequestID = "request_id"
@@ -441,7 +516,7 @@ const (
 	// SelectorsRemoved labels some count of selectors that have been removed from an entity
 	SelectorsRemoved = "selectors_removed"
 
-	// SelfSigned tags whether or not some entity is self-signed
+	// SelfSigned tags whether some entity is self-signed
 	SelfSigned = "self_signed"
 
 	// SendJWTBundleLatency tags latency for sending JWT bundle
@@ -472,6 +547,15 @@ const (
 	// with other tags to add clarity
 	Subject = "subject"
 
+	// SubjectKeyID tags a certificate subject key ID
+	SubjectKeyID = "subject_key_id"
+
+	// SubjectKeyIDs tags a list of subject key ID
+	SubjectKeyIDs = "subject_key_ids"
+
+	// SVIDMapSize is the gauge key for the size of the LRU cache SVID map
+	SVIDMapSize = "lru_cache_svid_map_size"
+
 	// SVIDResponseLatency tags latency for SVID response
 	SVIDResponseLatency = "svid_response_latency"
 
@@ -483,6 +567,21 @@ const (
 
 	// SVIDUpdated tags that for some entity the SVID was updated
 	SVIDUpdated = "svid_updated"
+
+	// SyncBundlesTotal is the number of bundles synced from the server.
+	SyncBundlesTotal = "sync_bundles_total"
+
+	// SyncEntriesTotal is the number of entries synced from the server.
+	SyncEntriesTotal = "sync_entries_total"
+
+	// SyncEntriesTotal is the number of entries that existed on the server but not the agent.
+	SyncEntriesMissing = "sync_entries_missing"
+
+	// SyncEntriesTotal is the number of entries that were out of date on the agent.
+	SyncEntriesStale = "sync_entries_stale"
+
+	// SyncEntriesTotal is the number of entries that were no longer on the server.
+	SyncEntriesDropped = "sync_entries_dropped"
 
 	// TTL functionality related to a time-to-live field; should be used
 	// with other tags to add clarity
@@ -512,6 +611,9 @@ const (
 	// with other tags to add clarity
 	Updated = "updated"
 
+	// UpstreamAuthorityID tags a signing authority ID
+	UpstreamAuthorityID = "upstream_authority_id"
+
 	// StoreSvid tags if entry is storable
 	StoreSvid = "store_svid"
 
@@ -530,7 +632,7 @@ const (
 	// X509 declared X509 SVID type, clarifying metrics
 	X509 = "x509"
 
-	// X509AuthoritiesASN1256 tags a X509 authority ASN1 encryted using SHA256
+	// X509AuthoritiesASN1256 tags a X509 authority ASN1 encrypted using SHA256
 	X509AuthoritiesASN1SHA256 = "x509_authorities_asn1_sha256"
 
 	// X509CAs tags some count or list of X509 CAs
@@ -566,6 +668,24 @@ const (
 
 	// Cache functionality related to a cache
 	Cache = "cache"
+
+	// AgentsByIDCache functionality related to the agent btree cache indexed by ID
+	AgentsByIDCache = "agents_by_id_cache"
+
+	// AgentsByExpiresAtCache functionality related to the agent btree cache indexed by ExpiresAt
+	AgentsByExpiresAtCache = "agents_by_expiresat_cache"
+
+	// NodeAliasesByEntryIDCache functionality related to the node-aliases btree cache indexed by EntryID
+	NodeAliasesByEntryIDCache = "nodealiases_by_entryid_cache"
+
+	// NodeAliasesBySelectorCache functionality related to the node-aliases btree cache indexed by Selector
+	NodeAliasesBySelectorCache = "nodealiases_by_selector_cache"
+
+	// EntriesByEntryIDCache functionality related to the entries btree cache indexed by EntryID
+	EntriesByEntryIDCache = "entries_by_entryid_cache"
+
+	// EntriesByParentIDCache functionality related to the entries btree cache indexed by ParentID
+	EntriesByParentIDCache = "entries_by_parentid_cache"
 
 	// Cache type tag
 	CacheType = "cache_type"
@@ -630,6 +750,9 @@ const (
 	// to add clarity
 	Node = "node"
 
+	// NodeEvent functionality related to a node entity or type being created, updated, or deleted
+	NodeEvent = "node_event"
+
 	// Notifier functionality related to some notifying entity; should be used with other tags
 	// to add clarity
 	Notifier = "notifier"
@@ -637,6 +760,9 @@ const (
 	// ServerCA functionality related to a server CA; should be used with other tags
 	// to add clarity
 	ServerCA = "server_ca"
+
+	// Service is the name of the service invoked
+	Service = "service"
 
 	// SpireAgent typically the entire spire agent service
 	SpireAgent = "spire_agent"
@@ -656,6 +782,12 @@ const (
 
 	// RegistrationManager functionality related to a registration manager
 	RegistrationManager = "registration_manager"
+
+	// TaintedJWTSVIDs tags tainted JWT SVID count/list
+	TaintedJWTSVIDs = "tainted_jwt_svids"
+
+	// TaintedX509SVIDs tags tainted X.509 SVID count/list
+	TaintedX509SVIDs = "tainted_x509_svids"
 
 	// Telemetry tags a telemetry module
 	Telemetry = "telemetry"
@@ -709,7 +841,7 @@ const (
 	// DeleteRegistrationEntry functionality related to deleting a registration entry
 	DeleteRegistrationEntry = "delete_registration_entry"
 
-	// EvictAgent funtionality related to evicting an agent
+	// EvictAgent functionality related to evicting an agent
 	EvictAgent = "evict_agent"
 
 	// FetchBundle functionality related to fetching a CA bundle
@@ -747,6 +879,9 @@ const (
 	// FetchX509SVID functionality related to fetching an X509 SVID
 	FetchX509SVID = "fetch_x509_svid"
 
+	// FirstUpdate functionality related to fetching first update in a streaming API.
+	FirstUpdate = "first_update"
+
 	// GetNodeSelectors functionality related to getting node selectors
 	GetNodeSelectors = "get_node_selectors"
 
@@ -756,8 +891,11 @@ const (
 	// ListAgents functionality related to listing agents
 	ListAgents = "list_agents"
 
-	// CountEntries functionality related to counting all registration entries
-	CountEntries = "count_entries"
+	// SkippedEntryEventIDs functionality related to counting missed entry event IDs
+	SkippedEntryEventIDs = "skipped_entry_event_ids"
+
+	// SkippedNodeEventIDs functionality related to counting missed node event IDs
+	SkippedNodeEventIDs = "skipped_node_event_ids"
 
 	// ListAllEntriesWithPages functionality related to listing all registration entries with pagination
 	ListAllEntriesWithPages = "list_all_entries_with_pages"
@@ -789,6 +927,12 @@ const (
 	// PushJWTKeyUpstream functionality related to pushing a public JWT Key to an upstream server.
 	PushJWTKeyUpstream = "push_jwtkey_upstream"
 
+	// ProcessTaintedX509SVIDs functionality related to processing tainted X.509 SVIDs.
+	ProcessTaintedX509SVIDs = "process_tainted_x509_svids"
+
+	// ProcessTaintedJWTSVIDs functionality related to processing tainted JWT SVIDs.
+	ProcessTaintedJWTSVIDs = "process_tainted_jwt_svids"
+
 	// SDSAPI functionality related to SDS; should be used with other tags
 	// to add clarity
 	SDSAPI = "sds_api"
@@ -801,6 +945,9 @@ const (
 
 	// StreamSecrets functionality related to streaming secrets
 	StreamSecrets = "stream_secrets"
+
+	// SubscribeX509SVIDs functionality related to subscribing to X.509 SVIDs.
+	SubscribeX509SVIDs = "subscribe_x509_svids"
 
 	// SubsystemName declares field for some subsystem name (an API, module...)
 	SubsystemName = "subsystem_name"

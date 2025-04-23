@@ -16,6 +16,7 @@ import (
 	"github.com/spiffe/spire/pkg/agent/api/health/v1"
 	"github.com/spiffe/spire/pkg/agent/api/rpccontext"
 	"github.com/spiffe/spire/pkg/common/x509util"
+	"github.com/spiffe/spire/test/grpctest"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/spiffe/spire/test/testca"
 
@@ -25,9 +26,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var (
-	td = spiffeid.RequireTrustDomainFromString("example.org")
-)
+var td = spiffeid.RequireTrustDomainFromString("example.org")
 
 func TestServiceCheck(t *testing.T) {
 	ca := testca.New(t, td)
@@ -83,7 +82,6 @@ func TestServiceCheck(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			log, logHook := test.NewNullLogger()
 
@@ -97,17 +95,15 @@ func TestServiceCheck(t *testing.T) {
 				Addr: spiretest.StartWorkloadAPI(t, wlAPI),
 			})
 
-			conn, done := spiretest.NewAPIServer(t,
-				func(s *grpc.Server) {
-					health.RegisterService(s, service)
-				},
-				func(ctx context.Context) context.Context {
+			server := grpctest.StartServer(t, func(s grpc.ServiceRegistrar) {
+				health.RegisterService(s, service)
+			},
+				grpctest.OverrideContext(func(ctx context.Context) context.Context {
 					return rpccontext.WithLogger(ctx, log)
-				},
+				}),
 			)
-			defer done()
 
-			client := grpc_health_v1.NewHealthClient(conn)
+			client := grpc_health_v1.NewHealthClient(server.NewGRPCClient(t))
 			resp, err := client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{
 				Service: tt.service,
 			})

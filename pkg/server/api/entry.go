@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/common/protoutil"
 	"github.com/spiffe/spire/pkg/common/x509util"
 	"github.com/spiffe/spire/proto/spire/common"
+)
+
+const (
+	hintMaximumLength = 1024
 )
 
 // RegistrationEntriesToProto converts RegistrationEntry's into Entry's
@@ -52,7 +57,7 @@ func RegistrationEntryToProto(e *common.RegistrationEntry) (*types.Entry, error)
 			if err != nil {
 				return nil, fmt.Errorf("invalid federated trust domain: %w", err)
 			}
-			federatesWith = append(federatesWith, td.String())
+			federatesWith = append(federatesWith, td.Name())
 		}
 	}
 
@@ -66,10 +71,12 @@ func RegistrationEntryToProto(e *common.RegistrationEntry) (*types.Entry, error)
 		Admin:          e.Admin,
 		Downstream:     e.Downstream,
 		ExpiresAt:      e.EntryExpiry,
-		DnsNames:       append([]string(nil), e.DnsNames...),
+		DnsNames:       slices.Clone(e.DnsNames),
 		RevisionNumber: e.RevisionNumber,
 		StoreSvid:      e.StoreSvid,
 		JwtSvidTtl:     e.JwtSvidTtl,
+		Hint:           e.Hint,
+		CreatedAt:      e.CreatedAt,
 	}, nil
 }
 
@@ -117,7 +124,7 @@ func ProtoToRegistrationEntryWithMask(ctx context.Context, td spiffeid.TrustDoma
 	if mask.DnsNames {
 		dnsNames = make([]string, 0, len(e.DnsNames))
 		for _, dnsName := range e.DnsNames {
-			if err := x509util.ValidateDNS(dnsName); err != nil {
+			if err := x509util.ValidateLabel(dnsName); err != nil {
 				return nil, fmt.Errorf("invalid DNS name: %w", err)
 			}
 			dnsNames = append(dnsNames, dnsName)
@@ -177,6 +184,13 @@ func ProtoToRegistrationEntryWithMask(ctx context.Context, td spiffeid.TrustDoma
 		jwtSvidTTL = e.JwtSvidTtl
 	}
 
+	var hint string
+	if mask.Hint {
+		if len(e.Hint) > hintMaximumLength {
+			return nil, fmt.Errorf("hint is too long, max length is %d characters", hintMaximumLength)
+		}
+		hint = e.Hint
+	}
 	return &common.RegistrationEntry{
 		EntryId:        e.Id,
 		ParentId:       parentID.String(),
@@ -191,5 +205,6 @@ func ProtoToRegistrationEntryWithMask(ctx context.Context, td spiffeid.TrustDoma
 		StoreSvid:      storeSVID,
 		X509SvidTtl:    x509SvidTTL,
 		JwtSvidTtl:     jwtSvidTTL,
+		Hint:           hint,
 	}, nil
 }

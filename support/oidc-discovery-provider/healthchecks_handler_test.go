@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/square/go-jose.v2"
 )
 
 func TestHealthCheckHandler(t *testing.T) {
@@ -105,7 +105,6 @@ func TestHealthCheckHandler(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			source := new(FakeKeySetSource)
 			source.SetKeySet(testCase.jwks, testCase.modTime, testCase.pollTime)

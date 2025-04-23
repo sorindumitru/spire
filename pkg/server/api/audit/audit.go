@@ -1,9 +1,12 @@
 package audit
 
 import (
+	"maps"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/common/telemetry"
+	"github.com/spiffe/spire/pkg/common/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -37,9 +40,7 @@ func New(l logrus.FieldLogger) Logger {
 }
 
 func (l *logger) AddFields(fields logrus.Fields) {
-	for key, value := range fields {
-		l.fields[key] = value
-	}
+	maps.Copy(l.fields, fields)
 }
 
 func (l *logger) Audit() {
@@ -61,13 +62,13 @@ func (l *logger) AuditWithTypesStatus(fields logrus.Fields, s *types.Status) {
 }
 
 func fieldsFromStatus(s *types.Status) logrus.Fields {
-	err := status.Error(codes.Code(s.Code), s.Message)
+	err := status.Error(util.MustCast[codes.Code](s.Code), s.Message)
 	return fieldsFromError(err)
 }
 
 func fieldsFromError(err error) logrus.Fields {
 	fields := logrus.Fields{}
-	// Unknown status is returned for non proto status
+	// Unknown status is returned for non-proto status
 	statusErr, _ := status.FromError(err)
 	switch {
 	case statusErr.Code() == codes.OK:
