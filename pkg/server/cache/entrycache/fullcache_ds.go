@@ -145,23 +145,25 @@ func (it *agentIteratorDS) Err() error {
 // Fetches all agent selectors from the datastore and stores them in the iterator.
 func (it *agentIteratorDS) fetchAgents(ctx context.Context) ([]Agent, error) {
 	now := time.Now()
-	resp, err := it.ds.ListNodeSelectors(ctx, &datastore.ListNodeSelectorsRequest{
+	resp, err := it.ds.ListAttestedNodes(ctx, &datastore.ListAttestedNodesRequest{
 		DataConsistency: datastore.TolerateStale,
 		ValidAt:         now,
+		FetchSelectors:  true,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	agents := make([]Agent, 0, len(resp.Selectors))
-	for spiffeID, selectors := range resp.Selectors {
-		agentID, err := spiffeid.FromString(spiffeID)
+	agents := make([]Agent, 0, len(resp.Nodes))
+	for _, node := range resp.Nodes {
+		agentID, err := spiffeid.FromString(node.SpiffeId)
 		if err != nil {
 			return nil, err
 		}
 		agents = append(agents, Agent{
-			ID:        agentID,
-			Selectors: api.ProtoFromSelectors(selectors),
+			ID:               agentID,
+			Selectors:        api.ProtoFromSelectors(node.Selectors),
+			CertSerialNumber: node.CertSerialNumber,
 		})
 	}
 	return agents, nil

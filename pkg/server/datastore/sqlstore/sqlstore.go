@@ -333,7 +333,11 @@ func (ds *Plugin) ListAttestedNodes(ctx context.Context,
 	req *datastore.ListAttestedNodesRequest,
 ) (resp *datastore.ListAttestedNodesResponse, err error) {
 	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
-		resp, err = listAttestedNodes(ctx, ds.db, ds.log, req)
+		if req.DataConsistency == datastore.TolerateStale && ds.roDb != nil {
+			resp, err = listAttestedNodes(ctx, ds.roDb, ds.log, req)
+		} else {
+			resp, err = listAttestedNodes(ctx, ds.db, ds.log, req)
+		}
 		return err
 	}); err != nil {
 		return nil, err
@@ -1916,6 +1920,9 @@ func buildListAttestedNodesQueryCTE(req *datastore.ListAttestedNodesRequest, dbT
 	if !req.ByExpiresBefore.IsZero() {
 		builder.WriteString("\t\tAND expires_at < ?\n")
 		args = append(args, req.ByExpiresBefore)
+	} else if !req.ValidAt.IsZero() {
+		builder.WriteString("\t\tAND expires_at > ?\n")
+		args = append(args, req.ValidAt)
 	}
 
 	// Filter by Attestation type

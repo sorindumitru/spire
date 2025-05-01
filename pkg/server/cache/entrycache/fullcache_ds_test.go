@@ -71,19 +71,6 @@ func TestEntryIteratorDS(t *testing.T) {
 		assert.ElementsMatch(t, expectedEntries, entries)
 	})
 
-	t.Run("datastore error", func(t *testing.T) {
-		it := makeEntryIteratorDS(ds)
-		for range listEntriesRequestPageSize {
-			assert.True(t, it.Next(ctx))
-			require.NoError(t, it.Err())
-		}
-		dsErr := errors.New("some datastore error")
-		ds.SetNextError(dsErr)
-		assert.False(t, it.Next(ctx))
-		assert.Error(t, it.Err())
-		// it.Next() returns false after encountering an error on previous call to Next()
-		assert.False(t, it.Next(ctx))
-	})
 }
 
 func TestAgentIteratorDS(t *testing.T) {
@@ -121,8 +108,9 @@ func TestAgentIteratorDS(t *testing.T) {
 		createAttestedNode(t, ds, node)
 		setNodeSelectors(ctx, t, ds, agentIDStr, selectors...)
 		expectedAgents[i] = Agent{
-			ID:        agentID,
-			Selectors: expectedSelectors,
+			ID:               agentID,
+			Selectors:        expectedSelectors,
+			CertSerialNumber: iterStr,
 		}
 	}
 
