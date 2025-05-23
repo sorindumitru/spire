@@ -1,0 +1,17 @@
+#!/bin/bash
+
+log-debug "restarting intermediateA server..."
+docker compose stop intermediateA-server
+docker-spire-server-up intermediateA-server
+
+#docker compose exec -T intermediateA-server \
+#      /opt/spire/bin/spire-server localauthority jwt prepare -output json
+
+log-debug "rotating intermediateA JWT authority..."
+new_authority_id=$(docker compose exec -T intermediateA-server \
+      /opt/spire/bin/spire-server localauthority jwt prepare -output json | jq -r .prepared_authority.authority_id) || fail-now "JWT-SVID check failed"
+
+docker compose exec -T intermediateA-server \
+  /opt/spire/bin/spire-server localauthority jwt activate -authorityID ${new_authority_id} || fail-now "JWT-SVID check failed"
+
+docker compose restart intermediateA-agent
