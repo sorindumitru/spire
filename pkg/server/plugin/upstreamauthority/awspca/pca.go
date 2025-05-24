@@ -311,6 +311,10 @@ func (*PCAPlugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyRe
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
+func (*PCAPlugin) SubscribeToAuthorityUpdates(name *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func (p *PCAPlugin) getConfig() (*configuration, error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()

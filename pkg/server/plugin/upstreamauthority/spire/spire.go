@@ -206,6 +206,10 @@ func (p *Plugin) MintX509CAAndSubscribe(request *upstreamauthorityv1.MintX509CAR
 	}
 }
 
+func (p *Plugin) SubscribeToAuthorityUpdates(req *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func (p *Plugin) PublishJWTKeyAndSubscribe(req *upstreamauthorityv1.PublishJWTKeyRequest, stream upstreamauthorityv1.UpstreamAuthority_PublishJWTKeyAndSubscribeServer) error {
 	err := p.subscribeToPolling(stream.Context())
 	if err != nil {

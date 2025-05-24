@@ -39,10 +39,12 @@ type UpstreamClientConfig struct {
 type UpstreamClient struct {
 	c UpstreamClientConfig
 
-	mintX509CAMtx       sync.Mutex
-	mintX509CAStream    *streamState
-	publishJWTKeyMtx    sync.Mutex
-	publishJWTKeyStream *streamState
+	mintX509CAMtx               sync.Mutex
+	mintX509CAStream            *streamState
+	publishJWTKeyMtx            sync.Mutex
+	publishJWTKeyStream         *streamState
+	upstreamAuthoritieStreamMtx sync.Mutex
+	upstreamAuthoritieStream    *streamState
 }
 
 // NewUpstreamClient returns a new UpstreamAuthority plugin client.
@@ -112,6 +114,29 @@ func (u *UpstreamClient) PublishJWTKey(ctx context.Context, jwtKey *common.Publi
 	firstResultCh := make(chan publishJWTKeyResult, 1)
 	u.publishJWTKeyStream.Start(func(streamCtx context.Context) {
 		u.runPublishJWTKeyStream(streamCtx, jwtKey, firstResultCh)
+	})
+	defer func() {
+		if err != nil {
+			u.publishJWTKeyStream.Stop()
+		}
+	}()
+
+	select {
+	case result := <-firstResultCh:
+		return result.jwtKeys, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TODO: comment
+func (u *UpstreamClient) ListenToBundleUpdates(ctx context.Context) (_ []*common.PublicKey, err error) {
+	u.upstreamAuthoritieStreamMtx.Lock()
+	defer u.upstreamAuthoritieStreamMtx.Unlock()
+
+	firstResultCh := make(chan publishJWTKeyResult, 1)
+	u.upstreamAuthoritieStream.Start(func(streamCtx context.Context) {
+		u.runPublishJWTKeyStream(streamCtx, firstResultCh)
 	})
 	defer func() {
 		if err != nil {

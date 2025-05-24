@@ -157,6 +157,10 @@ func (*Plugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyReque
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
+func (*Plugin) SubscribeToAuthorityUpdates(req *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func (p *Plugin) reloadCA() (*x509svid.UpstreamCA, *caCerts, error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()

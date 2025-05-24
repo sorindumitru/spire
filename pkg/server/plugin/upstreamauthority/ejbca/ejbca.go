@@ -323,6 +323,10 @@ func (p *Plugin) PublishJWTKeyAndSubscribe(_ *upstreamauthorityv1.PublishJWTKeyR
 	return status.Error(codes.Unimplemented, "publishing JWT keys is not supported by the EJBCA UpstreamAuthority plugin")
 }
 
+func (*Plugin) SubscribeToAuthorityUpdates(req *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 // setConfig replaces the configuration atomically under a write lock.
 func (p *Plugin) setConfig(config *Config) {
 	p.configMtx.Lock()

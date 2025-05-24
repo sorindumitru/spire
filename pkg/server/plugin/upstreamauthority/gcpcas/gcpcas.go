@@ -164,6 +164,10 @@ func (p *Plugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyReq
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
+func (*Plugin) SubscribeToAuthorityUpdates(req *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func (p *Plugin) Configure(_ context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
 	// Parse HCL config payload into config struct
 	newConfig, _, err := pluginconf.Build(req, buildConfig)

@@ -261,6 +261,10 @@ func (*Plugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyReque
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
+func (*Plugin) SubscribeToAuthorityUpdates(name *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func newCertManagerClient(configPath string) (client.Client, error) {
 	config, err := getKubeConfig(configPath)
 	if err != nil {

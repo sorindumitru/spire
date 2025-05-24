@@ -292,6 +292,10 @@ func (*Plugin) PublishJWTKeyAndSubscribe(*upstreamauthorityv1.PublishJWTKeyReque
 	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
 }
 
+func (*Plugin) SubscribeToAuthorityUpdates(req *upstreamauthorityv1.SubscribeToAuthorityUpdatesRequest, stream upstreamauthorityv1.UpstreamAuthority_SubscribeToAuthorityUpdatesServer) error {
+	return status.Error(codes.Unimplemented, "publishing upstream is unsupported")
+}
+
 func (p *Plugin) genClientParams(method AuthMethod, config *Configuration) (*ClientParams, error) {
 	cp := &ClientParams{
 		VaultAddr:     p.getEnvOrDefault(envVaultAddr, config.VaultAddr),

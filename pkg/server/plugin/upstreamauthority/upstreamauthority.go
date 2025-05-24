@@ -32,6 +32,8 @@ type UpstreamAuthority interface {
 	// the upstream authority does not support streaming updates, the stream
 	// will return io.EOF when called.
 	PublishJWTKey(ctx context.Context, jwtKey *common.PublicKey) (jwtAuthorities []*common.PublicKey, stream UpstreamJWTAuthorityStream, err error)
+
+	OpenUpstreamAuthorityStream(ctx context.Context) (x509CAs []*x509certificate.X509Authority, jwtAuthorities []*common.PublicKey, stream UpstreamAuthorityStream, err error)
 }
 
 type UpstreamX509AuthorityStream interface {
@@ -54,6 +56,19 @@ type UpstreamJWTAuthorityStream interface {
 	// canceled. If the function returns an error, no more updates will be
 	// available over the stream.
 	RecvUpstreamJWTAuthorities() ([]*common.PublicKey, error)
+
+	// Close() closes the stream. It MUST be called by callers of PublishJWTKey
+	// when they are done with the stream.
+	Close()
+}
+
+type UpstreamAuthorityStream interface {
+	// RecvUpstreamJWTAuthorities returns the latest set of upstream X.509
+	// authorities. The call blocks until the update is received, the Close()
+	// method is called, or the context originally passed into MintX509CA is
+	// canceled. If the function returns an error, no more updates will be
+	// available over the stream.
+	RecvUpstreamAuthorities() ([]*x509certificate.X509Authority, []*common.PublicKey, error)
 
 	// Close() closes the stream. It MUST be called by callers of PublishJWTKey
 	// when they are done with the stream.
