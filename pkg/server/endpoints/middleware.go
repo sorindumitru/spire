@@ -8,7 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
-	"github.com/spiffe/spire/pkg/common/cache"
+	//"github.com/spiffe/spire/pkg/common/cache"
 	"github.com/spiffe/spire/pkg/common/errorutil"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/server/api"
@@ -29,11 +29,11 @@ const (
 	cacheExpiry = 30 * time.Second
 )
 
-func Middleware(log logrus.FieldLogger, metrics telemetry.Metrics, ds datastore.DataStore, clk clock.Clock, rlConf RateLimitConfig, policyEngine *authpolicy.Engine, auditLogEnabled bool, adminIDs []spiffeid.ID) middleware.Middleware {
+func Middleware(log logrus.FieldLogger, metrics telemetry.Metrics, ds datastore.DataStore, agentCache api.AttestedNodeCache, clk clock.Clock, rlConf RateLimitConfig, policyEngine *authpolicy.Engine, auditLogEnabled bool, adminIDs []spiffeid.ID) middleware.Middleware {
 	chain := []middleware.Middleware{
 		middleware.WithLogger(log),
 		middleware.WithMetrics(metrics),
-		middleware.WithAuthorization(policyEngine, EntryFetcher(ds), AgentAuthorizer(ds, clk), adminIDs),
+		middleware.WithAuthorization(policyEngine, EntryFetcher(ds), AgentAuthorizer(ds, agentCache, clk), adminIDs),
 		middleware.WithRateLimits(RateLimits(rlConf), metrics),
 	}
 
@@ -63,9 +63,7 @@ func UpstreamPublisher(jwtKeyPublisher manager.JwtKeyPublisher) bundle.UpstreamP
 	return bundle.UpstreamPublisherFunc(jwtKeyPublisher.PublishJWTKey)
 }
 
-func AgentAuthorizer(ds datastore.DataStore, clk clock.Clock) middleware.AgentAuthorizer {
-	attestedNodeCache := cache.NewCache[string, string](clk)
-
+func AgentAuthorizer(ds datastore.DataStore, agentCache api.AttestedNodeCache, clk clock.Clock) middleware.AgentAuthorizer {
 	return middleware.AgentAuthorizerFunc(func(ctx context.Context, agentID spiffeid.ID, agentSVID *x509.Certificate) error {
 		id := agentID.String()
 		log := rpccontext.Logger(ctx)
@@ -75,21 +73,26 @@ func AgentAuthorizer(ds datastore.DataStore, clk clock.Clock) middleware.AgentAu
 			return errorutil.PermissionDenied(types.PermissionDeniedDetails_AGENT_EXPIRED, "agent %q SVID is expired", id)
 		}
 
-		cachedSerialNumber, ok := attestedNodeCache.Get(id)
+		cachedAgent, agentCacheTime, err := agentCache.FetchAttestedNode(id)
 		switch {
-		case !ok:
-			// AttestedNode not found in local cache, will fetch from the datastoe
-		case *cachedSerialNumber == agentSVID.SerialNumber.String():
-			// AgentSVID matches the current serial number, access granted
+		case err != nil:
+			// AttestedNode not found in local cache, will fetch from the datastore
+			// TODO: Maybe log something?
+		case cachedAgent == nil:
+			// AttestedNode not found in local cache, will fetch from the datastore
+		case time.Now().Sub(agentCacheTime) >= 15*time.Second:
+			// Cached AttestedNode is stale, will attempt to refresh from the database
+		case cachedAgent.CertSerialNumber == "":
+			// Attested node was not found in the cache, will fetch from the datastore
+		case cachedAgent.CertSerialNumber == agentSVID.SerialNumber.String():
+			// AgentSVID matches the current serial number, access granted. We
 			return nil
 		default:
-			// Fallback to fetching attested node information from the database,
-			// also dete dehe attested node information from the database since it's
-			// either not in the cache or not available.
-			attestedNodeCache.Delete(id)
+			// Could not validate the agent using the cache attested node information
+			// so we'll try fetching the up to date data from the datastore.
 		}
 
-		attestedNode, err := ds.FetchAttestedNode(ctx, id)
+		attestedNode, err := agentCache.RefreshAttestedNode(ctx, id)
 		switch {
 		case err != nil:
 			log.WithError(err).Error("Unable to look up agent information")
@@ -102,7 +105,6 @@ func AgentAuthorizer(ds datastore.DataStore, clk clock.Clock) middleware.AgentAu
 			return errorutil.PermissionDenied(types.PermissionDeniedDetails_AGENT_BANNED, "agent %q is banned", id)
 		case attestedNode.CertSerialNumber == agentSVID.SerialNumber.String():
 			// AgentSVID matches the current serial number, access granted
-			attestedNodeCache.Set(id, &attestedNode.CertSerialNumber, clk.Now().Add(cacheExpiry))
 			return nil
 		case attestedNode.NewCertSerialNumber == agentSVID.SerialNumber.String():
 			// AgentSVID matches the new serial number, access granted

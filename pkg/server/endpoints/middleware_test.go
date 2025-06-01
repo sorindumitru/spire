@@ -254,7 +254,7 @@ func TestAgentAuthorizer(t *testing.T) {
 			if !tt.time.IsZero() {
 				clk.Set(tt.time)
 			}
-			authorizer := AgentAuthorizer(ds, clk)
+			authorizer := AgentAuthorizer(ds, ds, clk)
 			ctx := context.Background()
 			ctx = rpccontext.WithLogger(ctx, log.WithFields(logrus.Fields{
 				telemetry.CallerAddr: "127.0.0.1",
@@ -309,7 +309,7 @@ func TestAgentAuthorizerCache(t *testing.T) {
 	require.NoError(t, err)
 
 	clk := clock.NewMock(t)
-	authorizer := AgentAuthorizer(ds, clk)
+	authorizer := AgentAuthorizer(ds, ds, clk)
 
 	err = authorizer.AuthorizeAgent(ctx, agentID, initialAgentSVID)
 	require.NoError(t, err)

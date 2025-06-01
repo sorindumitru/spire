@@ -12,6 +12,7 @@ import (
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/authorizedentries"
 	"github.com/spiffe/spire/pkg/server/datastore"
+	"github.com/spiffe/spire/proto/spire/common"
 )
 
 var _ api.AuthorizedEntryFetcher = (*AuthorizedEntryFetcherWithEventsBasedCache)(nil)
@@ -61,6 +62,10 @@ func (a *AuthorizedEntryFetcherWithEventsBasedCache) LookupAuthorizedEntries(ctx
 
 func (a *AuthorizedEntryFetcherWithEventsBasedCache) FetchAuthorizedEntries(_ context.Context, agentID spiffeid.ID) ([]api.ReadOnlyEntry, error) {
 	return a.cache.GetAuthorizedEntries(agentID), nil
+}
+
+func (a *AuthorizedEntryFetcherWithEventsBasedCache) FetchAttestedNode(ctx context.Context, agentID string) (*common.AttestedNode, error) {
+	return nil, nil
 }
 
 // RunUpdateCacheTask starts a ticker which rebuilds the in-memory entry cache.

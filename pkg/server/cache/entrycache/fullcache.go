@@ -7,6 +7,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/spiffe/spire/pkg/server/api"
+	"github.com/spiffe/spire/proto/spire/common"
 )
 
 var (
@@ -30,6 +31,7 @@ var _ Cache = (*FullEntryCache)(nil)
 type Cache interface {
 	LookupAuthorizedEntries(agentID spiffeid.ID, entries map[string]struct{}) map[string]api.ReadOnlyEntry
 	GetAuthorizedEntries(agentID spiffeid.ID) []api.ReadOnlyEntry
+	FetchAttestedNode(ctx context.Context, agentID string) (*common.AttestedNode, error)
 }
 
 // Selector is a key-value attribute of a node or workload.
@@ -91,6 +93,7 @@ type Agent struct {
 }
 
 type FullEntryCache struct {
+	agents  map[string]Agent
 	aliases map[string][]aliasEntry
 	entries map[string][]*types.Entry
 }
@@ -146,6 +149,7 @@ func Build(ctx context.Context, trustDomain string, entryIter EntryIterator, age
 	aliasSeen := allocStringSet()
 	defer freeStringSet(aliasSeen)
 
+	agents := make(map[string]Agent)
 	aliases := make(map[string][]aliasEntry)
 	for agentIter.Next(ctx) {
 		agent := agentIter.Agent()
@@ -153,6 +157,8 @@ func Build(ctx context.Context, trustDomain string, entryIter EntryIterator, age
 		if agent.ID.TrustDomain().String() != trustDomain {
 			continue
 		}
+
+		agents[agent.ID.String()] = agent
 
 		agentID := agent.ID.Path()
 		agentSelectors := selectorSetFromProto(agent.Selectors)
@@ -176,6 +182,7 @@ func Build(ctx context.Context, trustDomain string, entryIter EntryIterator, age
 	}
 
 	return &FullEntryCache{
+		agents:  agents,
 		aliases: aliases,
 		entries: entries,
 	}, nil
@@ -206,6 +213,15 @@ func (c *FullEntryCache) GetAuthorizedEntries(agentID spiffeid.ID) []api.ReadOnl
 	})
 
 	return foundEntries
+}
+
+func (c *FullEntryCache) FetchAttestedNode(ctx context.Context, id string) (*common.AttestedNode, error) {
+	if agent, ok := c.agents[id]; ok {
+		return &common.AttestedNode{
+			CertSerialNumber: agent.CertSerialNumber,
+		}, nil
+	}
+	return nil, nil
 }
 
 func (c *FullEntryCache) crawl(parentID string, seen map[string]struct{}, visit func(*types.Entry)) {

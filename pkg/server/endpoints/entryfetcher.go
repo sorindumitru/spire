@@ -12,6 +12,7 @@ import (
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/cache/entrycache"
 	"github.com/spiffe/spire/pkg/server/datastore"
+	"github.com/spiffe/spire/proto/spire/common"
 )
 
 var _ api.AuthorizedEntryFetcher = (*AuthorizedEntryFetcherWithFullCache)(nil)
@@ -58,6 +59,12 @@ func (a *AuthorizedEntryFetcherWithFullCache) FetchAuthorizedEntries(_ context.C
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.cache.GetAuthorizedEntries(agentID), nil
+}
+
+func (a *AuthorizedEntryFetcherWithFullCache) FetchAttestedNode(ctx context.Context, agentID string) (*common.AttestedNode, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cache.FetchAttestedNode(ctx, agentID)
 }
 
 // RunRebuildCacheTask starts a ticker which rebuilds the in-memory entry cache.
