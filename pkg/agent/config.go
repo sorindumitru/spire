@@ -25,11 +25,17 @@ type Config struct {
 	// Address to bind the workload api to
 	BindAddress net.Addr
 
+	// Socket-activated workload listener of SPIRE agent
+	Listener net.Listener
+
 	// Directory to store runtime data
 	DataDir string
 
 	// Directory to bind the admin api to
 	AdminBindAddress net.Addr
+
+	// Socket-activated admin listener of SPIRE agent
+	AdminListener net.Listener
 
 	// The Validation Context resource name to use when fetching X.509 bundle together with federated bundles with Envoy SDS
 	DefaultAllBundlesName string

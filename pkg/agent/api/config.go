@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	Listener net.Listener
 	BindAddr net.Addr
 
 	Manager manager.Manager

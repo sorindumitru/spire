@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/hcl"
 	"github.com/hashicorp/hcl/hcl/ast"
@@ -496,18 +497,34 @@ func NewAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool)
 	}
 	ac.TrustDomain = td
 
-	addr, err := c.Agent.getAddr()
+	listeners, err := activation.ListenersWithNames()
 	if err != nil {
 		return nil, err
 	}
-	ac.BindAddress = addr
 
-	if c.Agent.hasAdminAddr() {
-		adminAddr, err := c.Agent.getAdminAddr()
+	workloadListener := listeners["spire-agent-workload"]
+	if len(workloadListener) > 0 {
+		ac.Listener = workloadListener[0]
+		ac.BindAddress = workloadListener[0].Addr()
+	} else {
+		addr, err := c.Agent.getAddr()
 		if err != nil {
 			return nil, err
 		}
-		ac.AdminBindAddress = adminAddr
+		ac.BindAddress = addr
+	}
+
+	adminListener := listeners["spire-agent-admin"]
+	if len(adminListener) > 0 {
+		ac.AdminBindAddress = adminListener[0].Addr()
+	} else {
+		if c.Agent.hasAdminAddr() {
+			adminAddr, err := c.Agent.getAdminAddr()
+			if err != nil {
+				return nil, err
+			}
+			ac.AdminBindAddress = adminAddr
+		}
 	}
 	// Handle join token - read from file if specified
 	if c.Agent.JoinTokenFile != "" {

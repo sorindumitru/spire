@@ -81,7 +81,9 @@ type Server interface {
 
 type Endpoints struct {
 	TCPAddr                      *net.TCPAddr
+	TCPListener                  net.Listener
 	LocalAddr                    net.Addr
+	LocalListener                net.Listener
 	SVIDObserver                 svid.Observer
 	TrustDomain                  spiffeid.TrustDomain
 	DataStore                    datastore.DataStore
@@ -209,7 +211,9 @@ func New(ctx context.Context, c Config) (*Endpoints, error) {
 
 	return &Endpoints{
 		TCPAddr:                      c.TCPAddr,
+		TCPListener:                  c.TCPListener,
 		LocalAddr:                    c.LocalAddr,
+		LocalListener:                c.LocalListener,
 		SVIDObserver:                 c.SVIDObserver,
 		TrustDomain:                  c.TrustDomain,
 		DataStore:                    ds,
@@ -330,9 +334,15 @@ func (e *Endpoints) createUDSServer(unaryInterceptor grpc.UnaryServerInterceptor
 
 // runTCPServer will start the server and block until it exits, or we are dying.
 func (e *Endpoints) runTCPServer(ctx context.Context, server *grpc.Server) error {
-	l, err := net.Listen(e.TCPAddr.Network(), e.TCPAddr.String())
-	if err != nil {
-		return err
+	var err error
+
+	l := e.TCPListener
+	// Fall back to normal listening if socket activation is not available
+	if l == nil {
+		l, err = net.Listen(e.TCPAddr.Network(), e.TCPAddr.String())
+		if err != nil {
+			return err
+		}
 	}
 	defer l.Close()
 	log := e.Log.WithFields(logrus.Fields{
@@ -358,22 +368,38 @@ func (e *Endpoints) runTCPServer(ctx context.Context, server *grpc.Server) error
 // runLocalAccess will start a grpc server to be accessed locally
 // and block until it exits, or we are dying.
 func (e *Endpoints) runLocalAccess(ctx context.Context, server *grpc.Server) error {
-	os.Remove(e.LocalAddr.String())
-	var l net.Listener
 	var err error
-	if e.AuditLogEnabled {
-		l, err = e.listenWithAuditLog()
+
+	// Fall back to normal listening if socket activation is not available
+	var l net.Listener
+
+	l = e.LocalListener
+	if l != nil {
+		if e.AuditLogEnabled {
+			unixListener := &peertracker.ListenerFactory{
+				Log: e.Log,
+			}
+			l, err = unixListener.WrapListener(l)
+		}
+		if err != nil {
+			return err
+		}
 	} else {
-		l, err = e.listen()
-	}
 
-	if err != nil {
-		return err
-	}
-	defer l.Close()
+		os.Remove(e.LocalAddr.String())
+		if e.AuditLogEnabled {
+			l, err = e.listenWithAuditLog()
+		} else {
+			l, err = e.listen()
+		}
 
-	if err := e.restrictLocalAddr(); err != nil {
-		return err
+		if err != nil {
+			return err
+		}
+		if err := e.restrictLocalAddr(); err != nil {
+			return err
+		}
+		defer l.Close()
 	}
 
 	log := e.Log.WithFields(logrus.Fields{

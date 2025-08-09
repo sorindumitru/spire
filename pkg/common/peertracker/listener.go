@@ -15,6 +15,27 @@ type ListenerFactory struct {
 	ListenerFactoryOS // OS specific
 }
 
+func (lf *ListenerFactory) WrapListener(l net.Listener) (*Listener, error) {
+	if lf.NewTracker == nil {
+		lf.NewTracker = NewTracker
+	}
+	if lf.Log == nil {
+		lf.Log = newNoopLogger()
+	}
+
+	tracker, err := lf.NewTracker(lf.Log)
+	if err != nil {
+		l.Close()
+		return nil, err
+	}
+
+	return &Listener{
+		l:       l,
+		Tracker: tracker,
+		log:     lf.Log,
+	}, nil
+}
+
 type Listener struct {
 	l       net.Listener
 	log     logrus.FieldLogger

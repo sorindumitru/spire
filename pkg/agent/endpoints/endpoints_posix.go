@@ -14,15 +14,11 @@ func (e *Endpoints) createUDSListener() (net.Listener, error) {
 	// Remove uds if already exists
 	os.Remove(e.addr.String())
 
-	unixListener := &peertracker.ListenerFactory{
-		Log: e.log,
-	}
-
 	unixAddr, ok := e.addr.(*net.UnixAddr)
 	if !ok {
 		return nil, fmt.Errorf("create UDS listener: address is type %T, not net.UnixAddr", e.addr)
 	}
-	l, err := unixListener.ListenUnix(e.addr.Network(), unixAddr)
+	l, err := e.listener.ListenUnix(e.addr.Network(), unixAddr)
 	if err != nil {
 		return nil, fmt.Errorf("create UDS listener: %w", err)
 	}
@@ -34,6 +30,11 @@ func (e *Endpoints) createUDSListener() (net.Listener, error) {
 }
 
 func (e *Endpoints) createListener() (net.Listener, error) {
+
+	if e.socketActivatedListener != nil {
+		return e.listener.WrapListener(e.socketActivatedListener)
+	}
+
 	switch e.addr.Network() {
 	case "unix":
 		return e.createUDSListener()

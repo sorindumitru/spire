@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/hcl"
 	"github.com/hashicorp/hcl/hcl/ast"
@@ -412,18 +413,40 @@ func NewServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool
 		sc.LogReopener = log.ReopenOnSignal(logger, reopenableFile)
 	}
 
-	bindAddress, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(strings.Trim(c.Server.BindAddress, "[]"), strconv.Itoa(c.Server.BindPort)))
+	socketActivatedListeners, err := activation.ListenersWithNames()
 	if err != nil {
-		return nil, fmt.Errorf(`could not resolve bind address "%s:%d": %w`, c.Server.BindAddress, c.Server.BindPort, err)
+		return nil, fmt.Errorf("could not get socket activated listeners: %w", err)
 	}
-	sc.BindAddress = bindAddress
+
+	listener, _ := socketActivatedListeners["spire-server-tcp"]
+	if len(listener) > 0 {
+		sc.Listener = listener[0]
+		// TODO(arianvp): error handling
+		sc.BindAddress = listener[0].Addr().(*net.TCPAddr)
+	}
+
+	if sc.Listener == nil {
+		bindAddress, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(strings.Trim(c.Server.BindAddress, "[]"), strconv.Itoa(c.Server.BindPort)))
+		if err != nil {
+			return nil, fmt.Errorf(`could not resolve bind address "%s:%d": %w`, c.Server.BindAddress, c.Server.BindPort, err)
+		}
+		sc.BindAddress = bindAddress
+	}
 	c.Server.setDefaultsIfNeeded()
 
-	addr, err := c.Server.getAddr()
-	if err != nil {
-		return nil, err
+	localListener, _ := socketActivatedListeners["spire-server-local"]
+	if len(localListener) > 0 {
+		sc.LocalListener = localListener[0]
+		sc.BindLocalAddress = localListener[0].Addr()
 	}
-	sc.BindLocalAddress = addr
+
+	if sc.LocalListener == nil {
+		addr, err := c.Server.getAddr()
+		if err != nil {
+			return nil, err
+		}
+		sc.BindLocalAddress = addr
+	}
 
 	sc.DataDir = c.Server.DataDir
 	sc.AuditLogEnabled = c.Server.AuditLogEnabled

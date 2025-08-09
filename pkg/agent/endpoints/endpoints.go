@@ -26,12 +26,14 @@ type Server interface {
 }
 
 type Endpoints struct {
-	addr              net.Addr
-	log               logrus.FieldLogger
-	metrics           telemetry.Metrics
-	workloadAPIServer workload_pb.SpiffeWorkloadAPIServer
-	sdsv3Server       secret_v3.SecretDiscoveryServiceServer
-	healthServer      grpc_health_v1.HealthServer
+	socketActivatedListener net.Listener
+	listener                *peertracker.ListenerFactory
+	addr                    net.Addr
+	log                     logrus.FieldLogger
+	metrics                 telemetry.Metrics
+	workloadAPIServer       workload_pb.SpiffeWorkloadAPIServer
+	sdsv3Server             secret_v3.SecretDiscoveryServiceServer
+	healthServer            grpc_health_v1.HealthServer
 
 	hooks struct {
 		listening chan struct{} // Hook to signal when the server starts listening
@@ -84,6 +86,10 @@ func New(c Config) *Endpoints {
 	})
 
 	return &Endpoints{
+		socketActivatedListener: c.Listener,
+		listener: &peertracker.ListenerFactory{
+			Log: c.Log,
+		},
 		addr:              c.BindAddr,
 		log:               c.Log,
 		metrics:           c.Metrics,
@@ -114,6 +120,10 @@ func (e *Endpoints) ListenAndServe(ctx context.Context) error {
 	grpc_health_v1.RegisterHealthServer(server, e.healthServer)
 
 	reflection.Register(server)
+
+	e.listener = &peertracker.ListenerFactory{
+		Log: e.log,
+	}
 
 	l, err := e.createListener()
 	if err != nil {

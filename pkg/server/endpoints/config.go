@@ -38,10 +38,12 @@ import (
 // Config is a configuration for endpoints
 type Config struct {
 	// TPCAddr is the address to bind the TCP listener to.
-	TCPAddr *net.TCPAddr
+	TCPAddr     *net.TCPAddr
+	TCPListener net.Listener
 
 	// LocalAddr is the local address to bind the listener to.
-	LocalAddr net.Addr
+	LocalAddr     net.Addr
+	LocalListener net.Listener
 
 	// The svid rotator used to obtain the latest server credentials
 	SVIDObserver svid.Observer

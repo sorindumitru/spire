@@ -26,16 +26,5 @@ func (lf *ListenerFactory) listenUnix(network string, laddr *net.UnixAddr) (*Lis
 	if err != nil {
 		return nil, err
 	}
-
-	tracker, err := lf.NewTracker(lf.Log)
-	if err != nil {
-		l.Close()
-		return nil, err
-	}
-
-	return &Listener{
-		l:       l,
-		Tracker: tracker,
-		log:     lf.Log,
-	}, nil
+	return lf.WrapListener(l)
 }

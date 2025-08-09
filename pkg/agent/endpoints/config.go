@@ -18,6 +18,7 @@ import (
 
 type Config struct {
 	BindAddr net.Addr
+	Listener net.Listener
 
 	Attestor attestor.Attestor
 

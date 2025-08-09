@@ -414,7 +414,9 @@ func (s *Server) newSVIDRotator(ctx context.Context, serverCA ca.ServerCA, metri
 func (s *Server) newEndpointsServer(ctx context.Context, catalog catalog.Catalog, svidObserver svid.Observer, serverCA ca.ServerCA, metrics telemetry.Metrics, authorityManager manager.AuthorityManager, authPolicyEngine *authpolicy.Engine, bundleManager *bundle_client.Manager) (endpoints.Server, error) {
 	config := endpoints.Config{
 		TCPAddr:                      s.config.BindAddress,
+		TCPListener:                  s.config.Listener,
 		LocalAddr:                    s.config.BindLocalAddress,
+		LocalListener:                s.config.LocalListener,
 		SVIDObserver:                 svidObserver,
 		TrustDomain:                  s.config.TrustDomain,
 		Catalog:                      catalog,

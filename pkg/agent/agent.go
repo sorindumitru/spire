@@ -478,6 +478,7 @@ func (a *Agent) newSVIDStoreService(cache *storecache.Cache, cat catalog.Catalog
 func (a *Agent) newEndpoints(metrics telemetry.Metrics, mgr manager.Manager, attestor workload_attestor.Attestor) endpoints.Server {
 	return endpoints.New(endpoints.Config{
 		BindAddr:                      a.c.BindAddress,
+		Listener:                      a.c.Listener,
 		Attestor:                      attestor,
 		Manager:                       mgr,
 		Log:                           a.c.Log.WithField(telemetry.SubsystemName, telemetry.Endpoints),
@@ -495,6 +496,7 @@ func (a *Agent) newEndpoints(metrics telemetry.Metrics, mgr manager.Manager, att
 func (a *Agent) newAdminEndpoints(metrics telemetry.Metrics, mgr manager.Manager, attestor workload_attestor.Attestor, authorizedDelegates []string) admin_api.Server {
 	config := &admin_api.Config{
 		BindAddr:            a.c.AdminBindAddress,
+		Listener:            a.c.AdminListener,
 		Manager:             mgr,
 		Log:                 a.c.Log,
 		Metrics:             metrics,

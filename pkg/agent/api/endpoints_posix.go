@@ -11,6 +11,11 @@ import (
 )
 
 func (e *Endpoints) createListener() (net.Listener, error) {
+	// socket activation
+	if e.c.Listener != nil {
+		return e.listener.WrapListener(e.c.Listener)
+	}
+
 	// Remove uds if already exists
 	os.Remove(e.c.BindAddr.String())
 

@@ -31,11 +31,17 @@ type Config struct {
 	// If true enables audit logs
 	AuditLogEnabled bool
 
+	// Socket-activated listener of SPIRE server
+	Listener net.Listener
+
 	// Address of SPIRE server
 	BindAddress *net.TCPAddr
 
 	// Address of SPIRE Server to be reached locally
 	BindLocalAddress net.Addr
+
+	// Socket-activated local listener of SPIRE server
+	LocalListener net.Listener
 
 	// Directory to store runtime data
 	DataDir string
