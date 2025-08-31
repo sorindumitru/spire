@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
+	"github.com/aperturerobotics/fastjson"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
 	workloadattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/workloadattestor/v1"
@@ -27,7 +29,6 @@ import (
 	"github.com/spiffe/spire/pkg/common/pemutil"
 	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"github.com/spiffe/spire/pkg/common/telemetry"
-	"github.com/valyala/fastjson"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -645,6 +646,69 @@ func (p *Plugin) getNodeName(name string, env string) string {
 	}
 }
 
+type podList struct {
+	Items []json.RawMessage `json:"items"`
+}
+
+type pod struct {
+	Metadata metadata `json:"metadata"`
+}
+
+type metadata struct {
+	Uid string `json:"uid"`
+}
+
+func (p *Plugin) parsePodListEncodingJSON(podListBytes []byte) (map[string]json.RawMessage, error) {
+	var pods podList
+	err := jsonv2.Unmarshal(podListBytes, &pods)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]json.RawMessage, len(pods.Items))
+	for _, podValue := range pods.Items {
+		var pod pod
+
+		err := jsonv2.Unmarshal(podValue, &pod)
+		if err != nil {
+			return nil, err
+		}
+
+		if pod.Metadata.Uid == "" {
+			p.log.Warn("Pod has no UID", "pod", podValue)
+			continue
+		}
+
+		result[pod.Metadata.Uid] = podValue
+	}
+
+	return result, nil
+}
+
+func (p *Plugin) parsePodList(podListBytes []byte) (map[string]*fastjson.Value, error) {
+	var parser fastjson.Parser
+	podList, err := parser.ParseBytes(podListBytes)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to parse kubelet response: %v", err)
+	}
+
+	items := podList.GetArray("items")
+	result := make(map[string]*fastjson.Value, len(items))
+
+	for _, podValue := range items {
+		uid := string(podValue.Get("metadata", "uid").GetStringBytes())
+
+		if uid == "" {
+			p.log.Warn("Pod has no UID", "pod", podValue)
+			continue
+		}
+
+		result[uid] = podValue
+	}
+
+	return result, nil
+}
+
 func (p *Plugin) getPodList(ctx context.Context, client *kubeletClient, cacheFor time.Duration) (map[string]*fastjson.Value, error) {
 	result := p.getPodListCache()
 	if result != nil {
@@ -662,24 +726,9 @@ func (p *Plugin) getPodList(ctx context.Context, client *kubeletClient, cacheFor
 			return nil, err
 		}
 
-		var parser fastjson.Parser
-		podList, err := parser.ParseBytes(podListBytes)
+		result, err = p.parsePodList(podListBytes)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "unable to parse kubelet response: %v", err)
-		}
-
-		items := podList.GetArray("items")
-		result = make(map[string]*fastjson.Value, len(items))
-
-		for _, podValue := range items {
-			uid := string(podValue.Get("metadata", "uid").GetStringBytes())
-
-			if uid == "" {
-				p.log.Warn("Pod has no UID", "pod", podValue)
-				continue
-			}
-
-			result[uid] = podValue
+			return nil, err
 		}
 
 		p.setPodListCache(result, cacheFor)

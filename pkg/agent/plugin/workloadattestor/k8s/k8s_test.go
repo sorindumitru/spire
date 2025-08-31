@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"math/big"
 	"net"
@@ -32,6 +33,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -1018,4 +1020,72 @@ func (v *fakeSigstoreVerifier) Verify(_ context.Context, imageID string) ([]stri
 	}
 
 	return nil, fmt.Errorf("failed to verify signature for image %s", imageID)
+}
+
+func BenchmarkParsingPodList(b *testing.B) {
+	p := New()
+	p.rootDir = b.TempDir()
+
+	podListBytes, err := os.ReadFile("../../../../../test/fixture/config/podlist.json")
+	require.NoError(b, err)
+
+	for b.Loop() {
+		_, err = p.parsePodList(podListBytes)
+		require.NoError(b, err)
+	}
+}
+
+func BenchmarkParsingDecodePod(b *testing.B) {
+	p := New()
+	p.rootDir = b.TempDir()
+
+	podListBytes, err := os.ReadFile("../../../../../test/fixture/config/podlist.json")
+	require.NoError(b, err)
+	pods, err := p.parsePodList(podListBytes)
+	require.NoError(b, err)
+
+	podUid := "5d59c51d-ea7a-4def-82e0-1e389957ef87"
+	var scratch []byte
+	for b.Loop() {
+		pod, ok := pods[podUid]
+		require.True(b, ok)
+
+		podObject := new(corev1.Pod)
+		scratch = pod.MarshalTo(scratch[:0])
+		err = jsonv2.Unmarshal(scratch, podObject)
+		require.NoError(b, err)
+	}
+}
+
+func BenchmarkParsingPodListJSON(b *testing.B) {
+	p := New()
+	p.rootDir = b.TempDir()
+
+	podListBytes, err := os.ReadFile("../../../../../test/fixture/config/podlist.json")
+	require.NoError(b, err)
+
+	for b.Loop() {
+		_, err = p.parsePodListEncodingJSON(podListBytes)
+		require.NoError(b, err)
+	}
+}
+
+func BenchmarkParsingDecodePodJSON(b *testing.B) {
+	p := New()
+	p.rootDir = b.TempDir()
+
+	podListBytes, err := os.ReadFile("../../../../../test/fixture/config/podlist.json")
+	require.NoError(b, err)
+	pods, err := p.parsePodListEncodingJSON(podListBytes)
+	require.NoError(b, err)
+
+	podUid := "5d59c51d-ea7a-4def-82e0-1e389957ef87"
+	for b.Loop() {
+		pod, ok := pods[podUid]
+		require.True(b, ok)
+
+		podObject := new(corev1.Pod)
+		err = jsonv2.Unmarshal(pod, podObject)
+		require.NoError(b, err)
+	}
 }
