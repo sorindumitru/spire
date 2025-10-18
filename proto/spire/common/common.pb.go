@@ -691,6 +691,168 @@ func (x *RegistrationEntries) GetEntries() []*RegistrationEntry {
 	return nil
 }
 
+type SPIFFEIDTemplate struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	TemplateId       string                 `protobuf:"bytes,1,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
+	RevisionNumber   int64                  `protobuf:"varint,2,opt,name=revision_number,json=revisionNumber,proto3" json:"revision_number,omitempty"`
+	CreatedAt        int64                  `protobuf:"varint,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ParentId         string                 `protobuf:"bytes,4,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	SpiffeIdTemplate string                 `protobuf:"bytes,5,opt,name=spiffe_id_template,json=spiffeIdTemplate,proto3" json:"spiffe_id_template,omitempty"`
+	Selectors        []*Selector            `protobuf:"bytes,6,rep,name=selectors,proto3" json:"selectors,omitempty"`
+	FederatesWith    []string               `protobuf:"bytes,7,rep,name=federates_with,json=federatesWith,proto3" json:"federates_with,omitempty"`
+	X509SvidTtl      int32                  `protobuf:"varint,8,opt,name=x509_svid_ttl,json=x509SvidTtl,proto3" json:"x509_svid_ttl,omitempty"`
+	JwtSvidTtl       int32                  `protobuf:"varint,9,opt,name=jwt_svid_ttl,json=jwtSvidTtl,proto3" json:"jwt_svid_ttl,omitempty"`
+	StoreSvid        bool                   `protobuf:"varint,10,opt,name=store_svid,json=storeSvid,proto3" json:"store_svid,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *SPIFFEIDTemplate) Reset() {
+	*x = SPIFFEIDTemplate{}
+	mi := &file_spire_common_common_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SPIFFEIDTemplate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SPIFFEIDTemplate) ProtoMessage() {}
+
+func (x *SPIFFEIDTemplate) ProtoReflect() protoreflect.Message {
+	mi := &file_spire_common_common_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SPIFFEIDTemplate.ProtoReflect.Descriptor instead.
+func (*SPIFFEIDTemplate) Descriptor() ([]byte, []int) {
+	return file_spire_common_common_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SPIFFEIDTemplate) GetTemplateId() string {
+	if x != nil {
+		return x.TemplateId
+	}
+	return ""
+}
+
+func (x *SPIFFEIDTemplate) GetRevisionNumber() int64 {
+	if x != nil {
+		return x.RevisionNumber
+	}
+	return 0
+}
+
+func (x *SPIFFEIDTemplate) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *SPIFFEIDTemplate) GetParentId() string {
+	if x != nil {
+		return x.ParentId
+	}
+	return ""
+}
+
+func (x *SPIFFEIDTemplate) GetSpiffeIdTemplate() string {
+	if x != nil {
+		return x.SpiffeIdTemplate
+	}
+	return ""
+}
+
+func (x *SPIFFEIDTemplate) GetSelectors() []*Selector {
+	if x != nil {
+		return x.Selectors
+	}
+	return nil
+}
+
+func (x *SPIFFEIDTemplate) GetFederatesWith() []string {
+	if x != nil {
+		return x.FederatesWith
+	}
+	return nil
+}
+
+func (x *SPIFFEIDTemplate) GetX509SvidTtl() int32 {
+	if x != nil {
+		return x.X509SvidTtl
+	}
+	return 0
+}
+
+func (x *SPIFFEIDTemplate) GetJwtSvidTtl() int32 {
+	if x != nil {
+		return x.JwtSvidTtl
+	}
+	return 0
+}
+
+func (x *SPIFFEIDTemplate) GetStoreSvid() bool {
+	if x != nil {
+		return x.StoreSvid
+	}
+	return false
+}
+
+type SPIFFEIDTemplateMask struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// * The SPIFFE ID of an entity that is authorized to attest the validity
+	// of a selector
+	ParentId      string `protobuf:"bytes,1,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SPIFFEIDTemplateMask) Reset() {
+	*x = SPIFFEIDTemplateMask{}
+	mi := &file_spire_common_common_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SPIFFEIDTemplateMask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SPIFFEIDTemplateMask) ProtoMessage() {}
+
+func (x *SPIFFEIDTemplateMask) ProtoReflect() protoreflect.Message {
+	mi := &file_spire_common_common_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SPIFFEIDTemplateMask.ProtoReflect.Descriptor instead.
+func (*SPIFFEIDTemplateMask) Descriptor() ([]byte, []int) {
+	return file_spire_common_common_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SPIFFEIDTemplateMask) GetParentId() string {
+	if x != nil {
+		return x.ParentId
+	}
+	return ""
+}
+
 // * Certificate represents a ASN.1/DER encoded X509 certificate
 type Certificate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -702,7 +864,7 @@ type Certificate struct {
 
 func (x *Certificate) Reset() {
 	*x = Certificate{}
-	mi := &file_spire_common_common_proto_msgTypes[8]
+	mi := &file_spire_common_common_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -714,7 +876,7 @@ func (x *Certificate) String() string {
 func (*Certificate) ProtoMessage() {}
 
 func (x *Certificate) ProtoReflect() protoreflect.Message {
-	mi := &file_spire_common_common_proto_msgTypes[8]
+	mi := &file_spire_common_common_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -727,7 +889,7 @@ func (x *Certificate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Certificate.ProtoReflect.Descriptor instead.
 func (*Certificate) Descriptor() ([]byte, []int) {
-	return file_spire_common_common_proto_rawDescGZIP(), []int{8}
+	return file_spire_common_common_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Certificate) GetDerBytes() []byte {
@@ -761,7 +923,7 @@ type PublicKey struct {
 
 func (x *PublicKey) Reset() {
 	*x = PublicKey{}
-	mi := &file_spire_common_common_proto_msgTypes[9]
+	mi := &file_spire_common_common_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -773,7 +935,7 @@ func (x *PublicKey) String() string {
 func (*PublicKey) ProtoMessage() {}
 
 func (x *PublicKey) ProtoReflect() protoreflect.Message {
-	mi := &file_spire_common_common_proto_msgTypes[9]
+	mi := &file_spire_common_common_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -786,7 +948,7 @@ func (x *PublicKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicKey.ProtoReflect.Descriptor instead.
 func (*PublicKey) Descriptor() ([]byte, []int) {
-	return file_spire_common_common_proto_rawDescGZIP(), []int{9}
+	return file_spire_common_common_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PublicKey) GetPkixBytes() []byte {
@@ -837,7 +999,7 @@ type Bundle struct {
 
 func (x *Bundle) Reset() {
 	*x = Bundle{}
-	mi := &file_spire_common_common_proto_msgTypes[10]
+	mi := &file_spire_common_common_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +1011,7 @@ func (x *Bundle) String() string {
 func (*Bundle) ProtoMessage() {}
 
 func (x *Bundle) ProtoReflect() protoreflect.Message {
-	mi := &file_spire_common_common_proto_msgTypes[10]
+	mi := &file_spire_common_common_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +1024,7 @@ func (x *Bundle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Bundle.ProtoReflect.Descriptor instead.
 func (*Bundle) Descriptor() ([]byte, []int) {
-	return file_spire_common_common_proto_rawDescGZIP(), []int{10}
+	return file_spire_common_common_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Bundle) GetTrustDomainId() string {
@@ -913,7 +1075,7 @@ type BundleMask struct {
 
 func (x *BundleMask) Reset() {
 	*x = BundleMask{}
-	mi := &file_spire_common_common_proto_msgTypes[11]
+	mi := &file_spire_common_common_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -925,7 +1087,7 @@ func (x *BundleMask) String() string {
 func (*BundleMask) ProtoMessage() {}
 
 func (x *BundleMask) ProtoReflect() protoreflect.Message {
-	mi := &file_spire_common_common_proto_msgTypes[11]
+	mi := &file_spire_common_common_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -938,7 +1100,7 @@ func (x *BundleMask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BundleMask.ProtoReflect.Descriptor instead.
 func (*BundleMask) Descriptor() ([]byte, []int) {
-	return file_spire_common_common_proto_rawDescGZIP(), []int{11}
+	return file_spire_common_common_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *BundleMask) GetRootCas() bool {
@@ -990,7 +1152,7 @@ type AttestedNodeMask struct {
 
 func (x *AttestedNodeMask) Reset() {
 	*x = AttestedNodeMask{}
-	mi := &file_spire_common_common_proto_msgTypes[12]
+	mi := &file_spire_common_common_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1002,7 +1164,7 @@ func (x *AttestedNodeMask) String() string {
 func (*AttestedNodeMask) ProtoMessage() {}
 
 func (x *AttestedNodeMask) ProtoReflect() protoreflect.Message {
-	mi := &file_spire_common_common_proto_msgTypes[12]
+	mi := &file_spire_common_common_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1015,7 +1177,7 @@ func (x *AttestedNodeMask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestedNodeMask.ProtoReflect.Descriptor instead.
 func (*AttestedNodeMask) Descriptor() ([]byte, []int) {
-	return file_spire_common_common_proto_rawDescGZIP(), []int{12}
+	return file_spire_common_common_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AttestedNodeMask) GetAttestationDataType() bool {
@@ -1125,7 +1287,25 @@ const file_spire_common_common_proto_rawDesc = "" +
 	"jwtSvidTtl\x12\x12\n" +
 	"\x04hint\x18\r \x01(\bR\x04hint\"P\n" +
 	"\x13RegistrationEntries\x129\n" +
-	"\aentries\x18\x01 \x03(\v2\x1f.spire.common.RegistrationEntryR\aentries\"K\n" +
+	"\aentries\x18\x01 \x03(\v2\x1f.spire.common.RegistrationEntryR\aentries\"\x88\x03\n" +
+	"\x10SPIFFEIDTemplate\x12\x1f\n" +
+	"\vtemplate_id\x18\x01 \x01(\tR\n" +
+	"templateId\x12'\n" +
+	"\x0frevision_number\x18\x02 \x01(\x03R\x0erevisionNumber\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\x03R\tcreatedAt\x12\x1b\n" +
+	"\tparent_id\x18\x04 \x01(\tR\bparentId\x12,\n" +
+	"\x12spiffe_id_template\x18\x05 \x01(\tR\x10spiffeIdTemplate\x124\n" +
+	"\tselectors\x18\x06 \x03(\v2\x16.spire.common.SelectorR\tselectors\x12%\n" +
+	"\x0efederates_with\x18\a \x03(\tR\rfederatesWith\x12\"\n" +
+	"\rx509_svid_ttl\x18\b \x01(\x05R\vx509SvidTtl\x12 \n" +
+	"\fjwt_svid_ttl\x18\t \x01(\x05R\n" +
+	"jwtSvidTtl\x12\x1d\n" +
+	"\n" +
+	"store_svid\x18\n" +
+	" \x01(\bR\tstoreSvid\"3\n" +
+	"\x14SPIFFEIDTemplateMask\x12\x1b\n" +
+	"\tparent_id\x18\x01 \x01(\tR\bparentId\"K\n" +
 	"\vCertificate\x12\x1b\n" +
 	"\tder_bytes\x18\x01 \x01(\fR\bderBytes\x12\x1f\n" +
 	"\vtainted_key\x18\x02 \x01(\bR\n" +
@@ -1170,7 +1350,7 @@ func file_spire_common_common_proto_rawDescGZIP() []byte {
 	return file_spire_common_common_proto_rawDescData
 }
 
-var file_spire_common_common_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_spire_common_common_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_spire_common_common_proto_goTypes = []any{
 	(*Empty)(nil),                 // 0: spire.common.Empty
 	(*AttestationData)(nil),       // 1: spire.common.AttestationData
@@ -1180,24 +1360,27 @@ var file_spire_common_common_proto_goTypes = []any{
 	(*RegistrationEntry)(nil),     // 5: spire.common.RegistrationEntry
 	(*RegistrationEntryMask)(nil), // 6: spire.common.RegistrationEntryMask
 	(*RegistrationEntries)(nil),   // 7: spire.common.RegistrationEntries
-	(*Certificate)(nil),           // 8: spire.common.Certificate
-	(*PublicKey)(nil),             // 9: spire.common.PublicKey
-	(*Bundle)(nil),                // 10: spire.common.Bundle
-	(*BundleMask)(nil),            // 11: spire.common.BundleMask
-	(*AttestedNodeMask)(nil),      // 12: spire.common.AttestedNodeMask
+	(*SPIFFEIDTemplate)(nil),      // 8: spire.common.SPIFFEIDTemplate
+	(*SPIFFEIDTemplateMask)(nil),  // 9: spire.common.SPIFFEIDTemplateMask
+	(*Certificate)(nil),           // 10: spire.common.Certificate
+	(*PublicKey)(nil),             // 11: spire.common.PublicKey
+	(*Bundle)(nil),                // 12: spire.common.Bundle
+	(*BundleMask)(nil),            // 13: spire.common.BundleMask
+	(*AttestedNodeMask)(nil),      // 14: spire.common.AttestedNodeMask
 }
 var file_spire_common_common_proto_depIdxs = []int32{
-	2, // 0: spire.common.Selectors.entries:type_name -> spire.common.Selector
-	2, // 1: spire.common.AttestedNode.selectors:type_name -> spire.common.Selector
-	2, // 2: spire.common.RegistrationEntry.selectors:type_name -> spire.common.Selector
-	5, // 3: spire.common.RegistrationEntries.entries:type_name -> spire.common.RegistrationEntry
-	8, // 4: spire.common.Bundle.root_cas:type_name -> spire.common.Certificate
-	9, // 5: spire.common.Bundle.jwt_signing_keys:type_name -> spire.common.PublicKey
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	2,  // 0: spire.common.Selectors.entries:type_name -> spire.common.Selector
+	2,  // 1: spire.common.AttestedNode.selectors:type_name -> spire.common.Selector
+	2,  // 2: spire.common.RegistrationEntry.selectors:type_name -> spire.common.Selector
+	5,  // 3: spire.common.RegistrationEntries.entries:type_name -> spire.common.RegistrationEntry
+	2,  // 4: spire.common.SPIFFEIDTemplate.selectors:type_name -> spire.common.Selector
+	10, // 5: spire.common.Bundle.root_cas:type_name -> spire.common.Certificate
+	11, // 6: spire.common.Bundle.jwt_signing_keys:type_name -> spire.common.PublicKey
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_spire_common_common_proto_init() }
@@ -1211,7 +1394,7 @@ func file_spire_common_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_spire_common_common_proto_rawDesc), len(file_spire_common_common_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -170,6 +170,8 @@ func RateLimits(config RateLimitConfig) map[string]api.RateLimiter {
 		"/spire.api.server.entry.v1.Entry/BatchDeleteEntry":                              noLimit,
 		"/spire.api.server.entry.v1.Entry/GetAuthorizedEntries":                          noLimit,
 		"/spire.api.server.entry.v1.Entry/SyncAuthorizedEntries":                         noLimit,
+		"/spire.api.server.entry.v1.Entry/BatchCreateSPIFFEIDTemplate":                   noLimit,
+		"/spire.api.server.entry.v1.Entry/ListSPIFFEIDTemplates":                         noLimit,
 		"/spire.api.server.logger.v1.Logger/GetLogger":                                   noLimit,
 		"/spire.api.server.logger.v1.Logger/SetLogLevel":                                 noLimit,
 		"/spire.api.server.logger.v1.Logger/ResetLogLevel":                               noLimit,

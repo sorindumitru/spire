@@ -231,6 +231,43 @@ func (s *Service) ListEntries(ctx context.Context, req *entryv1.ListEntriesReque
 	return resp, nil
 }
 
+func (s *Service) ListSPIFFEIDTemplates(ctx context.Context, req *entryv1.ListSPIFFEIDTemplatesRequest) (*entryv1.ListSPIFFEIDTemplatesResponse, error) {
+	log := rpccontext.Logger(ctx)
+
+	listReq := &datastore.ListSPIFFEIDTemplatesRequest{}
+	if req.PageSize > 0 {
+		listReq.Pagination = &datastore.Pagination{
+			PageSize: req.PageSize,
+			Token:    req.PageToken,
+		}
+	}
+
+	dsResp, err := s.ds.ListSPIFFEIDTemplates(ctx, listReq)
+	if err != nil {
+		return nil, api.MakeErr(log, codes.Internal, "failed to list entries", err)
+	}
+
+	resp := &entryv1.ListSPIFFEIDTemplatesResponse{}
+	/*
+		if dsResp.Pagination != nil {
+			resp.NextPageToken = dsResp.Pagination.Token
+		}
+	*/
+
+	for _, template := range dsResp.SPIFFEIDTemplates {
+		entry, err := api.SPIFFEIDTemplateToProto(template)
+		if err != nil {
+			log.WithError(err).Errorf("Failed to convert entry: %q", template.TemplateId)
+			continue
+		}
+		// TODO: applyMask(entry, req.OutputMask)
+		resp.Templates = append(resp.Templates, entry)
+	}
+	rpccontext.AuditRPC(ctx)
+
+	return resp, nil
+}
+
 // GetEntry returns the registration entry associated with the given SpiffeID
 func (s *Service) GetEntry(ctx context.Context, req *entryv1.GetEntryRequest) (*types.Entry, error) {
 	log := rpccontext.Logger(ctx)
@@ -314,6 +351,62 @@ func (s *Service) createEntry(ctx context.Context, e *types.Entry, outputMask *t
 	return &entryv1.BatchCreateEntryResponse_Result{
 		Status: resultStatus,
 		Entry:  tEntry,
+	}
+}
+
+// BatchCreateEntry adds one or more entries to the server.
+func (s *Service) BatchCreateSPIFFEIDTemplate(ctx context.Context, req *entryv1.BatchCreateSPIFFEIDTemplateRequest) (*entryv1.BatchCreateSPIFFEIDTemplateResponse, error) {
+	var results []*entryv1.BatchCreateSPIFFEIDTemplateResponse_Result
+	for _, template := range req.Templates {
+		r := s.createSPIFFEIDTemplate(ctx, template)
+		results = append(results, r)
+		// TODO: audit
+	}
+
+	return &entryv1.BatchCreateSPIFFEIDTemplateResponse{
+		Results: results,
+	}, nil
+}
+
+func (s *Service) createSPIFFEIDTemplate(ctx context.Context, template *types.SPIFFEIDTemplate) *entryv1.BatchCreateSPIFFEIDTemplateResponse_Result {
+	log := rpccontext.Logger(ctx)
+
+	cTemplate, err := api.ProtoToSPIFFEIDTemplate(ctx, s.td, template)
+	if err != nil {
+		return &entryv1.BatchCreateSPIFFEIDTemplateResponse_Result{
+			Status: api.MakeStatus(log, codes.InvalidArgument, "failed to convert template", err),
+		}
+	}
+
+	// TODO: log = log.WithField(telemetry.SPIFFEID, c.SpiffeId)
+
+	resultStatus := api.OK()
+	regEntry, existing, err := s.ds.CreateOrReturnSPIFFEIDTemplate(ctx, cTemplate)
+	switch {
+	case err != nil:
+		statusCode := status.Code(err)
+		if statusCode == codes.Unknown {
+			statusCode = codes.Internal
+		}
+		return &entryv1.BatchCreateSPIFFEIDTemplateResponse_Result{
+			Status: api.MakeStatus(log, statusCode, "failed to create template", err),
+		}
+	case existing:
+		resultStatus = api.CreateStatus(codes.AlreadyExists, "similar template already exists")
+	}
+
+	tTemplate, err := api.SPIFFEIDTemplateToProto(regEntry)
+	if err != nil {
+		return &entryv1.BatchCreateSPIFFEIDTemplateResponse_Result{
+			Status: api.MakeStatus(log, codes.Internal, "failed to convert template", err),
+		}
+	}
+
+	// TODO: applyMask(tEntry, outputMask)
+
+	return &entryv1.BatchCreateSPIFFEIDTemplateResponse_Result{
+		Status:   resultStatus,
+		Template: tTemplate,
 	}
 }
 

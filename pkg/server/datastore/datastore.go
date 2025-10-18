@@ -40,6 +40,16 @@ type DataStore interface {
 	PruneRegistrationEntries(ctx context.Context, expiresBefore time.Time) error
 	UpdateRegistrationEntry(context.Context, *common.RegistrationEntry, *common.RegistrationEntryMask) (*common.RegistrationEntry, error)
 
+	CountSPIFFEIDTemplates(context.Context, *CountSPIFFEIDTemplatesRequest) (int32, error)
+	CreateSPIFFEIDTemplate(context.Context, *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error)
+	CreateOrReturnSPIFFEIDTemplate(context.Context, *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, bool, error)
+	DeleteSPIFFEIDTemplate(ctx context.Context, entryID string) (*common.SPIFFEIDTemplate, error)
+	FetchSPIFFEIDTemplate(ctx context.Context, entryID string) (*common.SPIFFEIDTemplate, error)
+	FetchSPIFFEIDTemplates(ctx context.Context, entryIDs []string) (map[string]*common.SPIFFEIDTemplate, error)
+	ListSPIFFEIDTemplates(context.Context, *ListSPIFFEIDTemplatesRequest) (*ListSPIFFEIDTemplatesResponse, error)
+	PruneSPIFFEIDTemplates(ctx context.Context, expiresBefore time.Time) error
+	UpdateSPIFFEIDTemplate(context.Context, *common.SPIFFEIDTemplate, *common.SPIFFEIDTemplateMask) (*common.SPIFFEIDTemplate, error)
+
 	// Entries Events
 	ListRegistrationEntryEvents(ctx context.Context, req *ListRegistrationEntryEventsRequest) (*ListRegistrationEntryEventsResponse, error)
 	PruneRegistrationEntryEvents(ctx context.Context, olderThan time.Duration) error
@@ -205,6 +215,12 @@ type ListNodeSelectorsResponse struct {
 	Selectors map[string][]*common.Selector
 }
 
+type CAJournal struct {
+	ID                    uint
+	Data                  []byte
+	ActiveX509AuthorityID string
+}
+
 type ListRegistrationEntriesRequest struct {
 	DataConsistency DataConsistency
 	ByParentID      string
@@ -216,15 +232,25 @@ type ListRegistrationEntriesRequest struct {
 	ByDownstream    *bool
 }
 
-type CAJournal struct {
-	ID                    uint
-	Data                  []byte
-	ActiveX509AuthorityID string
-}
-
 type ListRegistrationEntriesResponse struct {
 	Entries    []*common.RegistrationEntry
 	Pagination *Pagination
+}
+
+type ListSPIFFEIDTemplatesRequest struct {
+	DataConsistency DataConsistency
+	ByParentID      string
+	BySelectors     *BySelectors
+	BySpiffeID      string
+	Pagination      *Pagination
+	ByFederatesWith *ByFederatesWith
+	ByHint          string
+	ByDownstream    *bool
+}
+
+type ListSPIFFEIDTemplatesResponse struct {
+	SPIFFEIDTemplates []*common.SPIFFEIDTemplate
+	Pagination        *Pagination
 }
 
 type ListRegistrationEntryEventsRequest struct {
@@ -261,6 +287,16 @@ type CountAttestedNodesRequest struct {
 }
 
 type CountRegistrationEntriesRequest struct {
+	DataConsistency DataConsistency
+	ByParentID      string
+	BySelectors     *BySelectors
+	BySpiffeID      string
+	ByFederatesWith *ByFederatesWith
+	ByHint          string
+	ByDownstream    *bool
+}
+
+type CountSPIFFEIDTemplatesRequest struct {
 	DataConsistency DataConsistency
 	ByParentID      string
 	BySelectors     *BySelectors

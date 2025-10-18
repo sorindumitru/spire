@@ -352,3 +352,39 @@ func (w metricsWrapper) PruneCAJournals(ctx context.Context, allCAsExpireBefore 
 	defer callCounter.Done(&err)
 	return w.ds.PruneCAJournals(ctx, allCAsExpireBefore)
 }
+
+func (w metricsWrapper) CountSPIFFEIDTemplates(ctx context.Context, req *datastore.CountSPIFFEIDTemplatesRequest) (int32, error) {
+	return w.ds.CountSPIFFEIDTemplates(ctx, req)
+}
+
+func (w metricsWrapper) CreateSPIFFEIDTemplate(ctx context.Context, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error) {
+	return w.ds.CreateSPIFFEIDTemplate(ctx, template)
+}
+
+func (w metricsWrapper) CreateOrReturnSPIFFEIDTemplate(ctx context.Context, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, bool, error) {
+	return w.ds.CreateOrReturnSPIFFEIDTemplate(ctx, template)
+}
+
+func (w metricsWrapper) DeleteSPIFFEIDTemplate(ctx context.Context, entryID string) (*common.SPIFFEIDTemplate, error) {
+	return w.ds.DeleteSPIFFEIDTemplate(ctx, entryID)
+}
+
+func (w metricsWrapper) FetchSPIFFEIDTemplate(ctx context.Context, entryID string) (*common.SPIFFEIDTemplate, error) {
+	return w.ds.FetchSPIFFEIDTemplate(ctx, entryID)
+}
+
+func (w metricsWrapper) FetchSPIFFEIDTemplates(ctx context.Context, entryIDs []string) (map[string]*common.SPIFFEIDTemplate, error) {
+	return w.ds.FetchSPIFFEIDTemplates(ctx, entryIDs)
+}
+
+func (w metricsWrapper) ListSPIFFEIDTemplates(ctx context.Context, req *datastore.ListSPIFFEIDTemplatesRequest) (*datastore.ListSPIFFEIDTemplatesResponse, error) {
+	return w.ds.ListSPIFFEIDTemplates(ctx, req)
+}
+
+func (w metricsWrapper) PruneSPIFFEIDTemplates(ctx context.Context, expiresBefore time.Time) error {
+	return w.ds.PruneSPIFFEIDTemplates(ctx, expiresBefore)
+}
+
+func (w metricsWrapper) UpdateSPIFFEIDTemplate(ctx context.Context, template *common.SPIFFEIDTemplate, templateMask *common.SPIFFEIDTemplateMask) (*common.SPIFFEIDTemplate, error) {
+	return w.ds.UpdateSPIFFEIDTemplate(ctx, template, templateMask)
+}

@@ -844,6 +844,238 @@ checkAuthorities:
 	return nil
 }
 
+func (ds *Plugin) countSPIFFEIDTemplates(tx *gorm.DB) (int32, error) {
+	tx = tx.Model(&Bundle{})
+
+	var count int
+	if err := tx.Count(&count).Error; err != nil {
+		return 0, newWrappedSQLError(err)
+	}
+
+	return util.CheckedCast[int32](count)
+}
+
+func modelToSPIFFEIDTemplate(tx *gorm.DB, model *SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error) {
+	var fetchedBundles []*Bundle
+	if err := tx.Model(&model).Association("FederatesWith").Find(&fetchedBundles).Error; err != nil {
+		return nil, newWrappedSQLError(err)
+	}
+
+	var federatesWith []string
+	for _, bundle := range fetchedBundles {
+		federatesWith = append(federatesWith, bundle.TrustDomain)
+	}
+
+	fetchedSelectors := strings.Split(model.Selectors, ";")
+	selectors := make([]*common.Selector, 0, len(fetchedSelectors))
+	for _, selector := range fetchedSelectors {
+		fields := strings.SplitN(selector, ":", 2)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("malfored selector %s; expected to have type:value format; %v", selector, fields)
+		}
+
+		selectors = append(selectors, &common.Selector{
+			Type:  fields[0],
+			Value: fields[1],
+		})
+	}
+
+	return &common.SPIFFEIDTemplate{
+		TemplateId:            model.TemplateID,
+		SpiffeIdTemplate:      model.SPIFFEIDTemplate,
+		ParentId:              model.ParentID,
+		Selectors: selectors,
+		X509SvidTtl:           model.X509SvidTTL,
+		JwtSvidTtl:            model.JwtSvidTTL,
+		StoreSvid:             model.StoreSvid,
+		FederatesWith:         federatesWith,
+
+		RevisionNumber: model.RevisionNumber,
+		CreatedAt:      roundedInSecondsUnix(model.CreatedAt),
+	}, nil
+}
+
+func (ds *Plugin) CountSPIFFEIDTemplates(ctx context.Context, _ *datastore.CountSPIFFEIDTemplatesRequest) (resp int32, err error) {
+	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
+		resp, err = ds.countSPIFFEIDTemplates(tx)
+		return err
+	}); err != nil {
+		return -1, err
+	}
+	return resp, nil
+}
+
+func lookupSimilarTemplate(ctx context.Context, db *sqlDB, tx *gorm.DB, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error) {
+	// TODO: ?
+	return nil, nil
+}
+
+func createSPIFFEIDTemplate(tx *gorm.DB, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error) {
+	templateID, err := createOrReturnID(template.TemplateId)
+	if err != nil {
+		return nil, err
+	}
+
+	newTemplate := SPIFFEIDTemplate{
+		TemplateID:       templateID,
+		ParentID:         template.ParentId,
+		SPIFFEIDTemplate: template.SpiffeIdTemplate,
+		X509SvidTTL:      template.X509SvidTtl,
+		JwtSvidTTL:       template.JwtSvidTtl,
+		StoreSvid:        template.StoreSvid,
+	}
+
+	for _, requiredNodeSelector := range template.Selectors {
+		newTemplate.Selectors = newTemplate.Selectors + strings.Join([]string{requiredNodeSelector.Type, requiredNodeSelector.Value}, ":")
+	}
+
+	if err := tx.Create(&newTemplate).Error; err != nil {
+		return nil, newWrappedSQLError(err)
+	}
+
+	federatesWith, err := makeFederatesWith(tx, template.FederatesWith)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Model(&newTemplate).Association("FederatesWith").Append(federatesWith).Error; err != nil {
+		return nil, err
+	}
+
+	spiffeIDTemplate, err := modelToSPIFFEIDTemplate(tx, &newTemplate)
+	if err != nil {
+		return nil, err
+	}
+
+	return spiffeIDTemplate, nil
+}
+
+func (ds *Plugin) createOrReturnSPIFFEIDTemplate(ctx context.Context,
+	template *common.SPIFFEIDTemplate,
+) (spiffeIDTemplate *common.SPIFFEIDTemplate, existing bool, err error) {
+	if err = ds.withWriteTx(ctx, func(tx *gorm.DB) (err error) {
+		/*
+			if err = validateSPIFFEIDTemplate(template); err != nil {
+				return err
+			}
+		*/
+
+		spiffeIDTemplate, err = lookupSimilarTemplate(ctx, ds.db, tx, template)
+		if err != nil {
+			return err
+		}
+		if spiffeIDTemplate != nil {
+			existing = true
+			return nil
+		}
+
+		spiffeIDTemplate, err = createSPIFFEIDTemplate(tx, template)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	return spiffeIDTemplate, existing, nil
+}
+
+func (ds *Plugin) CreateSPIFFEIDTemplate(ctx context.Context, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, error) {
+	out, _, err := ds.createOrReturnSPIFFEIDTemplate(ctx, template)
+	return out, err
+}
+
+func (ds *Plugin) CreateOrReturnSPIFFEIDTemplate(ctx context.Context, template *common.SPIFFEIDTemplate) (*common.SPIFFEIDTemplate, bool, error) {
+	return ds.createOrReturnSPIFFEIDTemplate(ctx, template)
+}
+
+func deleteSPIFFEIDTemplateSupport(tx *gorm.DB, template SPIFFEIDTemplate) error {
+	if err := tx.Model(&template).Association("FederatesWith").Clear().Error; err != nil {
+		return err
+	}
+
+	if err := tx.Delete(&template).Error; err != nil {
+		return newWrappedSQLError(err)
+	}
+
+	return nil
+}
+
+func deleteSPIFFEIDTemplate(tx *gorm.DB, templateId string) (*common.SPIFFEIDTemplate, error) {
+	template := SPIFFEIDTemplate{}
+	if err := tx.Find(&template, "template_id = ?", templateId).Error; err != nil {
+		return nil, newWrappedSQLError(err)
+	}
+
+	spiffeIDTemplate, err := modelToSPIFFEIDTemplate(tx, &template)
+	if err != nil {
+		return nil, err
+	}
+
+	err = deleteSPIFFEIDTemplateSupport(tx, template)
+	if err != nil {
+		return nil, err
+	}
+
+	return spiffeIDTemplate, nil
+}
+
+func (ds *Plugin) DeleteSPIFFEIDTemplate(ctx context.Context, templateID string) (template *common.SPIFFEIDTemplate, err error) {
+	if err = ds.withWriteTx(ctx, func(tx *gorm.DB) (err error) {
+		template, err = deleteSPIFFEIDTemplate(tx, templateID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return template, nil
+}
+
+func (ds *Plugin) FetchSPIFFEIDTemplate(ctx context.Context, entryID string) (*common.SPIFFEIDTemplate, error) {
+	return nil, nil
+
+}
+
+func (ds *Plugin) FetchSPIFFEIDTemplates(ctx context.Context, entryIDs []string) (map[string]*common.SPIFFEIDTemplate, error) {
+
+	return nil, nil
+}
+
+func (ds *Plugin) listSPIFFEIDTemplates(tx *gorm.DB, _ *datastore.ListSPIFFEIDTemplatesRequest) (*datastore.ListSPIFFEIDTemplatesResponse, error) {
+	var templates []SPIFFEIDTemplate
+	if err := tx.Find(&templates).Error; err != nil {
+		return nil, newWrappedSQLError(err)
+	}
+	resp := &datastore.ListSPIFFEIDTemplatesResponse{}
+	for _, model := range templates {
+		spiffeIDTemplate, err := modelToSPIFFEIDTemplate(tx, &model)
+		if err != nil {
+			return nil, err
+		}
+
+		resp.SPIFFEIDTemplates = append(resp.SPIFFEIDTemplates, spiffeIDTemplate)
+	}
+	return resp, nil
+}
+
+func (ds *Plugin) ListSPIFFEIDTemplates(ctx context.Context, req *datastore.ListSPIFFEIDTemplatesRequest) (resp *datastore.ListSPIFFEIDTemplatesResponse, err error) {
+	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
+		resp, err = ds.listSPIFFEIDTemplates(tx, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (ds *Plugin) PruneSPIFFEIDTemplates(ctx context.Context, expiresBefore time.Time) error {
+	return nil
+}
+
+func (ds *Plugin) UpdateSPIFFEIDTemplate(context.Context, *common.SPIFFEIDTemplate, *common.SPIFFEIDTemplateMask) (*common.SPIFFEIDTemplate, error) {
+	return nil, nil
+}
+
 // Configure parses HCL config payload into config struct, opens new DB based on the result, and
 // prunes all orphaned records
 func (ds *Plugin) Configure(_ context.Context, hclConfiguration string) error {
@@ -4609,6 +4841,14 @@ func modelToEntry(tx *gorm.DB, model RegisteredEntry) (*common.RegistrationEntry
 func createOrReturnEntryID(entry *common.RegistrationEntry) (string, error) {
 	if entry.EntryId != "" {
 		return entry.EntryId, nil
+	}
+
+	return newRegistrationEntryID()
+}
+
+func createOrReturnID(id string) (string, error) {
+	if id != "" {
+		return id, nil
 	}
 
 	return newRegistrationEntryID()

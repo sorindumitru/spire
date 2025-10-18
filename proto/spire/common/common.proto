@@ -115,11 +115,29 @@ message RegistrationEntryMask {
     bool hint = 13;
 }
 
-
 /** A list of registration entries. */
 message RegistrationEntries {
     /** A list of RegistrationEntry. */
     repeated RegistrationEntry entries = 1;
+}
+
+message SPIFFEIDTemplate {
+    string template_id = 1;
+    int64 revision_number = 2;
+    int64 created_at = 3;
+    string parent_id = 4;
+    string spiffe_id_template = 5;
+    repeated Selector selectors = 6;
+    repeated string federates_with = 7;
+    int32 x509_svid_ttl = 8;
+    int32 jwt_svid_ttl = 9;
+    bool store_svid = 10;
+}
+
+message SPIFFEIDTemplateMask {
+    /** The SPIFFE ID of an entity that is authorized to attest the validity
+    of a selector */
+    string parent_id = 1;
 }
 
 /** Certificate represents a ASN.1/DER encoded X509 certificate */

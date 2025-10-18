@@ -114,6 +114,16 @@
 			"allow_agent": true
 		},
 		{
+			"full_method": "/spire.api.server.entry.v1.Entry/BatchCreateSPIFFEIDTemplate",
+			"allow_admin": true,
+			"allow_local": true
+		},
+		{
+			"full_method": "/spire.api.server.entry.v1.Entry/ListSPIFFEIDTemplates",
+			"allow_admin": true,
+			"allow_local": true
+		},
+		{
 			"full_method": "/spire.api.server.logger.v1.Logger/GetLogger",
 			"allow_local": true
 		},

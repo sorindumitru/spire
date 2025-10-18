@@ -19,7 +19,8 @@ type Bundle struct {
 	TrustDomain string `gorm:"not null;unique_index"`
 	Data        []byte `gorm:"size:16777215"` // make MySQL to use MEDIUMBLOB (max 16MB) - doesn't affect PostgreSQL/SQLite
 
-	FederatedEntries []RegisteredEntry `gorm:"many2many:federated_registration_entries;"`
+	FederatedEntries   []RegisteredEntry  `gorm:"many2many:federated_registration_entries;"`
+	FederatedTemplates []SPIFFEIDTemplate `gorm:"many2many:federated_spiffeid_templates;"`
 }
 
 // AttestedNode holds an attested node (agent)
@@ -112,6 +113,23 @@ type RegisteredEntry struct {
 
 	// TTL of JWT identities derived from this entry
 	JWTSvidTTL int32 `gorm:"column:jwt_svid_ttl"`
+}
+
+type SPIFFEIDTemplate struct {
+	Model
+
+	TemplateID       string   `gorm:"unique_index"`
+	SPIFFEIDTemplate string   `gorm:"index"`
+	ParentID         string   `gorm:"index"`
+	X509SvidTTL      int32    `gorm:"column:x509_svid_ttl"`
+	JwtSvidTTL       int32    `gorm:"column:jwt_svid_ttl"`
+	FederatesWith    []Bundle `gorm:"many2many:federated_spiffeid_templates;"`
+	Selectors        string
+	StoreSvid        bool
+
+	// RevisionNumber is a counter that is incremented when the entry is
+	// updated.
+	RevisionNumber int64
 }
 
 // RegisteredEntryEvent holds the entry id of a registered entry that had an event

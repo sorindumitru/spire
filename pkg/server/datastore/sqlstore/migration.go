@@ -265,11 +265,13 @@ import (
 // | v1.13.0 |        |                                                                           |
 // | v1.13.1 |        |                                                                           |
 // | v1.13.2 |        |                                                                           |
+// |*********|********|***************************************************************************|
+// | v1.XY.Z |        |                                                                           |
 // ================================================================================================
 
 const (
 	// the latest schema version of the database in the code
-	latestSchemaVersion = 23
+	latestSchemaVersion = 24
 
 	// lastMinorReleaseSchemaVersion is the schema version supported by the
 	// last minor release. When the migrations are opportunistically pruned
@@ -429,6 +431,7 @@ func initDB(db *gorm.DB, dbType string, log logrus.FieldLogger) (err error) {
 		&DNSName{},
 		&FederatedTrustDomain{},
 		CAJournal{},
+		SPIFFEIDTemplate{},
 	}
 
 	if err := tableOptionsForDialect(tx, dbType).AutoMigrate(tables...).Error; err != nil {
@@ -520,5 +523,6 @@ func addFederatedRegistrationEntriesRegisteredEntryIDIndex(tx *gorm.DB) error {
 	if err := tx.Table("federated_registration_entries").AddIndex("idx_federated_registration_entries_registered_entry_id", "registered_entry_id").Error; err != nil {
 		return newWrappedSQLError(err)
 	}
+
 	return nil
 }

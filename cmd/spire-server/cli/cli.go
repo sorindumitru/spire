@@ -15,6 +15,7 @@ import (
 	localauthority_x509 "github.com/spiffe/spire/cmd/spire-server/cli/localauthority/x509"
 	"github.com/spiffe/spire/cmd/spire-server/cli/logger"
 	"github.com/spiffe/spire/cmd/spire-server/cli/run"
+	"github.com/spiffe/spire/cmd/spire-server/cli/template"
 	"github.com/spiffe/spire/cmd/spire-server/cli/token"
 	"github.com/spiffe/spire/cmd/spire-server/cli/upstreamauthority"
 	"github.com/spiffe/spire/cmd/spire-server/cli/validate"
@@ -80,7 +81,13 @@ func (cc *CLI) Run(ctx context.Context, args []string) int {
 			return entry.NewDeleteCommand(), nil
 		},
 		"entry show": func() (cli.Command, error) {
-			return entry.NewShowCommand(), nil
+			return template.NewShowCommand(), nil
+		},
+		"template create": func() (cli.Command, error) {
+			return template.NewCreateCommand(), nil
+		},
+		"template show": func() (cli.Command, error) {
+			return template.NewShowCommand(), nil
 		},
 		"federation create": func() (cli.Command, error) {
 			return federation.NewCreateCommand(), nil
