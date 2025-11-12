@@ -82,6 +82,7 @@ type serverConfig struct {
 	DisableJWTSVIDs              bool               `hcl:"disable_jwt_svids"`
 	JWTIssuer                    string             `hcl:"jwt_issuer"`
 	JWTKeyType                   string             `hcl:"jwt_key_type"`
+	WITKeyType                   string             `hcl:"wit_key_type"`
 	LogFile                      string             `hcl:"log_file"`
 	LogLevel                     string             `hcl:"log_level"`
 	LogFormat                    string             `hcl:"log_format"`
@@ -648,15 +649,24 @@ func NewServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool
 		}
 		sc.CAKeyType = keyType
 		sc.JWTKeyType = keyType
+		sc.WITKeyType = keyType
 	} else {
 		sc.CAKeyType = keymanager.ECP256
 		sc.JWTKeyType = keymanager.ECP256
+		sc.WITKeyType = keymanager.ECP256
 	}
 
 	if c.Server.JWTKeyType != "" {
 		sc.JWTKeyType, err = keyTypeFromString(c.Server.JWTKeyType)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing jwt_key_type: %w", err)
+		}
+	}
+
+	if c.Server.WITKeyType != "" {
+		sc.WITKeyType, err = keyTypeFromString(c.Server.WITKeyType)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing wit_key_type: %w", err)
 		}
 	}
 
