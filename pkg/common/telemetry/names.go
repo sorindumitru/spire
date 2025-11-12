@@ -795,6 +795,13 @@ const (
 	// Telemetry tags a telemetry module
 	Telemetry = "telemetry"
 
+	// WIT declares WIT-SVID type, clarifying metrics
+	WIT = "wit"
+
+	// WITKey functionality related to a WIT key; should be used with other tags
+	// to add clarity. Should NEVER actually provide the key itself, use Key ID instead.
+	WITKey = "wit_key"
+
 	// X509CA functionality related to an x509 CA; should be used with other tags
 	// to add clarity
 	X509CA = "x509_ca"
