@@ -1177,6 +1177,10 @@ func applyBundleMask(model *Bundle, newBundle *common.Bundle, inputMask *common.
 		bundle.JwtSigningKeys = newBundle.JwtSigningKeys
 	}
 
+	if inputMask.WitSigningKeys {
+		bundle.WitSigningKeys = newBundle.WitSigningKeys
+	}
+
 	if inputMask.SequenceNumber {
 		bundle.SequenceNumber = newBundle.SequenceNumber
 	}

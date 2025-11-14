@@ -623,6 +623,10 @@ const (
 	// VersionInfo tags some version information
 	VersionInfo = "version_info"
 
+	// WITKeys tags some count or list of WIT Keys. Should NEVER provide the actual keys, use
+	// Key IDs instead.
+	WITKeys = "wit_keys"
+
 	// WorkloadAttestation tags call of overall workload attestation
 	WorkloadAttestation = "workload_attestation"
 

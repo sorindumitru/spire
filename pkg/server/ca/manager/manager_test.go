@@ -120,6 +120,70 @@ func TestGetNextJWTKeySlot(t *testing.T) {
 	})
 }
 
+func TestGetCurrentWITKeySlot(t *testing.T) {
+	ctx := context.Background()
+
+	test := setupTest(t)
+	test.initSelfSignedManager()
+	require.False(t, test.m.IsUpstreamAuthority())
+
+	t.Run("no authority created", func(t *testing.T) {
+		currentSlot := test.m.GetCurrentWITKeySlot()
+
+		slot := currentSlot.(*witKeySlot)
+
+		require.True(t, slot.IsEmpty())
+		require.Empty(t, slot.issuedAt)
+		require.Empty(t, slot.authorityID)
+		require.Empty(t, slot.notAfter)
+	})
+
+	t.Run("slot returned", func(t *testing.T) {
+		expectIssuedAt := test.clock.Now()
+		expectNotAfter := expectIssuedAt.Add(test.m.caTTL)
+
+		require.NoError(t, test.m.PrepareWITKey(ctx))
+
+		currentSlot := test.m.GetCurrentWITKeySlot()
+		slot := currentSlot.(*witKeySlot)
+		require.NotNil(t, slot.witKey)
+		require.NotEmpty(t, slot.authorityID)
+		require.Equal(t, expectIssuedAt, slot.issuedAt)
+		require.Equal(t, expectNotAfter, slot.notAfter)
+	})
+}
+
+func TestGetNextWITKeySlot(t *testing.T) {
+	ctx := context.Background()
+
+	test := setupTest(t)
+	test.initAndActivateSelfSignedManager(ctx)
+
+	t.Run("no next created", func(t *testing.T) {
+		nextSlot := test.m.GetNextWITKeySlot()
+		slot := nextSlot.(*witKeySlot)
+
+		require.Nil(t, slot.witKey)
+		require.Empty(t, slot.issuedAt)
+		require.Empty(t, slot.authorityID)
+		require.Empty(t, slot.notAfter)
+	})
+
+	t.Run("next returned", func(t *testing.T) {
+		expectIssuedAt := test.clock.Now()
+		expectNotAfter := expectIssuedAt.Add(test.m.caTTL)
+
+		require.NoError(t, test.m.PrepareWITKey(ctx))
+
+		nextSlot := test.m.GetNextWITKeySlot()
+		slot := nextSlot.(*witKeySlot)
+		require.NotNil(t, slot.witKey)
+		require.NotEmpty(t, slot.authorityID)
+		require.Equal(t, expectIssuedAt, slot.issuedAt)
+		require.Equal(t, expectNotAfter, slot.notAfter)
+	})
+}
+
 func TestGetCurrentX509CASlot(t *testing.T) {
 	ctx := context.Background()
 
@@ -218,34 +282,43 @@ func TestPersistence(t *testing.T) {
 	test.initSelfSignedManager()
 	require.Nil(t, test.currentJWTKey())
 	require.Nil(t, test.currentX509CA())
+	require.Nil(t, test.currentWITKey())
 
 	// Prepare authority and activate authority
 	require.NoError(t, test.m.PrepareJWTKey(ctx))
 	test.m.ActivateJWTKey(ctx)
 	require.NoError(t, test.m.PrepareX509CA(ctx))
 	test.m.ActivateX509CA(ctx)
+	require.NoError(t, test.m.PrepareWITKey(ctx))
+	test.m.ActivateWITKey(ctx)
 
-	firstX509CA, firstJWTKey := test.currentX509CA(), test.currentJWTKey()
+	firstX509CA, firstJWTKey, firstWITKey := test.currentX509CA(), test.currentJWTKey(), test.currentWITKey()
 
 	// reinitialize against the same storage
 	test.initSelfSignedManager()
+
 	test.requireX509CAEqual(t, firstX509CA, test.currentX509CA())
 	test.requireJWTKeyEqual(t, firstJWTKey, test.currentJWTKey())
+	test.requireWITKeyEqual(t, firstWITKey, test.currentWITKey())
 
 	require.Nil(t, test.nextX509CA())
 	require.Nil(t, test.nextJWTKey())
+	require.Nil(t, test.nextWITKey())
 
 	// prepare the next and reinitialize, move time
 	test.clock.Add(prepareAfter + time.Minute)
 	require.NoError(t, test.m.PrepareJWTKey(ctx))
 	require.NoError(t, test.m.PrepareX509CA(ctx))
+	require.NoError(t, test.m.PrepareWITKey(ctx))
 
-	secondX509CA, secondJWTKey := test.nextX509CA(), test.nextJWTKey()
+	secondX509CA, secondJWTKey, secondWITKey := test.nextX509CA(), test.nextJWTKey(), test.nextWITKey()
 	test.initSelfSignedManager()
 	test.requireX509CAEqual(t, firstX509CA, test.currentX509CA())
 	test.requireJWTKeyEqual(t, firstJWTKey, test.currentJWTKey())
+	test.requireWITKeyEqual(t, firstWITKey, test.currentWITKey())
 	test.requireX509CAEqual(t, secondX509CA, test.nextX509CA())
 	test.requireJWTKeyEqual(t, secondJWTKey, test.nextJWTKey())
+	test.requireWITKeyEqual(t, secondWITKey, test.nextWITKey())
 }
 
 func TestSlotLoadedWhenJournalIsLost(t *testing.T) {
@@ -1269,6 +1342,12 @@ type jwtKeyInfo struct {
 	NotAfter time.Time
 }
 
+type witKeyInfo struct {
+	Signer   signerInfo
+	Kid      string
+	NotAfter time.Time
+}
+
 type signerInfo struct {
 	KeyID     string
 	PublicKey []byte
@@ -1342,6 +1421,8 @@ func (m *managerTest) initAndActivateSelfSignedManager(ctx context.Context) {
 	manager.ActivateJWTKey(ctx)
 	require.NoError(m.t, manager.PrepareX509CA(ctx))
 	manager.ActivateX509CA(ctx)
+	require.NoError(m.t, manager.PrepareWITKey(ctx))
+	manager.ActivateWITKey(ctx)
 
 	m.m = manager
 }
@@ -1367,13 +1448,15 @@ func (m *managerTest) initAndActivateUpstreamSignedManager(ctx context.Context, 
 	m.m.ActivateJWTKey(ctx)
 	require.NoError(m.t, m.m.PrepareX509CA(ctx))
 	m.m.ActivateX509CA(ctx)
+	require.NoError(m.t, m.m.PrepareWITKey(ctx))
+	m.m.ActivateWITKey(ctx)
 }
 
 func (m *managerTest) selfSignedConfig() Config {
-	return m.selfSignedConfigWithKeyTypes(keymanager.ECP256, keymanager.ECP256)
+	return m.selfSignedConfigWithKeyTypes(keymanager.ECP256, keymanager.ECP256, keymanager.ECP256)
 }
 
-func (m *managerTest) selfSignedConfigWithKeyTypes(x509CAKeyType, jwtKeyType keymanager.KeyType) Config {
+func (m *managerTest) selfSignedConfigWithKeyTypes(x509CAKeyType, jwtKeyType keymanager.KeyType, witKeyType keymanager.KeyType) Config {
 	credBuilder, err := credtemplate.NewBuilder(credtemplate.Config{
 		TrustDomain:         testTrustDomain,
 		X509CASubject:       pkix.Name{CommonName: "SPIRE"},
@@ -1395,6 +1478,7 @@ func (m *managerTest) selfSignedConfigWithKeyTypes(x509CAKeyType, jwtKeyType key
 		TrustDomain:   testTrustDomain,
 		X509CAKeyType: x509CAKeyType,
 		JWTKeyType:    jwtKeyType,
+		WITKeyType:    witKeyType,
 		Metrics:       m.metrics,
 		Log:           m.log,
 		Clock:         m.clock,
@@ -1409,6 +1493,10 @@ func (m *managerTest) requireX509CAEqual(t *testing.T, expected, actual *ca.X509
 
 func (m *managerTest) requireJWTKeyEqual(t *testing.T, expected, actual *ca.JWTKey, msgAndArgs ...any) {
 	require.Equal(t, m.getJWTKeyInfo(expected), m.getJWTKeyInfo(actual), msgAndArgs...)
+}
+
+func (m *managerTest) requireWITKeyEqual(t *testing.T, expected, actual *ca.WITKey, msgAndArgs ...any) {
+	require.Equal(t, m.getWITKeyInfo(expected), m.getWITKeyInfo(actual), msgAndArgs...)
 }
 
 func (m *managerTest) getX509CAInfo(x509CA *ca.X509CA) x509CAInfo {
@@ -1430,6 +1518,17 @@ func (m *managerTest) getJWTKeyInfo(jwtKey *ca.JWTKey) jwtKeyInfo {
 		Signer:   m.getSignerInfo(jwtKey.Signer),
 		Kid:      jwtKey.Kid,
 		NotAfter: jwtKey.NotAfter,
+	}
+}
+
+func (m *managerTest) getWITKeyInfo(witKey *ca.WITKey) witKeyInfo {
+	if witKey == nil {
+		return witKeyInfo{}
+	}
+	return witKeyInfo{
+		Signer:   m.getSignerInfo(witKey.Signer),
+		Kid:      witKey.Kid,
+		NotAfter: witKey.NotAfter,
 	}
 }
 
@@ -1526,6 +1625,15 @@ func (m *managerTest) currentJWTKeyStatus() journal.Status {
 	return m.m.currentJWTKey.status
 }
 
+func (m *managerTest) currentWITKey() *ca.WITKey {
+	m.requireWITKeyEqual(m.t, m.m.currentWITKey.witKey, m.ca.WITKey(), "current WITKey is not active")
+	return m.m.currentWITKey.witKey
+}
+
+func (m *managerTest) currentWITKeyStatus() journal.Status {
+	return m.m.currentWITKey.status
+}
+
 func (m *managerTest) nextX509CA() *ca.X509CA {
 	return m.m.nextX509CA.x509CA
 }
@@ -1540,6 +1648,14 @@ func (m *managerTest) nextJWTKey() *ca.JWTKey {
 
 func (m *managerTest) nextJWTKeyStatus() journal.Status {
 	return m.m.nextJWTKey.status
+}
+
+func (m *managerTest) nextWITKey() *ca.WITKey {
+	return m.m.nextWITKey.witKey
+}
+
+func (m *managerTest) nextWITKeyStatus() journal.Status {
+	return m.m.nextWITKey.status
 }
 
 func (m *managerTest) setTimeAndPrune(t time.Time) {
@@ -1597,6 +1713,7 @@ type fakeCA struct {
 	mu     sync.Mutex
 	x509CA *ca.X509CA
 	jwtKey *ca.JWTKey
+	witKey *ca.WITKey
 
 	taintedAuthoritiesCh chan []*x509.Certificate
 }
@@ -1623,6 +1740,18 @@ func (s *fakeCA) SetJWTKey(jwtKey *ca.JWTKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.jwtKey = jwtKey
+}
+
+func (s *fakeCA) WITKey() *ca.WITKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.witKey
+}
+
+func (s *fakeCA) SetWITKey(witKey *ca.WITKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.witKey = witKey
 }
 
 func (s *fakeCA) NotifyTaintedX509Authorities(taintedAuthorities []*x509.Certificate) {

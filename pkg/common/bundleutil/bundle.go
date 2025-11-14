@@ -160,6 +160,10 @@ func MergeBundles(a, b *common.Bundle) (*common.Bundle, bool) {
 	for _, jwtSigningKey := range a.JwtSigningKeys {
 		jwtSigningKeys[jwtSigningKey.String()] = true
 	}
+	witSigningKeys := make(map[string]bool)
+	for _, witSigningKey := range a.WitSigningKeys {
+		witSigningKeys[witSigningKey.String()] = true
+	}
 
 	var changed bool
 	for _, rootCA := range b.RootCas {
@@ -171,6 +175,12 @@ func MergeBundles(a, b *common.Bundle) (*common.Bundle, bool) {
 	for _, jwtSigningKey := range b.JwtSigningKeys {
 		if !jwtSigningKeys[jwtSigningKey.String()] {
 			c.JwtSigningKeys = append(c.JwtSigningKeys, jwtSigningKey)
+			changed = true
+		}
+	}
+	for _, witSigningKey := range b.WitSigningKeys {
+		if !witSigningKeys[witSigningKey.String()] {
+			c.WitSigningKeys = append(c.WitSigningKeys, witSigningKey)
 			changed = true
 		}
 	}

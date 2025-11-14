@@ -184,11 +184,11 @@ func (j *Journal) UpdateJWTKeyStatus(ctx context.Context, authorityID string, st
 	return nil
 }
 
-func (j *Journal) AppendWITKey(ctx context.Context, slotID string, issuedAt time.Time, jwtKey *ca.WITKey) error {
+func (j *Journal) AppendWITKey(ctx context.Context, slotID string, issuedAt time.Time, witKey *ca.WITKey) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	pkixBytes, err := x509.MarshalPKIXPublicKey(jwtKey.Signer.Public())
+	pkixBytes, err := x509.MarshalPKIXPublicKey(witKey.Signer.Public())
 	if err != nil {
 		return err
 	}
@@ -197,11 +197,11 @@ func (j *Journal) AppendWITKey(ctx context.Context, slotID string, issuedAt time
 	j.entries.WitKeys = append(j.entries.WitKeys, &journal.WITKeyEntry{
 		SlotId:      slotID,
 		IssuedAt:    issuedAt.Unix(),
-		Kid:         jwtKey.Kid,
+		Kid:         witKey.Kid,
 		PublicKey:   pkixBytes,
-		NotAfter:    jwtKey.NotAfter.Unix(),
+		NotAfter:    witKey.NotAfter.Unix(),
 		Status:      journal.Status_PREPARED,
-		AuthorityId: jwtKey.Kid,
+		AuthorityId: witKey.Kid,
 	})
 
 	exceeded := len(j.entries.WitKeys) - journalCap
