@@ -361,6 +361,7 @@ func setupTest(tb testing.TB) *rotationTest {
 
 		x509CACh:          make(chan struct{}, 1),
 		jwtKeyCh:          make(chan struct{}, 1),
+		witKeyCh:          make(chan struct{}, 1),
 		pruneBundleCh:     make(chan struct{}, 1),
 		pruneCAJournalsCh: make(chan struct{}, 1),
 	}
@@ -369,8 +370,10 @@ func setupTest(tb testing.TB) *rotationTest {
 	now := clock.Now()
 	fManager.currentJWTKeySlot = createSlot("jwt-a", now, true)
 	fManager.currentX509CASlot = createSlot("x509-a", now, true)
+	fManager.currentWITKeySlot = createSlot("wit-a", now, true)
 	fManager.nextJWTKeySlot = createSlot("jwt-b", now, false)
 	fManager.nextX509CASlot = createSlot("x509-b", now, false)
+	fManager.nextWITKeySlot = createSlot("wit-b", now, false)
 
 	rotator := NewRotator(Config{
 		Manager:       fManager,
@@ -402,8 +405,14 @@ type fakeCAManager struct {
 	nextJWTKeySlot    *fakeSlot
 	prepareJWTKeyErr  error
 
+	disableWITSVIDs   bool
+	currentWITKeySlot *fakeSlot
+	nextWITKeySlot    *fakeSlot
+	prepareWITKeyErr  error
+
 	x509CACh chan struct{}
 	jwtKeyCh chan struct{}
+	witKeyCh chan struct{}
 
 	pruneBundleWasCalled     bool
 	pruneBundleCh            chan struct{}
@@ -511,6 +520,49 @@ func (f *fakeCAManager) RotateJWTKey(context.Context) {
 	f.jwtKeyCh <- struct{}{}
 }
 
+func (f *fakeCAManager) GetCurrentWITKeySlot() manager.Slot {
+	return f.currentWITKeySlot
+}
+
+func (f *fakeCAManager) GetNextWITKeySlot() manager.Slot {
+	return f.nextWITKeySlot
+}
+
+func (f *fakeCAManager) PrepareWITKey(context.Context) error {
+	f.cleanWITKeyCh()
+	if f.prepareWITKeyErr != nil {
+		return f.prepareWITKeyErr
+	}
+
+	slot := f.nextWITKeySlot
+	if !f.currentWITKeySlot.hasValue {
+		slot = f.currentWITKeySlot
+	}
+
+	slot.hasValue = true
+	slot.preparationTime = f.clk.Now().Add(time.Minute)
+	slot.activationTime = f.clk.Now().Add(2 * time.Minute)
+	f.witKeyCh <- struct{}{}
+	return nil
+}
+
+func (f *fakeCAManager) ActivateWITKey(context.Context) {
+	f.cleanWITKeyCh()
+	f.currentWITKeySlot.isActive = true
+	f.witKeyCh <- struct{}{}
+}
+
+func (f *fakeCAManager) RotateWITKey(context.Context) {
+	f.cleanWITKeyCh()
+	currentID := f.currentWITKeySlot.keyID
+
+	f.currentWITKeySlot.keyID = f.nextWITKeySlot.keyID
+	f.currentWITKeySlot.isActive = true
+	f.nextWITKeySlot.keyID = currentID
+	f.nextWITKeySlot.hasValue = false
+	f.witKeyCh <- struct{}{}
+}
+
 func (f *fakeCAManager) SubscribeToLocalBundle(ctx context.Context) error {
 	return nil
 }
@@ -547,6 +599,13 @@ func (f *fakeCAManager) cleanJWTKeyCh() {
 	}
 }
 
+func (f *fakeCAManager) cleanWITKeyCh() {
+	select {
+	case <-f.witKeyCh:
+	default:
+	}
+}
+
 func (f *fakeCAManager) waitX509CAUpdate(ctx context.Context, t *testing.T) {
 	select {
 	case <-ctx.Done():
@@ -560,6 +619,14 @@ func (f *fakeCAManager) waitJWTKeyUpdate(ctx context.Context, t *testing.T) {
 	case <-ctx.Done():
 		assert.Fail(t, "context finished")
 	case <-f.jwtKeyCh:
+	}
+}
+
+func (f *fakeCAManager) waitWITKeyUpdate(ctx context.Context, t *testing.T) {
+	select {
+	case <-ctx.Done():
+		assert.Fail(t, "context finished")
+	case <-f.witKeyCh:
 	}
 }
 
