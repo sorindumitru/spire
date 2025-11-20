@@ -292,9 +292,9 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 		existing, ok := c.bundles[id]
 		if !(ok && existing.Equal(bundle)) {
 			if !ok {
-				c.log.WithField(telemetry.TrustDomainID, id).Debug("Bundle added")
+				c.log.WithField(telemetry.TrustDomainID, id).Info("Bundle added during sync")
 			} else {
-				c.log.WithField(telemetry.TrustDomainID, id).Debug("Bundle updated")
+				c.log.WithField(telemetry.TrustDomainID, id).Info("Bundle updated during sync")
 			}
 			bundleChanged[id] = true
 			c.bundles[id] = bundle
@@ -480,8 +480,10 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 	}
 
 	if trustDomainBundleChanged {
+		c.log.Info("Notifying all subscribers due to bundle change")
 		c.notifyAll()
 	} else {
+		c.log.Info("Notifying subset subscribers due to bundle change")
 		c.notifyBySelectorSet(notifySets...)
 	}
 }
