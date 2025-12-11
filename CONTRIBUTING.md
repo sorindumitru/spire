@@ -2,21 +2,63 @@
 
 ## Contributor guidelines and Governance
 
-Please see
+Please also see
 [CONTRIBUTING](https://github.com/spiffe/spiffe/blob/main/CONTRIBUTING.md)
 and
 [GOVERNANCE](https://github.com/spiffe/spiffe/blob/main/GOVERNANCE.md)
-from the SPIFFE project.
+from the overarching SPIFFE project.
 
-As a general guideline, it is suggested to first create an issue summarizing the changes you would like to see to the project.
-The project maintainers regularly triage open issues to clarify the request, refine the scope, and determine the direction for the issue.
-Contributions that are tied to a triaged issue are more likely to be successfully merged into the project.
+We welcome and encourage anyone to contribute to the development of SPIRE. It is suggested to
+first create an issue summarizing the changes you would like to see in the project. This steps can
+be skipped for smaller fixes, but please do not spend too much time on larger features or refactorings
+without first opening an issue.
+
+The project maintainers regularly triage open issues to clarify the request, refine the scope, and determine
+the direction for the issue. Contributions that are tied to a triaged issue are more likely to be successfully
+merged into the project.
+
+### Triage process
+
+Triage of issues is performed transparently, offline using issue comments and online in our [weekly contributor's
+meeting](#spire-contributor-sync). Everyone is invited
+to participate in triaging, the process is not limited to participation only by maintainers.
+
+Usually issues are triaged from oldest to newest, but we may change order if an issue is more urgent or
+if a contributor is available in the [contributors sync](#spire-contributor-sync) to discuss the change they want to make.
+
+While the issue is being triaged it will have the tag `triage/in-progress`. Clarifying questions will
+be asked while we determine the path forward for the issue. The outcome of all online discussions will be
+summarized as comments on the issue.
+
+Depending on how many issues we have it may take a while until we get to your issue.
+
+### Triage outcome
+
+After the issue was triaged it will move to one of the following steps:
+
+* Accepted. The maintainers have decided that this contribution is valuable to the community at large and fits
+with the roadmap of the project. Issues in this state will have the `priority/backlog` label added to them.
+Implementation may be started either by a maintainer or by anyone else if the `help-wanted` tag is added to the issue.
+* Scoping required. It may be that we require more details into a specific solution so a design document is
+required before starting work on the issue. The maintainers will indicate what they want to document to cover
+before moving the issue into this state. Issues in this state will have the `unscoped` label added to them.
+* Declined. Sometimes a proposed change may not align with the roadmap of the project or change the behaviour
+or security posture of the projects in a way that it will negatively impact other users. There will be discussions
+to understand the requirements for the change and we will try to find alternative solutions before declining
+a change request.
+
+### SPIRE contributor sync
+
+We meet regularly with contributors and the community to discuss issues and ideas around SPIRE. Anyone can join this
+meetings and contribute to the discussions.
+
+The meetings happen weekly, every Tuesday at 11:30 AM PST over [Zoom](https://zoom.us/j/99039970340?pwd=YVBJUCt4U0hISXNNckpoV0dtZWN4QT09).
 
 ## Prerequisites
 
 For basic development you will need:
 
-* **Go 1.11** or higher (<https://golang.org/dl/>)
+* **Go 1.25** or higher (<https://golang.org/dl/>)
 
 For development that requires changes to the gRPC interfaces you will need:
 
