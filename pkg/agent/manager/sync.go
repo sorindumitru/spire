@@ -35,12 +35,18 @@ type SVIDCache interface {
 	// UpdateSVIDs updates SVIDs on provided records
 	UpdateSVIDs(update *cache.UpdateSVIDs)
 
-	// GetStaleEntries gets a list of records that need update SVIDs
+	// GetStaleEntries gets a list of records that need updated X509-SVIDs
 	GetStaleEntries() []*cache.StaleEntry
+
+	// GetStaleEntries gets a list of records that need updated JWT-SVIDs
+	GetStaleJWTSVIDs() []cache.StaleJWTSVID
 
 	// TaintX509SVIDs marks all SVIDs signed by a tainted X.509 authority as tainted
 	// to force their rotation.
 	TaintX509SVIDs(ctx context.Context, taintedX509Authorities []*x509.Certificate)
+
+	// SetJWTSVID adds JWT-SVID to cache
+	SetJWTSVID(id spiffeid.ID, audience []string, svid *client.JWTSVID)
 
 	// TaintJWTSVIDs removes JWT-SVIDs with tainted authorities from the cache,
 	// forcing the server to issue a new JWT-SVID when one with a tainted
@@ -199,6 +205,28 @@ func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVI
 		// the values in `update` now belong to the cache. DO NOT MODIFY.
 		c.UpdateSVIDs(update)
 	}
+
+	jwtSvidUpdateLoopStart := m.c.Clk.Now()
+	staleJWTSVIDs := c.GetStaleJWTSVIDs()
+	for _, svid := range staleJWTSVIDs {
+		log.WithFields(logrus.Fields{"staleJWTSVIDs": staleJWTSVIDs}).Info("Renewing stale entries")
+		if m.c.Clk.Now().Sub(jwtSvidUpdateLoopStart) > time.Second {
+			break
+		}
+
+		newSVID, spiffeIdString, err := m.client.NewJWTSVID(ctx, svid.EntryID, svid.Audience)
+		if err != nil {
+			continue
+		}
+
+		spiffeId, err := spiffeid.FromString(spiffeIdString)
+		if err != nil {
+			continue
+		}
+
+		c.SetJWTSVID(spiffeId, svid.Audience, newSVID)
+	}
+
 	return nil
 }
 

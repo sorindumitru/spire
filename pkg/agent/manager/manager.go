@@ -124,6 +124,9 @@ type Cache interface {
 	FetchWorkloadUpdate(selectors []*common.Selector) *cache.WorkloadUpdate
 
 	// GetJWTSVID provides JWT-SVID
+	RequestJWTSVIDUpdate(entryID string, id spiffeid.ID, audience []string)
+
+	// GetJWTSVID provides JWT-SVID
 	GetJWTSVID(id spiffeid.ID, audience []string) (*client.JWTSVID, bool)
 
 	// SetJWTSVID adds JWT-SVID to cache
@@ -293,9 +296,19 @@ func (m *manager) FetchJWTSVID(ctx context.Context, entry *common.RegistrationEn
 	}
 
 	now := m.clk.Now()
+	expired := true
 	cachedSVID, ok := m.cache.GetJWTSVID(spiffeID, audience)
-	if ok && !m.c.RotationStrategy.JWTSVIDExpiresSoon(cachedSVID, now) {
-		return cachedSVID, nil
+	if ok {
+		expiresSoon := m.c.RotationStrategy.JWTSVIDExpiresSoon(cachedSVID, now)
+		expired = rotationutil.JWTSVIDExpired(cachedSVID, now)
+
+		switch {
+		case expiresSoon && !expired:
+			m.cache.RequestJWTSVIDUpdate(entry.EntryId, spiffeID, audience)
+			return cachedSVID, nil
+		case !expired:
+			return cachedSVID, nil
+		}
 	}
 
 	newSVID, spiffeIdString, err := m.client.NewJWTSVID(ctx, entry.EntryId, audience)
@@ -303,7 +316,7 @@ func (m *manager) FetchJWTSVID(ctx context.Context, entry *common.RegistrationEn
 	case err == nil:
 	case cachedSVID == nil:
 		return nil, err
-	case rotationutil.JWTSVIDExpired(cachedSVID, now):
+	case expired:
 		return nil, fmt.Errorf("unable to renew JWT for %q (err=%w)", spiffeID, err)
 	default:
 		m.c.Log.WithError(err).WithField(telemetry.SPIFFEID, spiffeID).Warn("Unable to renew JWT; returning cached copy")

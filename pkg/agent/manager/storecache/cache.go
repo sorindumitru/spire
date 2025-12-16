@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/pkg/agent/client"
 	"github.com/spiffe/spire/pkg/agent/manager/cache"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	telemetry_agent "github.com/spiffe/spire/pkg/common/telemetry/agent"
@@ -260,6 +261,10 @@ func (c *Cache) TaintJWTSVIDs(ctx context.Context, taintedJWTAuthorities map[str
 	// Nothing to do here
 }
 
+func (c *Cache) SetJWTSVID(id spiffeid.ID, audience []string, svid *client.JWTSVID) {
+	// Nothing to do here
+}
+
 // GetStaleEntries obtains a list of stale entries, that needs new SVIDs
 func (c *Cache) GetStaleEntries() []*cache.StaleEntry {
 	c.mtx.Lock()
@@ -289,6 +294,10 @@ func (c *Cache) GetStaleEntries() []*cache.StaleEntry {
 		return staleEntries[a].Entry.EntryId < staleEntries[b].Entry.EntryId
 	})
 	return staleEntries
+}
+
+func (c *Cache) GetStaleJWTSVIDs() []cache.StaleJWTSVID {
+	return nil
 }
 
 func (c *Cache) CountX509SVIDs() int {

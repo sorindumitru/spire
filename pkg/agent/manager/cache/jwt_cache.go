@@ -26,8 +26,9 @@ type JWTSVIDCache struct {
 	metrics telemetry.Metrics
 	mu      sync.RWMutex
 
-	svids   map[string]*list.Element
-	lruList *list.List
+	svids      map[string]*list.Element
+	staleSvids map[string]StaleJWTSVID
+	lruList    *list.List
 
 	// svidCacheMaxSize is a hard limit of max number of SVIDs that would be stored in cache
 	svidCacheMaxSize int
@@ -36,6 +37,12 @@ type JWTSVIDCache struct {
 type jwtSvidElement struct {
 	key  string
 	svid *client.JWTSVID
+}
+
+type StaleJWTSVID struct {
+	EntryID  string
+	SpiffeID spiffeid.ID
+	Audience []string
 }
 
 func (c *JWTSVIDCache) CountJWTSVIDs() int {
@@ -53,6 +60,7 @@ func NewJWTSVIDCache(log logrus.FieldLogger, metrics telemetry.Metrics, svidCach
 		metrics:          metrics,
 		log:              log,
 		svids:            make(map[string]*list.Element),
+		staleSvids:       make(map[string]StaleJWTSVID),
 		lruList:          list.New(),
 		svidCacheMaxSize: svidCacheMaxSize,
 	}
@@ -71,6 +79,30 @@ func (c *JWTSVIDCache) GetJWTSVID(spiffeID spiffeid.ID, audience []string) (*cli
 	c.lruList.MoveToFront(svidElement)
 
 	return svidElement.Value.(jwtSvidElement).svid, ok
+}
+
+func (c *JWTSVIDCache) RequestJWTSVIDUpdate(entryID string, spiffeID spiffeid.ID, audience []string) {
+	key := jwtSVIDKey(spiffeID, audience)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.staleSvids[key] = StaleJWTSVID{
+		Audience: audience,
+		EntryID:  entryID,
+		SpiffeID: spiffeID,
+	}
+}
+
+func (c *JWTSVIDCache) GetStaleJWTSVIDs() []StaleJWTSVID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var staleSVIDs []StaleJWTSVID
+	for _, staleSVID := range c.staleSvids {
+		staleSVIDs = append(staleSVIDs, staleSVID)
+	}
+
+	return staleSVIDs
 }
 
 func (c *JWTSVIDCache) SetJWTSVID(spiffeID spiffeid.ID, audience []string, svid *client.JWTSVID) {
@@ -99,6 +131,10 @@ func (c *JWTSVIDCache) SetJWTSVID(spiffeID spiffeid.ID, audience []string, svid 
 			svid: svid,
 		})
 		c.svids[key] = svidElement
+	}
+
+	if _, ok := c.staleSvids[key]; ok {
+		delete(c.staleSvids, key)
 	}
 }
 
