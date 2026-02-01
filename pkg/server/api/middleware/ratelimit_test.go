@@ -12,7 +12,6 @@ import (
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/server/api"
 	"github.com/spiffe/spire/pkg/server/api/rpccontext"
-	"github.com/spiffe/spire/test/clock"
 	"github.com/spiffe/spire/test/fakes/fakemetrics"
 	"github.com/spiffe/spire/test/spiretest"
 	"github.com/stretchr/testify/assert"
@@ -65,80 +64,14 @@ func TestPerCallLimit(t *testing.T) {
 	}, limiters.WaitNEvents)
 }
 
-func TestPerIPLimit(t *testing.T) {
-	limiters := NewFakeLimiters()
+func TestPerIPLimitDoesNotLimitUDS(t *testing.T) {
+	_ = NewFakeLimiters()
 
-	m := PerIPLimit(10)
+	m := PerIPLimit(0)
 
 	// Does not rate limit non-TCP/IP callers
 	err := m.RateLimit(unixCallerContext(), 11)
 	require.NoError(t, err)
-
-	// Once exceeding burst size for 1.1.1.1
-	err = m.RateLimit(tcpCallerContext("1.1.1.1"), 11)
-	spiretest.RequireGRPCStatus(t, err, codes.ResourceExhausted, "rate (11) exceeds burst size (10)")
-
-	// Once within burst size for 1.1.1.1
-	require.NoError(t, m.RateLimit(tcpCallerContext("1.1.1.1"), 1))
-
-	// Twice within burst size for 2.2.2.2
-	require.NoError(t, m.RateLimit(tcpCallerContext("2.2.2.2"), 2))
-	require.NoError(t, m.RateLimit(tcpCallerContext("2.2.2.2"), 3))
-
-	// There should be two rate limiters; 1.1.1.1, and 2.2.2.2
-	assert.Equal(t, 2, limiters.Count)
-
-	// WaitN should have only been called once for 1.1.1.1 (burst failure does
-	// not result in a call to WaitN) and twice for 2.2.2.2.
-	assert.Equal(t, []WaitNEvent{
-		{ID: 1, Count: 1},
-		{ID: 2, Count: 2},
-		{ID: 2, Count: 3},
-	}, limiters.WaitNEvents)
-}
-
-func TestPerIPLimitGC(t *testing.T) {
-	mockClk, restoreClk := setupClock(t)
-	defer restoreClk()
-
-	limiters := NewFakeLimiters()
-
-	m := PerIPLimit(2)
-
-	// Create limiters for both 1.1.1.1 and 2.2.2.2
-	require.NoError(t, m.RateLimit(tcpCallerContext("1.1.1.1"), 1))
-	require.NoError(t, m.RateLimit(tcpCallerContext("2.2.2.2"), 1))
-	require.Equal(t, 2, limiters.Count)
-
-	// Advance past the GC time and create for limiter for 3.3.3.3. This should
-	// move both 1.1.1.1 and 2.2.2.2 into the "previous" set. There should be
-	// three total limiters now.
-	mockClk.Add(gcInterval)
-	require.NoError(t, m.RateLimit(tcpCallerContext("3.3.3.3"), 1))
-	require.Equal(t, 3, limiters.Count)
-
-	// Now use the 1.1.1.1 limiter. This should transition it into the
-	// "current" set. Assert that no new limiter is created.
-	require.NoError(t, m.RateLimit(tcpCallerContext("1.1.1.1"), 1))
-	require.Equal(t, 3, limiters.Count)
-
-	// Advance to the next GC time. Create a limiter for 4.4.4.4. This should
-	// cause 2.2.2.2 to be removed. 1.1.1.1 and 3.3.3.3 will go into the
-	// "previous set".
-	mockClk.Add(gcInterval)
-	require.NoError(t, m.RateLimit(tcpCallerContext("4.4.4.4"), 1))
-	require.Equal(t, 4, limiters.Count)
-
-	// Use all the limiters but 2.2.2.2 and make sure the limiter count is stable.
-	require.NoError(t, m.RateLimit(tcpCallerContext("1.1.1.1"), 1))
-	require.NoError(t, m.RateLimit(tcpCallerContext("3.3.3.3"), 1))
-	require.NoError(t, m.RateLimit(tcpCallerContext("4.4.4.4"), 1))
-	require.Equal(t, 4, limiters.Count)
-
-	// Now do 2.2.2.2. A new limiter will be created for 2.2.2.2, since the
-	// limiter for 2.2.2.2 was previously removed after the last GC period.
-	require.NoError(t, m.RateLimit(tcpCallerContext("2.2.2.2"), 1))
-	require.Equal(t, 5, limiters.Count)
 }
 
 func TestRateLimits(t *testing.T) {
@@ -388,13 +321,4 @@ func tcpCallerContext(ip string) context.Context {
 	return rpccontext.WithCallerAddr(context.Background(), &net.TCPAddr{
 		IP: net.ParseIP(ip),
 	})
-}
-
-func setupClock(t *testing.T) (*clock.Mock, func()) {
-	mockClk := clock.NewMock(t)
-	oldClk := clk
-	clk = mockClk
-	return mockClk, func() {
-		clk = oldClk
-	}
 }

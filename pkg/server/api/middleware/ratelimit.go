@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/andres-erbsen/clock"
@@ -124,25 +123,12 @@ func (lim *perCallLimiter) RateLimit(ctx context.Context, count int) error {
 }
 
 type perIPLimiter struct {
-	limit int
-
-	mtx sync.RWMutex
-
-	// previous holds all the limiters that were current at the GC
-	previous map[string]rawRateLimiter
-
-	// current holds all the limiters that have been created or moved
-	// from the previous limiters since the last GC.
-	current map[string]rawRateLimiter
-
-	// lastGC is the last GC
-	lastGC time.Time
+	limiter *middleware.GarbageCollectedLimiter[string]
 }
 
 func newPerIPLimiter(limit int) *perIPLimiter {
-	return &perIPLimiter{limit: limit,
-		current: make(map[string]rawRateLimiter),
-		lastGC:  clk.Now(),
+	return &perIPLimiter{
+		limiter: middleware.NewGarbageCollectedLimiter[string](limit),
 	}
 }
 
@@ -152,48 +138,7 @@ func (lim *perIPLimiter) RateLimit(ctx context.Context, count int) error {
 		// Calls not via TCP/IP aren't limited
 		return nil
 	}
-	limiter := lim.getLimiter(tcpAddr.IP.String())
-	return waitN(ctx, limiter, count)
-}
-
-func (lim *perIPLimiter) getLimiter(ip string) rawRateLimiter {
-	lim.mtx.RLock()
-	limiter, ok := lim.current[ip]
-	if ok {
-		lim.mtx.RUnlock()
-		return limiter
-	}
-	lim.mtx.RUnlock()
-
-	// A limiter does not exist for that address.
-	lim.mtx.Lock()
-	defer lim.mtx.Unlock()
-
-	// Check the "current" entries in case another goroutine raced on this IP.
-	if limiter, ok = lim.current[ip]; ok {
-		return limiter
-	}
-
-	// Then check the "previous" entries to see if a limiter exists for this
-	// IP as of the last GC. If so, move it to current and return it.
-	if limiter, ok = lim.previous[ip]; ok {
-		lim.current[ip] = limiter
-		delete(lim.previous, ip)
-		return limiter
-	}
-
-	// There is no limiter for this IP. Before we create one, we should see
-	// if we need to do GC.
-	now := clk.Now()
-	if now.Sub(lim.lastGC) >= gcInterval {
-		lim.previous = lim.current
-		lim.current = make(map[string]rawRateLimiter)
-		lim.lastGC = now
-	}
-
-	limiter = newRawRateLimiter(rate.Limit(lim.limit), lim.limit)
-	lim.current[ip] = limiter
-	return limiter
+	return lim.limiter.RateLimit(ctx, tcpAddr.IP.String(), count)
 }
 
 type rateLimitsMiddleware struct {
