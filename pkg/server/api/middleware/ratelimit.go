@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
-	"time"
 
-	"github.com/andres-erbsen/clock"
 	"github.com/spiffe/spire/pkg/common/api/middleware"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 	"github.com/spiffe/spire/pkg/server/api"
@@ -14,17 +12,6 @@ import (
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-)
-
-const (
-	// gcInterval is the interval at which per-ip limiters are garbage
-	// collected.
-	gcInterval = time.Minute
-)
-
-var (
-	// Used to manipulate time in unit tests
-	clk = clock.New()
 )
 
 var (

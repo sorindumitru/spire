@@ -67,7 +67,7 @@ func TestPerCallLimit(t *testing.T) {
 func TestPerIPLimitDoesNotLimitUDS(t *testing.T) {
 	_ = NewFakeLimiters()
 
-	m := PerIPLimit(0)
+	m := PerIPLimit(10)
 
 	// Does not rate limit non-TCP/IP callers
 	err := m.RateLimit(unixCallerContext(), 11)

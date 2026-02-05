@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
 )
 
 var _ net.Listener = &Listener{}
@@ -12,13 +13,15 @@ var _ net.Listener = &Listener{}
 type ListenerFactory struct {
 	Log               logrus.FieldLogger
 	NewTracker        func(log logrus.FieldLogger) (PeerTracker, error)
+	limiter           RateLimiter
 	ListenerFactoryOS // OS specific
 }
 
 type Listener struct {
-	l       net.Listener
-	log     logrus.FieldLogger
-	Tracker PeerTracker
+	l                     net.Listener
+	log                   logrus.FieldLogger
+	connectionRateLimiter *rate.Limiter
+	Tracker               PeerTracker
 }
 
 func newNoopLogger() *logrus.Logger {

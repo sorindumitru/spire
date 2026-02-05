@@ -99,8 +99,10 @@ func New(c Config) *Endpoints {
 }
 
 func (e *Endpoints) ListenAndServe(ctx context.Context) error {
+	rateLimiter := NewRateLimiter()
+
 	unaryInterceptor, streamInterceptor := middleware.Interceptors(
-		Middleware(e.log, e.metrics),
+		Middleware(e.log, e.metrics, rateLimiter),
 	)
 
 	server := grpc.NewServer(

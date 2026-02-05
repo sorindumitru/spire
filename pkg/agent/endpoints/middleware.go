@@ -18,13 +18,14 @@ const (
 	workloadAPIMethodPrefix = "/SpiffeWorkloadAPI/"
 )
 
-func Middleware(log logrus.FieldLogger, metrics telemetry.Metrics) middleware.Middleware {
+func Middleware(log logrus.FieldLogger, metrics telemetry.Metrics, rateLimiter *RateLimiter) middleware.Middleware {
 	return middleware.Chain(
 		middleware.WithLogger(log),
 		middleware.WithMetrics(metrics),
 		withPerServiceConnectionMetrics(metrics),
 		middleware.Preprocess(addWatcherPID),
 		middleware.Preprocess(verifySecurityHeader),
+		rateLimiter,
 	)
 }
 
