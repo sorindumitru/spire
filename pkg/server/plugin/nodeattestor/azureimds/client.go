@@ -211,9 +211,12 @@ func buildVirtualMachineFromVMSSInstance(instance *armcompute.VirtualMachineScal
 		ID:            *instance.ID,
 		Name:          *instance.Name,
 		Location:      *instance.Location,
-		VMID:          *instance.Properties.VMID,
 		ResourceGroup: resourceGroup,
 		Interfaces:    []*NetworkInterface{},
+	}
+
+	if instance.Properties != nil {
+		v.VMID = *instance.Properties.VMID
 	}
 
 	if instance.Tags != nil {
@@ -223,12 +226,14 @@ func buildVirtualMachineFromVMSSInstance(instance *armcompute.VirtualMachineScal
 		}
 	}
 
-	for _, interfaceConfig := range instance.Properties.NetworkProfileConfiguration.NetworkInterfaceConfigurations {
-		ni, err := parseNetworkInterfaceConfig(interfaceConfig)
-		if err != nil {
-			continue
+	if instance.Properties != nil && instance.Properties.NetworkProfileConfiguration != nil {
+		for _, interfaceConfig := range instance.Properties.NetworkProfileConfiguration.NetworkInterfaceConfigurations {
+			ni, err := parseNetworkInterfaceConfig(interfaceConfig)
+			if err != nil {
+				continue
+			}
+			v.Interfaces = append(v.Interfaces, ni)
 		}
-		v.Interfaces = append(v.Interfaces, ni)
 	}
 
 	return v, nil
