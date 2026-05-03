@@ -49,7 +49,7 @@ type Manager interface {
 
 	// SubscribeToCacheChanges returns a Subscriber on which cache entry updates are sent
 	// for a particular set of selectors.
-	SubscribeToCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
+	SubscribeToX509SVIDCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
 
 	// SubscribeToSVIDChanges returns a new observer.Stream on which svid.State instances are received
 	// each time an SVID rotation finishes.
@@ -104,11 +104,11 @@ type Cache interface {
 	// Bundle gets latest cached bundle
 	Bundle() *spiffebundle.Bundle
 
-	// SyncSVIDsWithSubscribers syncs SVID cache
-	SyncSVIDsWithSubscribers()
+	// SyncX509SVIDsWithSubscribers syncs X509-SVID cache
+	SyncX509SVIDsWithSubscribers()
 
 	// SubscribeToWorkloadUpdates creates a subscriber for given selector set.
-	SubscribeToWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error)
+	SubscribeToX509SVIDWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error)
 
 	// SubscribeToBundleChanges creates a stream for providing bundle changes
 	SubscribeToBundleChanges() *cache.BundleStream
@@ -249,8 +249,8 @@ func (m *manager) Run(ctx context.Context) error {
 	}
 }
 
-func (m *manager) SubscribeToCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error) {
-	return m.cache.SubscribeToWorkloadUpdates(ctx, selectors)
+func (m *manager) SubscribeToX509SVIDCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error) {
+	return m.cache.SubscribeToX509SVIDWorkloadUpdates(ctx, selectors)
 }
 
 func (m *manager) SubscribeToSVIDChanges() observer.Stream {

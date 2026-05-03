@@ -53,7 +53,7 @@ func TestLRUCacheFetchWorkloadUpdate(t *testing.T) {
 	updateSVIDs := &UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	}
-	cache.UpdateSVIDs(updateSVIDs)
+	cache.UpdateX509SVIDs(updateSVIDs)
 
 	workloadUpdate = cache.FetchWorkloadUpdate(makeSelectors("A", "B"))
 	assert.Equal(t, &WorkloadUpdate{
@@ -85,12 +85,12 @@ func TestLRUCacheMatchingRegistrationIdentities(t *testing.T) {
 	updateSVIDs := &UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	}
-	cache.UpdateSVIDs(updateSVIDs)
+	cache.UpdateX509SVIDs(updateSVIDs)
 	assert.Equal(t, []*common.RegistrationEntry{bar, foo},
 		cache.MatchingRegistrationEntries(makeSelectors("A", "B")))
 
 	// Remove SVIDs and MatchingRegistrationEntries should still return both entries
-	cache.UpdateSVIDs(&UpdateSVIDs{})
+	cache.UpdateX509SVIDs(&UpdateSVIDs{})
 	assert.Equal(t, []*common.RegistrationEntry{bar, foo},
 		cache.MatchingRegistrationEntries(makeSelectors("A", "B")))
 }
@@ -113,7 +113,7 @@ func TestLRUCacheCountSVIDs(t *testing.T) {
 	updateSVIDs := &UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	}
-	cache.UpdateSVIDs(updateSVIDs)
+	cache.UpdateX509SVIDs(updateSVIDs)
 
 	// Only one SVID expected
 	require.Equal(t, 1, cache.CountX509SVIDs())
@@ -160,11 +160,11 @@ func TestLRUCacheAllSubscribersNotifiedOnBundleChange(t *testing.T) {
 	cache := newTestLRUCache(t)
 
 	// create some subscribers and assert they get the initial bundle
-	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	subA := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
 	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{Bundle: bundleV1})
 
-	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
+	subB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
 	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{Bundle: bundleV1})
 
@@ -186,16 +186,16 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
 	// subscribe to A and B and assert initial updates are received.
-	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	subA := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
 	assertAnyWorkloadUpdate(t, subA)
 
-	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
+	subB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
 	assertAnyWorkloadUpdate(t, subB)
 
@@ -254,11 +254,11 @@ func TestLRUCacheSubscribersGetEntriesWithSelectorSubsets(t *testing.T) {
 	cache := newTestLRUCache(t)
 
 	// create subscribers for each combination of selectors
-	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	subA := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
-	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
+	subB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
-	subAB := subscribeToWorkloadUpdates(t, cache, makeSelectors("A", "B"))
+	subAB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A", "B"))
 	defer subAB.Finish()
 
 	// assert all subscribers get the initial update
@@ -278,7 +278,7 @@ func TestLRUCacheSubscribersGetEntriesWithSelectorSubsets(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo, bar),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	})
 
@@ -307,11 +307,11 @@ func TestLRUCacheSubscriberIsNotNotifiedIfNothingChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
 	assertAnyWorkloadUpdate(t, sub)
 
@@ -333,16 +333,16 @@ func TestLRUCacheSubscriberNotifiedOnSVIDChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
 	assertAnyWorkloadUpdate(t, sub)
 
 	// Update SVID
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
@@ -361,12 +361,12 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
 	// create subscribers for A and make sure the initial update has FOO
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
 	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
 		Bundle:     bundleV1,
@@ -380,7 +380,7 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
@@ -393,7 +393,7 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
@@ -406,13 +406,13 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	cache := newTestLRUCache(t)
 
-	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	subA := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
 	assertAnyWorkloadUpdate(t, subA)
 
 	// subB's job here is to just make sure we don't notify unrelated
 	// subscribers when dropping registration entries
-	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
+	subB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
 	assertAnyWorkloadUpdate(t, subB)
 
@@ -424,7 +424,7 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}
 	cache.UpdateEntries(updateEntries, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
@@ -438,7 +438,7 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	// Swap out FOO for BAR
 	updateEntries.RegistrationEntries = makeRegistrationEntries(bar)
 	cache.UpdateEntries(updateEntries, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(bar),
 	})
 	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
@@ -458,7 +458,7 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	})
 
 	// Make sure trying to update SVIDs of removed entry does not notify
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	assertNoWorkloadUpdate(t, subB)
@@ -479,7 +479,7 @@ func TestLRUCacheSubscriberOnlyGetsEntriesWithSVID(t *testing.T) {
 	assertNoWorkloadUpdate(t, sub)
 
 	// update to include the SVID and now we should get the update
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
@@ -491,7 +491,7 @@ func TestLRUCacheSubscriberOnlyGetsEntriesWithSVID(t *testing.T) {
 func TestLRUCacheSubscribersDoNotBlockNotifications(t *testing.T) {
 	cache := newTestLRUCache(t)
 
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
 
 	cache.UpdateEntries(&UpdateEntries{
@@ -532,7 +532,7 @@ func TestLRUCacheCheckSVIDCallback(t *testing.T) {
 
 	// called once for FOO with new SVID
 	svids := makeX509SVIDs(foo)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: svids,
 	})
 
@@ -609,7 +609,7 @@ func TestLRUCacheGetStaleEntries(t *testing.T) {
 	svids[bar.EntryId] = &X509SVID{
 		Chain: []*x509.Certificate{{NotAfter: expiredAt}},
 	}
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: svids,
 	})
 	// Assert that updating the SVID removes stale marker from entry
@@ -648,16 +648,16 @@ func TestLRUCacheSubscriberNotNotifiedOnDifferentSVIDChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo, bar),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	})
 
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
 	assertAnyWorkloadUpdate(t, sub)
 
 	// Update SVID
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(bar),
 	})
 
@@ -673,16 +673,16 @@ func TestLRUCacheSubscriberNotNotifiedOnOverlappingSVIDChanges(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	})
 
-	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A", "B"))
+	sub := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A", "B"))
 	defer sub.Finish()
 	assertAnyWorkloadUpdate(t, sub)
 
 	// Update SVID
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
@@ -701,10 +701,10 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
-	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
+	subA := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("A"))
 	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
 		Bundle:     bundleV1,
 		Identities: []Identity{{Entry: foo}},
@@ -719,12 +719,12 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 		Bundles:             makeBundles(bundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo, bar),
 	}, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(bar),
 	})
 
 	// not closing subscriber immediately
-	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
+	subB := subscribeToX509SVIDWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
 	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{
 		Bundle: bundleV1,
@@ -742,7 +742,7 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 
 	cache.UpdateEntries(updateEntries, nil)
 
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDsFromMap(updateEntries.RegistrationEntries),
 	})
 
@@ -786,7 +786,7 @@ func TestLRUCacheMaxSVIDCacheSize(t *testing.T) {
 
 	require.Len(t, cache.GetStaleEntries(), svidCacheMaxSize)
 
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDsFromStaleEntries(cache.GetStaleEntries()),
 	})
 	require.Len(t, cache.GetStaleEntries(), 0)
@@ -803,7 +803,7 @@ func TestLRUCacheMaxSVIDCacheSize(t *testing.T) {
 	require.Len(t, cache.GetStaleEntries(), 1)
 	assert.Equal(t, svidCacheMaxSize, cache.CountX509SVIDs())
 
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	assert.Equal(t, svidCacheMaxSize+1, cache.CountX509SVIDs())
@@ -817,7 +817,7 @@ func TestSyncSVIDsWithSubscribers(t *testing.T) {
 
 	updateEntries := createUpdateEntries(svidCacheMaxSize, makeBundles(bundleV1))
 	cache.UpdateEntries(updateEntries, nil)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDsFromStaleEntries(cache.GetStaleEntries()),
 	})
 	assert.Equal(t, svidCacheMaxSize, cache.CountX509SVIDs())
@@ -833,8 +833,8 @@ func TestSyncSVIDsWithSubscribers(t *testing.T) {
 	defer subA.Finish()
 	require.Len(t, cache.GetStaleEntries(), 0)
 
-	// After SyncSVIDsWithSubscribers foo should be marked as stale, requiring signing
-	cache.SyncSVIDsWithSubscribers()
+	// After SyncX509SVIDsWithSubscribers foo should be marked as stale, requiring signing
+	cache.SyncX509SVIDsWithSubscribers()
 	require.Len(t, cache.GetStaleEntries(), 1)
 	assert.Equal(t, []*StaleEntry{{Entry: cache.records[foo.EntryId].entry}}, cache.GetStaleEntries())
 
@@ -855,7 +855,7 @@ func TestNotifySubscriberWhenSVIDIsAvailable(t *testing.T) {
 	}, nil)
 
 	assert.False(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("A"), sub))
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	assert.True(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("A"), sub))
@@ -877,7 +877,7 @@ func TestSubscribeToWorkloadUpdatesLRUNoSelectors(t *testing.T) {
 	subWaitCh := make(chan struct{}, 1)
 	subErrCh := make(chan error, 1)
 	go func() {
-		sub1, err := cache.subscribeToWorkloadUpdates(context.Background(), Selectors{}, func() {
+		sub1, err := cache.subscribeToX509SVIDWorkloadUpdates(context.Background(), Selectors{}, func() {
 			subWaitCh <- struct{}{}
 		})
 		if err != nil {
@@ -908,10 +908,10 @@ func TestSubscribeToWorkloadUpdatesLRUNoSelectors(t *testing.T) {
 
 	// Wait until subscriber is created and got a notification
 	<-subWaitCh
-	cache.SyncSVIDsWithSubscribers()
+	cache.SyncX509SVIDsWithSubscribers()
 
 	assert.Len(t, cache.GetStaleEntries(), svidCacheMaxSize)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	})
 	assert.Equal(t, 2, cache.CountX509SVIDs())
@@ -938,7 +938,7 @@ func TestSubscribeToLRUCacheChanges(t *testing.T) {
 	sub1WaitCh := make(chan struct{}, 1)
 	sub1ErrCh := make(chan error, 1)
 	go func() {
-		sub1, err := cache.subscribeToWorkloadUpdates(context.Background(), foo.Selectors, func() {
+		sub1, err := cache.subscribeToX509SVIDWorkloadUpdates(context.Background(), foo.Selectors, func() {
 			sub1WaitCh <- struct{}{}
 		})
 		if err != nil {
@@ -958,7 +958,7 @@ func TestSubscribeToLRUCacheChanges(t *testing.T) {
 	sub2WaitCh := make(chan struct{}, 1)
 	sub2ErrCh := make(chan error, 1)
 	go func() {
-		sub2, err := cache.subscribeToWorkloadUpdates(context.Background(), bar.Selectors, func() {
+		sub2, err := cache.subscribeToX509SVIDWorkloadUpdates(context.Background(), bar.Selectors, func() {
 			sub2WaitCh <- struct{}{}
 		})
 		if err != nil {
@@ -977,10 +977,10 @@ func TestSubscribeToLRUCacheChanges(t *testing.T) {
 
 	<-sub1WaitCh
 	<-sub2WaitCh
-	cache.SyncSVIDsWithSubscribers()
+	cache.SyncX509SVIDsWithSubscribers()
 
 	assert.Len(t, cache.GetStaleEntries(), 2)
-	cache.UpdateSVIDs(&UpdateSVIDs{
+	cache.UpdateX509SVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo, bar),
 	})
 	assert.Equal(t, 2, cache.CountX509SVIDs())
@@ -1039,7 +1039,7 @@ func TestTaintX509SVIDs(t *testing.T) {
 	prepareSVIDs(t, entries[3:5], svids, newCA)    // SVIDs for e3-e4 not tainted
 	prepareSVIDs(t, entries[5:], svids, taintedCA) // SVIDs for e5-e9 tainted
 
-	cache.svids = svids
+	cache.x509SVIDs = svids
 	require.Equal(t, 10, cache.CountX509SVIDs())
 
 	waitForBatchFinished := func() {
@@ -1055,9 +1055,9 @@ func TestTaintX509SVIDs(t *testing.T) {
 		spiretest.AssertLogs(t, logHook.AllEntries(), expectLogs)
 		assert.Equal(t, expectMetrics, fakeMetrics.AllMetrics())
 
-		assert.Len(t, cache.svids, len(svidIDs))
+		assert.Len(t, cache.x509SVIDs, len(svidIDs))
 		for _, svidID := range svidIDs {
-			_, found := cache.svids[svidID]
+			_, found := cache.x509SVIDs[svidID]
 			assert.True(t, found, "svid not found: %q", svidID)
 		}
 	}
@@ -1175,7 +1175,7 @@ func TestTaintX509SVIDsNoSVIDs(t *testing.T) {
 		RegistrationEntries: makeRegistrationEntries(entries...),
 	}
 	// All entries have no chain...
-	cache.svids = makeX509SVIDs(entries...)
+	cache.x509SVIDs = makeX509SVIDs(entries...)
 
 	// Add entries to cache
 	cache.UpdateEntries(updateEntries, nil)
@@ -1218,7 +1218,7 @@ func TestMetrics(t *testing.T) {
 	updateSVIDs := &UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	}
-	cache.UpdateSVIDs(updateSVIDs)
+	cache.UpdateX509SVIDs(updateSVIDs)
 	assert.Equal(t, []fakemetrics.MetricItem{
 		{Type: fakemetrics.IncrCounterType, Key: []string{telemetry.EntryRemoved}, Val: 0},
 		{Type: fakemetrics.IncrCounterType, Key: []string{telemetry.EntryAdded}, Val: 2},
@@ -1358,8 +1358,8 @@ func makeX509SVIDsFromStaleEntries(entries []*StaleEntry) map[string]*X509SVID {
 	return out
 }
 
-func subscribeToWorkloadUpdates(t *testing.T, cache *LRUCache, selectors []*common.Selector) Subscriber {
-	subscriber, err := cache.subscribeToWorkloadUpdates(context.Background(), selectors, nil)
+func subscribeToX509SVIDWorkloadUpdates(t *testing.T, cache *LRUCache, selectors []*common.Selector) Subscriber {
+	subscriber, err := cache.subscribeToX509SVIDWorkloadUpdates(context.Background(), selectors, nil)
 	assert.NoError(t, err)
 	return subscriber
 }

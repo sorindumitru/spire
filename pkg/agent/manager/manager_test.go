@@ -275,7 +275,7 @@ func TestHappyPathWithoutSyncNorRotation(t *testing.T) {
 		[]*common.RegistrationEntry{matches[0], matches[1]})
 
 	util.RunWithTimeout(t, 5*time.Second, func() {
-		sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
+		sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
 		require.NoError(t, err)
 		u := <-sub.Updates()
 
@@ -412,7 +412,7 @@ func TestRotationWithRSAKey(t *testing.T) {
 		[]*common.RegistrationEntry{matches[0], matches[1]})
 
 	util.RunWithTimeout(t, 5*time.Second, func() {
-		sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
+		sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
 		require.NoError(t, err)
 		u := <-sub.Updates()
 
@@ -586,7 +586,7 @@ func TestSynchronization(t *testing.T) {
 
 	m := newManager(c)
 
-	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{
+	sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{
 		{Type: "unix", Value: "uid:1111"},
 		{Type: "spiffe_id", Value: joinTokenID.String()},
 	})
@@ -882,7 +882,7 @@ func TestForceRotation(t *testing.T) {
 
 	m := newManager(c)
 
-	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{
+	sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{
 		{Type: "unix", Value: "uid:1111"},
 		{Type: "spiffe_id", Value: joinTokenID.String()},
 	})
@@ -1051,7 +1051,7 @@ func TestSubscribersGetUpToDateBundle(t *testing.T) {
 	m := newManager(c)
 
 	defer initializeAndRunManager(t, m)()
-	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
+	sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
 	require.NoError(t, err)
 
 	util.RunWithTimeout(t, 1*time.Second, func() {
@@ -1115,7 +1115,7 @@ func TestSynchronizationWithLRUCache(t *testing.T) {
 	}
 	require.Equal(t, clk.Now(), m.GetLastSync())
 
-	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{
+	sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{
 		{Type: "unix", Value: "uid:1111"},
 		{Type: "spiffe_id", Value: joinTokenID.String()},
 	})
@@ -1475,7 +1475,7 @@ func TestSyncSVIDsWithLRUCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	subErrCh := make(chan error, 1)
 	go func(ctx context.Context) {
-		sub, err := m.SubscribeToCacheChanges(ctx, cache.Selectors{
+		sub, err := m.SubscribeToX509SVIDCacheChanges(ctx, cache.Selectors{
 			{Type: "unix", Value: "uid:1111"},
 		})
 		if err != nil {
@@ -1562,7 +1562,7 @@ func TestSurvivesCARotation(t *testing.T) {
 
 	m := newManager(c)
 
-	sub, err := m.SubscribeToCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
+	sub, err := m.SubscribeToX509SVIDCacheChanges(context.Background(), cache.Selectors{{Type: "unix", Value: "uid:1111"}})
 	require.NoError(t, err)
 	// This should be the update received when Subscribe function was called.
 	updates := sub.Updates()

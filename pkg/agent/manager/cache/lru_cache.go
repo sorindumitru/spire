@@ -137,7 +137,7 @@ type LRUCache struct {
 	bundles map[spiffeid.TrustDomain]*spiffebundle.Bundle
 
 	// svids are stored by entry IDs
-	svids map[string]*X509SVID
+	x509SVIDs map[string]*X509SVID
 
 	// svidCacheMaxSize is a soft limit of max number of SVIDs that would be stored in cache
 	x509SvidCacheMaxSize int
@@ -167,7 +167,7 @@ func NewLRUCache(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundl
 		bundles: map[spiffeid.TrustDomain]*spiffebundle.Bundle{
 			trustDomain: bundle,
 		},
-		svids:                make(map[string]*X509SVID),
+		x509SVIDs:            make(map[string]*X509SVID),
 		x509SvidCacheMaxSize: x509SvidCacheMaxSize,
 		clk:                  clk,
 		subscribeBackoffFn: func() backoff.BackOff {
@@ -185,7 +185,7 @@ func (c *LRUCache) Identities() []Identity {
 
 	out := make([]Identity, 0, len(c.records))
 	for _, record := range c.records {
-		svid, ok := c.svids[record.entry.EntryId]
+		svid, ok := c.x509SVIDs[record.entry.EntryId]
 		if !ok {
 			// The record does not have an SVID yet and should not be returned
 			// from the cache.
@@ -213,7 +213,7 @@ func (c *LRUCache) CountX509SVIDs() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return len(c.svids)
+	return len(c.x509SVIDs)
 }
 
 func (c *LRUCache) CountJWTSVIDs() int {
@@ -334,7 +334,7 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 			c.delSelectorIndicesRecord(notifySet, record)
 			notifySets = append(notifySets, notifySet)
 			delete(c.records, id)
-			delete(c.svids, id)
+			delete(c.x509SVIDs, id)
 			// Remove stale entry since, registration entry is no longer on cache.
 			delete(c.staleEntries, id)
 		}
@@ -437,8 +437,8 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 
 	// entries with active subscribers which are not cached will be put in staleEntries map;
 	// irrespective of what svid cache size as we cannot deny identity to a subscriber
-	activeSubsByEntryID, recordsWithLastAccessTime := c.syncSVIDsWithSubscribers()
-	extraSize := len(c.svids) - c.x509SvidCacheMaxSize
+	activeSubsByEntryID, recordsWithLastAccessTime := c.syncX509SVIDsWithSubscribers()
+	extraSize := len(c.x509SVIDs) - c.x509SvidCacheMaxSize
 
 	// delete svids without subscribers and which have not been accessed since svidCacheExpiryTime
 	if extraSize > 0 {
@@ -450,13 +450,13 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 				// no need to delete SVIDs any further as cache size <= SVIDCacheMaxSize
 				break
 			}
-			if _, ok := c.svids[record.id]; ok {
+			if _, ok := c.x509SVIDs[record.id]; ok {
 				if _, exists := activeSubsByEntryID[record.id]; !exists {
 					// remove svid
 					c.log.WithField("record_id", record.id).
 						WithField("record_timestamp", record.timestamp).
-						Debug("Removing SVID record")
-					delete(c.svids, record.id)
+						Debug("Removing X509-SVID record")
+					delete(c.x509SVIDs, record.id)
 					extraSize--
 				}
 			}
@@ -464,7 +464,7 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 	}
 
 	// Update all stale svids or svids whose registration entry is outdated
-	for id, svid := range c.svids {
+	for id, svid := range c.x509SVIDs {
 		if _, ok := outdatedEntries[id]; ok || (checkSVID != nil && checkSVID(nil, c.records[id].entry, svid)) {
 			c.staleEntries[id] = true
 		}
@@ -473,7 +473,7 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 	// Add message only when there are outdated SVIDs
 	if len(outdatedEntries) > 0 {
 		c.log.WithField(telemetry.OutdatedSVIDs, len(outdatedEntries)).
-			Debug("Updating SVIDs with outdated attributes in cache")
+			Debug("Updating X509-SVIDs with outdated attributes in cache")
 	}
 	if bundleRemoved || len(bundleChanged) > 0 {
 		c.BundleCache.Update(c.bundles)
@@ -486,7 +486,7 @@ func (c *LRUCache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.R
 	}
 }
 
-func (c *LRUCache) UpdateSVIDs(update *UpdateSVIDs) {
+func (c *LRUCache) UpdateX509SVIDs(update *UpdateSVIDs) {
 	c.mu.Lock()
 	defer func() { agentmetrics.SetSVIDMapSize(c.metrics, c.CountX509SVIDs()) }()
 	defer c.mu.Unlock()
@@ -503,7 +503,7 @@ func (c *LRUCache) UpdateSVIDs(update *UpdateSVIDs) {
 			continue
 		}
 
-		c.svids[entryID] = svid
+		c.x509SVIDs[entryID] = svid
 		notifySet.Merge(record.entry.Selectors...)
 		log := c.log.WithFields(logrus.Fields{
 			telemetry.Entry:    record.entry.EntryId,
@@ -526,7 +526,7 @@ func (c *LRUCache) TaintX509SVIDs(ctx context.Context, taintedX509Authorities []
 	defer c.mu.RUnlock()
 
 	var entriesToProcess []string
-	for key, svid := range c.svids {
+	for key, svid := range c.x509SVIDs {
 		if svid != nil && len(svid.Chain) > 0 {
 			entriesToProcess = append(entriesToProcess, key)
 		}
@@ -562,7 +562,7 @@ func (c *LRUCache) GetStaleEntries() []*StaleEntry {
 		}
 
 		var expiresAt time.Time
-		if cachedSvid, ok := c.svids[entryID]; ok {
+		if cachedSvid, ok := c.x509SVIDs[entryID]; ok {
 			expiresAt = cachedSvid.Chain[0].NotAfter
 		}
 
@@ -578,11 +578,11 @@ func (c *LRUCache) GetStaleEntries() []*StaleEntry {
 // SyncSVIDsWithSubscribers will sync svid cache:
 // entries with active subscribers which are not cached will be put in staleEntries map
 // records which are not cached for remainder of max cache size will also be put in staleEntries map
-func (c *LRUCache) SyncSVIDsWithSubscribers() {
+func (c *LRUCache) SyncX509SVIDsWithSubscribers() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.syncSVIDsWithSubscribers()
+	c.syncX509SVIDsWithSubscribers()
 }
 
 // scheduleRotation processes SVID entries in batches, removing those tainted by X.509 authorities.
@@ -641,7 +641,7 @@ func (c *LRUCache) processTaintedSVIDs(entryIDs []string, taintedX509Authorities
 	defer c.mu.Unlock()
 
 	for _, entryID := range entryIDs {
-		svid, exists := c.svids[entryID]
+		svid, exists := c.x509SVIDs[entryID]
 		if !exists || svid == nil {
 			// Skip if the SVID is not in cache or is nil
 			continue
@@ -657,7 +657,7 @@ func (c *LRUCache) processTaintedSVIDs(entryIDs []string, taintedX509Authorities
 		}
 		if isTainted {
 			taintedSVIDs++
-			delete(c.svids, entryID)
+			delete(c.x509SVIDs, entryID)
 		}
 	}
 
@@ -680,11 +680,11 @@ func (c *LRUCache) notifySubscriberIfSVIDAvailable(selectors []*common.Selector,
 	return false
 }
 
-func (c *LRUCache) SubscribeToWorkloadUpdates(ctx context.Context, selectors Selectors) (Subscriber, error) {
-	return c.subscribeToWorkloadUpdates(ctx, selectors, nil)
+func (c *LRUCache) SubscribeToX509SVIDWorkloadUpdates(ctx context.Context, selectors Selectors) (Subscriber, error) {
+	return c.subscribeToX509SVIDWorkloadUpdates(ctx, selectors, nil)
 }
 
-func (c *LRUCache) subscribeToWorkloadUpdates(ctx context.Context, selectors Selectors, notifyCallbackFn func()) (Subscriber, error) {
+func (c *LRUCache) subscribeToX509SVIDWorkloadUpdates(ctx context.Context, selectors Selectors, notifyCallbackFn func()) (Subscriber, error) {
 	subscriber := c.NewSubscriber(selectors)
 	bo := c.subscribeBackoffFn()
 
@@ -730,7 +730,7 @@ func (c *LRUCache) missingSVIDRecords(set selectorSet) bool {
 	defer recordsDone()
 
 	for record := range records {
-		if _, exists := c.svids[record.entry.EntryId]; !exists {
+		if _, exists := c.x509SVIDs[record.entry.EntryId]; !exists {
 			return true
 		}
 	}
@@ -753,7 +753,7 @@ func (c *LRUCache) updateLastAccessTimestamp(selectors []*common.Selector) {
 
 // entries with active subscribers which are not cached will be put in staleEntries map
 // records which are not cached for remainder of max cache size will also be put in staleEntries map
-func (c *LRUCache) syncSVIDsWithSubscribers() (map[string]struct{}, []recordAccessEvent) {
+func (c *LRUCache) syncX509SVIDsWithSubscribers() (map[string]struct{}, []recordAccessEvent) {
 	activeSubsByEntryID := make(map[string]struct{})
 	lastAccessTimestamps := make([]recordAccessEvent, 0, len(c.records))
 
@@ -766,7 +766,7 @@ func (c *LRUCache) syncSVIDsWithSubscribers() (map[string]struct{}, []recordAcce
 		for _, sel := range record.entry.Selectors {
 			if index, ok := c.selectors[makeSelector(sel)]; ok && index != nil {
 				if len(index.subs) > 0 {
-					if _, ok := c.svids[record.entry.EntryId]; !ok {
+					if _, ok := c.x509SVIDs[record.entry.EntryId]; !ok {
 						c.staleEntries[id] = true
 					}
 					activeSubsByEntryID[id] = struct{}{}
@@ -777,7 +777,7 @@ func (c *LRUCache) syncSVIDsWithSubscribers() (map[string]struct{}, []recordAcce
 		lastAccessTimestamps = append(lastAccessTimestamps, newRecordAccessEvent(record.lastAccessTimestamp, id))
 	}
 
-	remainderSize := c.x509SvidCacheMaxSize - len(c.svids)
+	remainderSize := c.x509SvidCacheMaxSize - len(c.x509SVIDs)
 	// add records which are not cached for remainder of cache size
 	for id, record := range c.records {
 		if len(c.staleEntries) >= remainderSize {
@@ -786,7 +786,7 @@ func (c *LRUCache) syncSVIDsWithSubscribers() (map[string]struct{}, []recordAcce
 		if record.entry.GetAdditionalAttributes() != nil && record.entry.AdditionalAttributes.DisableX509SvidPrefetch {
 			continue
 		}
-		if _, svidCached := c.svids[id]; !svidCached {
+		if _, svidCached := c.x509SVIDs[id]; !svidCached {
 			if _, ok := c.staleEntries[id]; !ok {
 				c.staleEntries[id] = true
 			}
@@ -967,7 +967,7 @@ func (c *LRUCache) matchingIdentities(set selectorSet) []Identity {
 	// TODO: figure out how to determine the "default" identity
 	out := make([]Identity, 0, len(records))
 	for record := range records {
-		if svid, ok := c.svids[record.entry.EntryId]; ok {
+		if svid, ok := c.x509SVIDs[record.entry.EntryId]; ok {
 			out = append(out, makeNewIdentity(record, svid))
 		}
 	}

@@ -194,7 +194,7 @@ func (c *Cache) UpdateEntries(update *cache.UpdateEntries, checkSVID func(*commo
 }
 
 // UpdateSVIDs updates cache with latest SVIDs
-func (c *Cache) UpdateSVIDs(update *cache.UpdateSVIDs) {
+func (c *Cache) UpdateX509SVIDs(update *cache.UpdateSVIDs) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 

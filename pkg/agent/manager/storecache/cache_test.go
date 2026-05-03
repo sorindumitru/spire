@@ -696,7 +696,7 @@ func TestUpdateEntriesRemoveEntry(t *testing.T) {
 	require.Equal(t, expectedRecords, c.Records())
 
 	// Update SVIDs does not update records that are in remove state
-	c.UpdateSVIDs(&cache.UpdateSVIDs{
+	c.UpdateX509SVIDs(&cache.UpdateSVIDs{
 		X509SVIDs: map[string]*cache.X509SVID{
 			"bar": {
 				Chain: []*x509.Certificate{
@@ -946,7 +946,7 @@ func TestTaintX509SVIDs(t *testing.T) {
 			"e5": createX509SVID(td, "e5", taintedAuthority),
 		},
 	}
-	c.UpdateSVIDs(updateSVIDs)
+	c.UpdateX509SVIDs(updateSVIDs)
 
 	for _, tt := range []struct {
 		name               string
@@ -1046,7 +1046,7 @@ func TestTaintX509SVIDs(t *testing.T) {
 	}
 }
 
-func TestUpdateSVIDs(t *testing.T) {
+func TestUpdateX509SVIDs(t *testing.T) {
 	log, hook := test.NewNullLogger()
 	log.Level = logrus.DebugLevel
 	key := spiretest.DefaultKey
@@ -1074,7 +1074,7 @@ func TestUpdateSVIDs(t *testing.T) {
 	}
 
 	// Run update SVIDs to set new SVIDs on cache
-	c.UpdateSVIDs(updateSVIDs)
+	c.UpdateX509SVIDs(updateSVIDs)
 
 	expectedRecords := []*storecache.Record{
 		{
@@ -1163,7 +1163,7 @@ func TestGetStaleEntries(t *testing.T) {
 	expiresAt := time.Now().Add(time.Minute)
 
 	// Call UpdateSVID to remove 'foh' from stale entries
-	c.UpdateSVIDs(&cache.UpdateSVIDs{
+	c.UpdateX509SVIDs(&cache.UpdateSVIDs{
 		X509SVIDs: map[string]*cache.X509SVID{
 			"foh": {
 				Chain: []*x509.Certificate{
@@ -1226,7 +1226,7 @@ func TestCheckSVID(t *testing.T) {
 		Chain: []*x509.Certificate{{URIs: []*url.URL{fohID.URL()}}},
 	}
 	// Set an SVID to record
-	c.UpdateSVIDs(&cache.UpdateSVIDs{
+	c.UpdateX509SVIDs(&cache.UpdateSVIDs{
 		X509SVIDs: map[string]*cache.X509SVID{
 			"foh": x509SVID,
 		},

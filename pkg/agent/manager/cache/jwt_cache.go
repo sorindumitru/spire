@@ -26,8 +26,8 @@ type JWTSVIDCache struct {
 	metrics telemetry.Metrics
 	mu      sync.RWMutex
 
-	svids   map[string]*list.Element
-	lruList *list.List
+	jwtSVIDs map[string]*list.Element
+	lruList  *list.List
 
 	// svidCacheMaxSize is a hard limit of max number of SVIDs that would be stored in cache
 	svidCacheMaxSize int
@@ -42,7 +42,7 @@ func (c *JWTSVIDCache) CountJWTSVIDs() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return len(c.svids)
+	return len(c.jwtSVIDs)
 }
 
 func NewJWTSVIDCache(log logrus.FieldLogger, metrics telemetry.Metrics, svidCacheMaxSize int) *JWTSVIDCache {
@@ -52,7 +52,7 @@ func NewJWTSVIDCache(log logrus.FieldLogger, metrics telemetry.Metrics, svidCach
 	return &JWTSVIDCache{
 		metrics:          metrics,
 		log:              log,
-		svids:            make(map[string]*list.Element),
+		jwtSVIDs:         make(map[string]*list.Element),
 		lruList:          list.New(),
 		svidCacheMaxSize: svidCacheMaxSize,
 	}
@@ -64,7 +64,7 @@ func (c *JWTSVIDCache) GetJWTSVID(spiffeID spiffeid.ID, audience []string) (*cli
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	svidElement, ok := c.svids[key]
+	svidElement, ok := c.jwtSVIDs[key]
 	if !ok {
 		return nil, ok
 	}
@@ -79,14 +79,14 @@ func (c *JWTSVIDCache) SetJWTSVID(spiffeID spiffeid.ID, audience []string, svid 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.svids) >= c.svidCacheMaxSize {
+	if len(c.jwtSVIDs) >= c.svidCacheMaxSize {
 		element := c.lruList.Back()
 		jwtSvidWithHash := element.Value.(jwtSvidElement)
-		delete(c.svids, jwtSvidWithHash.key)
+		delete(c.jwtSVIDs, jwtSvidWithHash.key)
 		c.lruList.Remove(element)
 	}
 
-	svidElement, ok := c.svids[key]
+	svidElement, ok := c.jwtSVIDs[key]
 	if ok {
 		svidElement.Value = jwtSvidElement{
 			key:  key,
@@ -98,7 +98,7 @@ func (c *JWTSVIDCache) SetJWTSVID(spiffeID spiffeid.ID, audience []string, svid 
 			key:  key,
 			svid: svid,
 		})
-		c.svids[key] = svidElement
+		c.jwtSVIDs[key] = svidElement
 	}
 }
 
@@ -111,7 +111,7 @@ func (c *JWTSVIDCache) TaintJWTSVIDs(ctx context.Context, taintedJWTAuthorities 
 
 	removedKeyIDs := make(map[string]int)
 	totalCount := 0
-	for key, element := range c.svids {
+	for key, element := range c.jwtSVIDs {
 		jwtSvidElement := element.Value.(jwtSvidElement)
 		keyID, err := getKeyIDFromSVIDToken(jwtSvidElement.svid.Token)
 		if err != nil {
@@ -120,7 +120,7 @@ func (c *JWTSVIDCache) TaintJWTSVIDs(ctx context.Context, taintedJWTAuthorities 
 		}
 
 		if _, tainted := taintedJWTAuthorities[keyID]; tainted {
-			delete(c.svids, key)
+			delete(c.jwtSVIDs, key)
 			c.lruList.Remove(element)
 
 			removedKeyIDs[keyID]++

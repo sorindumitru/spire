@@ -33,7 +33,7 @@ type SVIDCache interface {
 	UpdateEntries(update *cache.UpdateEntries, checkSVID func(*common.RegistrationEntry, *common.RegistrationEntry, *cache.X509SVID) bool)
 
 	// UpdateSVIDs updates SVIDs on provided records
-	UpdateSVIDs(update *cache.UpdateSVIDs)
+	UpdateX509SVIDs(update *cache.UpdateSVIDs)
 
 	// GetStaleEntries gets a list of records that need update SVIDs
 	GetStaleEntries() []*cache.StaleEntry
@@ -49,8 +49,8 @@ type SVIDCache interface {
 }
 
 func (m *manager) syncSVIDs(ctx context.Context) (err error) {
-	m.cache.SyncSVIDsWithSubscribers()
-	return m.updateSVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache)
+	m.cache.SyncX509SVIDsWithSubscribers()
+	return m.updateX509SVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache)
 }
 
 // processTaintedAuthorities verifies if a new authority is tainted and forces rotation in all caches if required.
@@ -163,10 +163,10 @@ func (m *manager) updateCache(ctx context.Context, update *cache.UpdateEntries, 
 		log.WithField(telemetry.OutdatedSVIDs, outdated).Debug("Updating SVIDs with outdated attributes in cache")
 	}
 
-	return m.updateSVIDs(ctx, log, c)
+	return m.updateX509SVIDs(ctx, log, c)
 }
 
-func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVIDCache) error {
+func (m *manager) updateX509SVIDs(ctx context.Context, log logrus.FieldLogger, c SVIDCache) error {
 	m.updateSVIDMu.Lock()
 	defer m.updateSVIDMu.Unlock()
 
@@ -192,17 +192,17 @@ func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVI
 			})
 		}
 
-		update, err := m.fetchSVIDs(ctx, csrs)
+		update, err := m.fetchX509SVIDs(ctx, csrs)
 		if err != nil {
 			return err
 		}
 		// the values in `update` now belong to the cache. DO NOT MODIFY.
-		c.UpdateSVIDs(update)
+		c.UpdateX509SVIDs(update)
 	}
 	return nil
 }
 
-func (m *manager) fetchSVIDs(ctx context.Context, csrs []csrRequest) (_ *cache.UpdateSVIDs, err error) {
+func (m *manager) fetchX509SVIDs(ctx context.Context, csrs []csrRequest) (_ *cache.UpdateSVIDs, err error) {
 	// Put all the CSRs in an array to make just one call with all the CSRs.
 	counter := telemetry_agent.StartManagerFetchSVIDsUpdatesCall(m.c.Metrics)
 	defer counter.Done(&err)
