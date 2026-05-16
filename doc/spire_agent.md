@@ -353,6 +353,34 @@ Checks SPIRE agent's health.
 | `-socketPath` | Path to the SPIRE Agent API socket    | /tmp/spire-agent/public/api.sock |
 | `-verbose`    | Print verbose information             |                                  |
 
+### `spire-agent logger get`
+
+Displays the current log level and the log level the agent was initially launched with. This command requires the admin API socket to be enabled (see `admin_socket_path`).
+
+| Command       | Action                                         | Default                             |
+|:--------------|:-----------------------------------------------|:------------------------------------|
+| `-output`     | Desired output format (`pretty`, `json`)       | `pretty`                            |
+| `-socketPath` | Path to the SPIRE Agent admin API socket       | /tmp/spire-agent/private/admin.sock |
+
+### `spire-agent logger set`
+
+Sets the log level of the agent. Changes are not persisted across agent restarts. This command requires the admin API socket to be enabled (see `admin_socket_path`).
+
+| Command       | Action                                                                                      | Default                             |
+|:--------------|:--------------------------------------------------------------------------------------------|:------------------------------------|
+| `-level`      | The new log level, one of (`panic`, `fatal`, `error`, `warn`, `info`, `debug`, `trace`)     |                                     |
+| `-output`     | Desired output format (`pretty`, `json`)                                                    | `pretty`                            |
+| `-socketPath` | Path to the SPIRE Agent admin API socket                                                    | /tmp/spire-agent/private/admin.sock |
+
+### `spire-agent logger reset`
+
+Resets the log level to the level the agent was initially launched with. This command requires the admin API socket to be enabled (see `admin_socket_path`).
+
+| Command       | Action                                         | Default                             |
+|:--------------|:-----------------------------------------------|:------------------------------------|
+| `-output`     | Desired output format (`pretty`, `json`)       | `pretty`                            |
+| `-socketPath` | Path to the SPIRE Agent admin API socket       | /tmp/spire-agent/private/admin.sock |
+
 ### `spire-agent validate`
 
 Validates a SPIRE agent configuration file.

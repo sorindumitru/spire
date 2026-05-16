@@ -671,6 +671,34 @@ Mints a JWT-SVID.
 | `-ttl`        | The TTL of the JWT-SVID                                                      | First non-zero value from `Entry.jwt_svid_ttl`, `Entry.ttl`, `default_jwt_svid_ttl`, `5m` |
 | `-write`      | File to write token to instead of stdout                                     |                                                                                           |
 
+### `spire-server logger get`
+
+Displays the current log level and the log level the server was initially launched with.
+
+| Command       | Action                                   | Default                            |
+|:--------------|:-----------------------------------------|:-----------------------------------|
+| `-output`     | Desired output format (`pretty`, `json`) | `pretty`                           |
+| `-socketPath` | Path to the SPIRE Server API socket      | /tmp/spire-server/private/api.sock |
+
+### `spire-server logger set`
+
+Sets the log level of the server. Changes are not persisted across server restarts.
+
+| Command       | Action                                                                                      | Default                            |
+|:--------------|:--------------------------------------------------------------------------------------------|:-----------------------------------|
+| `-level`      | The new log level, one of (`panic`, `fatal`, `error`, `warn`, `info`, `debug`, `trace`)     |                                    |
+| `-output`     | Desired output format (`pretty`, `json`)                                                    | `pretty`                           |
+| `-socketPath` | Path to the SPIRE Server API socket                                                         | /tmp/spire-server/private/api.sock |
+
+### `spire-server logger reset`
+
+Resets the log level to the level the server was initially launched with.
+
+| Command       | Action                                   | Default                            |
+|:--------------|:-----------------------------------------|:-----------------------------------|
+| `-output`     | Desired output format (`pretty`, `json`) | `pretty`                           |
+| `-socketPath` | Path to the SPIRE Server API socket      | /tmp/spire-server/private/api.sock |
+
 ### `spire-server localauthority jwt activate`
 
 Activates a prepared JWT authority for use, which will cause it to be used for all JWT signing operations serviced by this server going forward.
