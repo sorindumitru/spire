@@ -5,6 +5,7 @@ import (
 
 	"github.com/spiffe/spire/pkg/agent/plugin/keymanager"
 	"github.com/spiffe/spire/pkg/agent/plugin/keymanager/disk"
+	"github.com/spiffe/spire/pkg/agent/plugin/keymanager/cng"
 	"github.com/spiffe/spire/pkg/agent/plugin/keymanager/memory"
 )
 
@@ -26,6 +27,7 @@ func (repo *keyManagerRepository) Versions() []catalog.Version {
 
 func (repo *keyManagerRepository) BuiltIns() []catalog.BuiltIn {
 	return []catalog.BuiltIn{
+		cng.BuiltIn(),
 		disk.BuiltIn(),
 		memory.BuiltIn(),
 	}
