@@ -1856,6 +1856,7 @@ type FakeManager struct {
 	ca          *testca.CA
 	identities  []cache.X509Identity
 	updates     []*cache.X509WorkloadUpdate
+	witUpdates  []*cache.WITWorkloadUpdate
 	subscribers atomic.Int32
 	err         error
 }
@@ -1889,6 +1890,14 @@ func (m *FakeManager) SubscribeToX509SVIDCacheChanges(context.Context, cache.Sel
 	}
 	m.subscribers.Add(1)
 	return newFakeSubscriber(m, m.updates), nil
+}
+
+func (m *FakeManager) SubscribeToWITSVIDCacheChanges(context.Context, cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	m.subscribers.Add(1)
+	return newFakeWITSubscriber(m, m.witUpdates), nil
 }
 
 func (m *FakeManager) FetchWorkloadUpdate([]*common.Selector) *cache.X509WorkloadUpdate {
@@ -1937,6 +1946,41 @@ func (s *fakeSubscriber) Updates() <-chan *cache.X509WorkloadUpdate {
 }
 
 func (s *fakeSubscriber) Finish() {
+	s.cancel()
+	s.m.subscriberDone()
+}
+
+type fakeWITSubscriber struct {
+	m      *FakeManager
+	ch     chan *cache.WITWorkloadUpdate
+	cancel context.CancelFunc
+}
+
+func newFakeWITSubscriber(m *FakeManager, updates []*cache.WITWorkloadUpdate) *fakeWITSubscriber {
+	ch := make(chan *cache.WITWorkloadUpdate)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for _, update := range updates {
+			select {
+			case ch <- update:
+			case <-ctx.Done():
+				return
+			}
+		}
+		<-ctx.Done()
+	}()
+	return &fakeWITSubscriber{
+		m:      m,
+		ch:     ch,
+		cancel: cancel,
+	}
+}
+
+func (s *fakeWITSubscriber) Updates() <-chan *cache.WITWorkloadUpdate {
+	return s.ch
+}
+
+func (s *fakeWITSubscriber) Finish() {
 	s.cancel()
 	s.m.subscriberDone()
 }
