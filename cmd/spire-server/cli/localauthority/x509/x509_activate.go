@@ -3,7 +3,6 @@ package x509
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,9 +38,9 @@ func (*x509ActivateCommand) Synopsis() string {
 	return "Activates a prepared X.509 authority for use, which will cause it to be used for all X.509 signing operations serviced by this server going forward"
 }
 
-func (c *x509ActivateCommand) AppendFlags(f *flag.FlagSet) {
+func (c *x509ActivateCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the X.509 authority to activate")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintX509Activate)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintX509Activate)
 }
 
 // Run executes all logic associated with a single invocation of the

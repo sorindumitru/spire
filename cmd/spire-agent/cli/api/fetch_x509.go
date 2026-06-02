@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"path"
 	"sort"
@@ -57,10 +56,10 @@ func (c *fetchX509Command) run(ctx context.Context, _ *commoncli.Env, client *wo
 	return c.printer.PrintProto(resp)
 }
 
-func (c *fetchX509Command) appendFlags(fs *flag.FlagSet) {
+func (c *fetchX509Command) appendFlags(fs *commoncli.FlagSet) {
 	fs.BoolVar(&c.silent, "silent", false, "Suppress stdout")
 	fs.StringVar(&c.writePath, "write", "", "Write SVID data to the specified path (optional; only available for pretty output format)")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintFetchX509)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintFetchX509)
 }
 
 func (c *fetchX509Command) fetchX509SVID(ctx context.Context, client *workloadClient) (*workload.X509SVIDResponse, error) {

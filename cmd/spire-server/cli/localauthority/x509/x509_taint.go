@@ -3,7 +3,6 @@ package x509
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -43,9 +42,9 @@ func (*x509TaintCommand) Synopsis() string {
 	return "Marks the previously active X.509 authority as being tainted"
 }
 
-func (c *x509TaintCommand) AppendFlags(f *flag.FlagSet) {
+func (c *x509TaintCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the X.509 authority to taint")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintX509Taint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintX509Taint)
 }
 
 // Run executes all logic associated with a single invocation of the

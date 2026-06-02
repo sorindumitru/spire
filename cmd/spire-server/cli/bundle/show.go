@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -36,9 +35,9 @@ func (c *showCommand) Synopsis() string {
 	return "Prints server CA bundle to stdout"
 }
 
-func (c *showCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *showCommand) AppendFlags(fs *common_cli.FlagSet) {
 	fs.StringVar(&c.bundleFormat, "format", util.FormatPEM, fmt.Sprintf("The format to show the bundle (only pretty output format supports this flag). Either %q or %q.", util.FormatPEM, util.FormatSPIFFE))
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintBundle)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintBundle)
 }
 
 func (c *showCommand) Run(ctx context.Context, _ *common_cli.Env, serverClient util.ServerClient) error {

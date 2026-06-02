@@ -3,7 +3,6 @@ package entry
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -69,7 +68,7 @@ func (*showCommand) Synopsis() string {
 	return "Displays configured registration entries"
 }
 
-func (c *showCommand) AppendFlags(f *flag.FlagSet) {
+func (c *showCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.entryID, "entryID", "", "The Entry ID of the records to show")
 	f.StringVar(&c.parentID, "parentID", "", "The Parent ID of the records to show")
 	f.StringVar(&c.spiffeID, "spiffeID", "", "The SPIFFE ID of the records to show")
@@ -79,7 +78,7 @@ func (c *showCommand) AppendFlags(f *flag.FlagSet) {
 	f.StringVar(&c.matchFederatesWithOn, "matchFederatesWithOn", "superset", "The match mode used when filtering by federates with. Options: exact, any, superset and subset")
 	f.StringVar(&c.matchSelectorsOn, "matchSelectorsOn", "superset", "The match mode used when filtering by selectors. Options: exact, any, superset and subset")
 	f.StringVar(&c.hint, "hint", "", "The Hint of the records to show (optional)")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintShow)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintShow)
 }
 
 // Run executes all logic associated with a single invocation of the

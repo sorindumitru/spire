@@ -3,7 +3,6 @@ package bundle
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -42,11 +41,11 @@ func (c *setCommand) Synopsis() string {
 	return "Creates or updates federated bundle data"
 }
 
-func (c *setCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *setCommand) AppendFlags(fs *common_cli.FlagSet) {
 	fs.StringVar(&c.id, "id", "", "SPIFFE ID of the trust domain")
 	fs.StringVar(&c.path, "path", "", "Path to the bundle data")
 	fs.StringVar(&c.bundleFormat, "format", util.FormatPEM, fmt.Sprintf("The format of the bundle data. Either %q or %q.", util.FormatPEM, util.FormatSPIFFE))
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintSet)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintSet)
 }
 
 func (c *setCommand) Run(ctx context.Context, env *common_cli.Env, serverClient util.ServerClient) error {

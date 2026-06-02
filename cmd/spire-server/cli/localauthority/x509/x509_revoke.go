@@ -3,7 +3,6 @@ package x509
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,9 +38,9 @@ func (*x509RevokeCommand) Synopsis() string {
 	return "Revokes the previously active X.509 authority by removing it from the bundle and propagating this update throughout the cluster"
 }
 
-func (c *x509RevokeCommand) AppendFlags(f *flag.FlagSet) {
+func (c *x509RevokeCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the X.509 authority to revoke")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintX509Revoke)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintX509Revoke)
 }
 
 // Run executes all logic associated with a single invocation of the

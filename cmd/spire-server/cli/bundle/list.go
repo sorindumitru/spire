@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -37,10 +36,10 @@ func (c *listCommand) Synopsis() string {
 	return "Lists federated bundle data"
 }
 
-func (c *listCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *listCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.id, "id", "", "SPIFFE ID of the trust domain")
 	fs.StringVar(&c.bundleFormat, "format", util.FormatPEM, fmt.Sprintf("The format to list federated bundles (only pretty output format supports this flag). Either %q or %q.", util.FormatPEM, util.FormatSPIFFE))
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintList)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintList)
 }
 
 func (c *listCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

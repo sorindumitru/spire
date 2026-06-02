@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 
 	"github.com/mitchellh/cli"
 	localauthorityv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/localauthority/v1"
@@ -38,8 +37,8 @@ func (*jwtShowCommand) Synopsis() string {
 	return "Shows the local JWT authorities"
 }
 
-func (c *jwtShowCommand) AppendFlags(f *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintJWTShow)
+func (c *jwtShowCommand) AppendFlags(f *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintJWTShow)
 }
 
 // Run executes all logic associated with a single invocation of the

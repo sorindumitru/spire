@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,9 +38,9 @@ func (*jwtActivateCommand) Synopsis() string {
 	return "Activates a prepared JWT authority for use, which will cause it to be used for all JWT signing operations serviced by this server going forward"
 }
 
-func (c *jwtActivateCommand) AppendFlags(f *flag.FlagSet) {
+func (c *jwtActivateCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the JWT authority to activate")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintJWTActivate)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintJWTActivate)
 }
 
 // Run executes all logic associated with a single invocation of the

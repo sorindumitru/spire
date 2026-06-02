@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -43,9 +42,9 @@ func (*jwtTaintCommand) Synopsis() string {
 	return "Marks the previously active JWT authority as being tainted"
 }
 
-func (c *jwtTaintCommand) AppendFlags(f *flag.FlagSet) {
+func (c *jwtTaintCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the JWT authority to taint")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintJWTTaint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintJWTTaint)
 }
 
 // Run executes all logic associated with a single invocation of the

@@ -59,7 +59,7 @@ func (c *workloadClient) prepareContext(ctx context.Context) (context.Context, f
 type command interface {
 	name() string
 	synopsis() string
-	appendFlags(*flag.FlagSet)
+	appendFlags(*cli.FlagSet)
 	run(context.Context, *cli.Env, *workloadClient) error
 }
 
@@ -71,7 +71,7 @@ type adapter struct {
 	cmd          command
 
 	timeout cli.DurationFlag
-	flags   *flag.FlagSet
+	flags   *cli.FlagSet
 }
 
 // adaptCommand converts a command into one conforming to the Command interface from github.com/mitchellh/cli
@@ -83,11 +83,11 @@ func adaptCommand(env *cli.Env, clientsMaker workloadClientMaker, cmd command) *
 		timeout:      cli.DurationFlag(commandTimeout),
 	}
 
-	fs := flag.NewFlagSet(cmd.name(), flag.ContinueOnError)
+	fs := cli.NewFlagSet(cmd.name(), flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	fs.Var(&a.timeout, "timeout", "Time to wait for a response")
 
-	a.AddOSFlags(fs)
+	a.AddOSFlags(fs.FlagSet)
 	a.cmd.appendFlags(fs)
 	a.flags = fs
 

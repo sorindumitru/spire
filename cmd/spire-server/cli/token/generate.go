@@ -2,7 +2,6 @@ package token
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -77,10 +76,10 @@ func getID(spiffeID string) (*prototypes.SPIFFEID, error) {
 	}, nil
 }
 
-func (g *generateCommand) AppendFlags(fs *flag.FlagSet) {
+func (g *generateCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.IntVar(&g.TTL, "ttl", 600, "Token TTL in seconds")
 	fs.StringVar(&g.SpiffeID, "spiffeID", "", "Additional SPIFFE ID to assign the token owner (optional)")
-	cliprinter.AppendFlagWithCustomPretty(&g.printer, fs, g.env, g.prettyPrintGenerate)
+	cliprinter.AppendFlagWithCustomPretty(&g.printer, fs.FlagSet, g.env, g.prettyPrintGenerate)
 }
 
 func (g *generateCommand) prettyPrintGenerate(env *commoncli.Env, results ...any) error {

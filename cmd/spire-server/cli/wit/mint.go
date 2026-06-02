@@ -5,7 +5,6 @@ import (
 	"crypto"
 	"crypto/x509"
 	"errors"
-	"flag"
 	"fmt"
 	"time"
 
@@ -56,13 +55,13 @@ func (c *mintCommand) Synopsis() string {
 	return "Mints a WIT-SVID"
 }
 
-func (c *mintCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *mintCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "SPIFFE ID of the WIT-SVID")
 	fs.StringVar(&c.keyType, "keyType", "ec-p256", "Key type of the WIT-SVID")
 	fs.StringVar(&c.signingAlgorithm, "signingAlgorithm", "ES256", "Signing algorithm for the workload signing key")
 	fs.DurationVar(&c.ttl, "ttl", 0, "TTL of the WIT-SVID")
 	fs.StringVar(&c.write, "write", "", "Directory to write output to instead of stdout")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintMint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintMint)
 }
 
 type mintResult struct {

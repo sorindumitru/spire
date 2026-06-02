@@ -119,7 +119,7 @@ func Pluralizer(msg string, singular string, plural string, val int) string {
 type Command interface {
 	Name() string
 	Synopsis() string
-	AppendFlags(*flag.FlagSet)
+	AppendFlags(*common_cli.FlagSet)
 	Run(context.Context, *common_cli.Env, ServerClient) error
 }
 
@@ -127,7 +127,7 @@ type Adapter struct {
 	env *common_cli.Env
 	cmd Command
 
-	flags *flag.FlagSet
+	flags *common_cli.FlagSet
 
 	adapterOS // OS specific
 }
@@ -139,9 +139,9 @@ func AdaptCommand(env *common_cli.Env, cmd Command) *Adapter {
 		env: env,
 	}
 
-	f := flag.NewFlagSet(cmd.Name(), flag.ContinueOnError)
+	f := common_cli.NewFlagSet(cmd.Name(), flag.ContinueOnError)
 	f.SetOutput(env.Stderr)
-	a.addOSFlags(f)
+	a.addOSFlags(f.FlagSet)
 	a.cmd.AppendFlags(f)
 	a.flags = f
 

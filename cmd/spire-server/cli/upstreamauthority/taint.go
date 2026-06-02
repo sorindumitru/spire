@@ -3,7 +3,6 @@ package upstreamauthority
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -42,9 +41,9 @@ func (*upstreamauthorityTaintCommand) Synopsis() string {
 	return "Marks the provided X.509 upstream authority as being tainted"
 }
 
-func (c *upstreamauthorityTaintCommand) AppendFlags(f *flag.FlagSet) {
+func (c *upstreamauthorityTaintCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.subjectKeyID, "subjectKeyID", "", "The X.509 Subject Key Identifier (or SKID) of the authority's CA certificate of the upstream X.509 authority to taint")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintTaint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintTaint)
 }
 
 // Run executes all logic associated with a single invocation of the

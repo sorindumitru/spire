@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"flag"
 
 	"github.com/mitchellh/cli"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -61,9 +60,9 @@ func (c *showCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient ut
 	return c.printer.PrintProto(agent)
 }
 
-func (c *showCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *showCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "The SPIFFE ID of the agent to show (agent identity)")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintAgent)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintAgent)
 }
 
 func prettyPrintAgent(env *commoncli.Env, results ...any) error {

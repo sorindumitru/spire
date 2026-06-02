@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -38,10 +37,10 @@ func (*validateJWTCommand) synopsis() string {
 	return "Validates a JWT SVID"
 }
 
-func (c *validateJWTCommand) appendFlags(fs *flag.FlagSet) {
+func (c *validateJWTCommand) appendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.audience, "audience", "", "expected audience value")
 	fs.StringVar(&c.svid, "svid", "", "JWT SVID")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintValidate)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintValidate)
 }
 
 func (c *validateJWTCommand) run(ctx context.Context, _ *commoncli.Env, client *workloadClient) error {

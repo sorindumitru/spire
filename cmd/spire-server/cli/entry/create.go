@@ -3,7 +3,6 @@ package entry
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -95,25 +94,25 @@ func (*createCommand) Synopsis() string {
 	return "Creates registration entries"
 }
 
-func (c *createCommand) AppendFlags(f *flag.FlagSet) {
+func (c *createCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.entryID, "entryID", "", "A custom ID for this registration entry (optional). If not set, a new entry ID will be generated")
-	f.StringVar(&c.parentID, "parentID", "", "The SPIFFE ID of this record's parent")
-	f.StringVar(&c.spiffeID, "spiffeID", "", "The SPIFFE ID that this record represents")
+	f.StringVarS(&c.parentID, "parentID", "p", "", "The SPIFFE ID of this record's parent")
+	f.StringVarS(&c.spiffeID, "spiffeID", "s", "", "The SPIFFE ID that this record represents")
 	f.IntVar(&c.x509SVIDTTL, "x509SVIDTTL", 0, "The lifetime, in seconds, for x509-SVIDs issued based on this registration entry.")
 	f.IntVar(&c.jwtSVIDTTL, "jwtSVIDTTL", 0, "The lifetime, in seconds, for JWT-SVIDs issued based on this registration entry.")
-	f.StringVar(&c.path, "data", "", "Path to a file containing registration JSON (optional). If set to '-', read the JSON from stdin.")
-	f.Var(&c.selectors, "selector", "A colon-delimited type:value selector. Can be used more than once")
+	f.StringVarS(&c.path, "data", "d", "", "Path to a file containing registration JSON (optional). If set to '-', read the JSON from stdin.")
+	f.VarS(&c.selectors, "selector", "S", "A colon-delimited type:value selector. Can be used more than once")
 	f.Var(&c.federatesWith, "federatesWith", "SPIFFE ID of a trust domain to federate with. Can be used more than once")
 	f.BoolVar(&c.node, "node", false, "If set, this entry will be applied to matching nodes rather than workloads")
 	f.BoolVar(&c.admin, "admin", false, "If set, the SPIFFE ID in this entry will be granted access to the SPIRE Server's management APIs")
 	f.BoolVar(&c.storeSVID, "storeSVID", false, "A boolean value that, when set, indicates that the resulting issued SVID from this entry must be stored through an SVIDStore plugin")
 	f.BoolVar(&c.downstream, "downstream", false, "A boolean value that, when set, indicates that the entry describes a downstream SPIRE server")
 	f.Int64Var(&c.entryExpiry, "entryExpiry", 0, "An expiry, from epoch in seconds, for the resulting registration entry to be pruned")
-	f.Var(&c.dnsNames, "dns", "A DNS name that will be included in SVIDs issued based on this entry, where appropriate. Can be used more than once")
+	f.VarS(&c.dnsNames, "dns", "D", "A DNS name that will be included in SVIDs issued based on this entry, where appropriate. Can be used more than once")
 	f.StringVar(&c.hint, "hint", "", "The entry hint, used to disambiguate entries with the same SPIFFE ID")
 	f.BoolVar(&c.disableX509SVIDPrefetch, "disableX509SVIDPrefetch", false, "A boolean value that, when set, disables prefetching X509 SVID for this entry")
 	f.BoolVar(&c.jwtSVIDIncludeJTI, "jwtSVIDIncludeJTI", false, "A boolean value that, when set, includes a unique 'jti' claim in JWT-SVIDs issued for this entry and bypasses the agent JWT-SVID cache")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintCreate)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintCreate)
 }
 
 func (c *createCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient serverutil.ServerClient) error {

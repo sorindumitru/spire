@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"time"
 
@@ -78,11 +77,11 @@ func (c *purgeCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient u
 	return c.printer.PrintStruct(expiredAgents)
 }
 
-func (c *purgeCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *purgeCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.DurationVar(&c.expiredFor, "expiredFor", 30*24*time.Hour, "Amount of time that has passed since the agent's SVID has expired. It is used to determine which agents to purge.")
 	fs.BoolVar(&c.dryRun, "dryRun", false, "Indicates that the command will not perform any action, but will print the agents that would be purged.")
 
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintPurgeResult)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintPurgeResult)
 }
 
 type expiredAgents struct {

@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"time"
 
@@ -45,12 +44,12 @@ func (c *mintCommand) Synopsis() string {
 	return "Mints a JWT-SVID"
 }
 
-func (c *mintCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *mintCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "SPIFFE ID of the JWT-SVID")
 	fs.DurationVar(&c.ttl, "ttl", 0, "TTL of the JWT-SVID")
 	fs.Var(&c.audience, "audience", "Audience claim that will be included in the SVID. Can be used more than once.")
 	fs.StringVar(&c.write, "write", "", "File to write token to instead of stdout")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintMint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintMint)
 }
 
 func (c *mintCommand) Run(ctx context.Context, env *commoncli.Env, serverClient serverutil.ServerClient) error {

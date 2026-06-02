@@ -3,7 +3,6 @@ package logger
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"strings"
 
@@ -44,9 +43,9 @@ func (*setCommand) Synopsis() string {
 }
 
 // Adds additional flags specific to the command.
-func (c *setCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *setCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.newLevel, "level", "", "The new log level, one of (panic, fatal, error, warn, info, debug, trace)")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintLogger)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintLogger)
 }
 
 // The routine that executes the command

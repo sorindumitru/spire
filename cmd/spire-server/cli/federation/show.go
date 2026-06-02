@@ -3,7 +3,6 @@ package federation
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -37,9 +36,9 @@ func (c *showCommand) Synopsis() string {
 	return "Shows a dynamic federation relationship"
 }
 
-func (c *showCommand) AppendFlags(f *flag.FlagSet) {
+func (c *showCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.trustDomain, "trustDomain", "", "The trust domain name of the federation relationship to show")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, c.prettyPrintShow)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, c.prettyPrintShow)
 }
 
 func (c *showCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

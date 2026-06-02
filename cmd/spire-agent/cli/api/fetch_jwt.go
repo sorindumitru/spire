@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -52,10 +51,10 @@ func (c *fetchJWTCommand) run(ctx context.Context, _ *commoncli.Env, client *wor
 	return c.printer.PrintProto(svidResp, bundlesResp)
 }
 
-func (c *fetchJWTCommand) appendFlags(fs *flag.FlagSet) {
+func (c *fetchJWTCommand) appendFlags(fs *commoncli.FlagSet) {
 	fs.Var(&c.audience, "audience", "comma separated list of audience values")
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "SPIFFE ID subject (optional)")
-	outputValue := cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, printPrettyResult)
+	outputValue := cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, printPrettyResult)
 	fs.Var(outputValue, "format", "deprecated; use -output")
 }
 

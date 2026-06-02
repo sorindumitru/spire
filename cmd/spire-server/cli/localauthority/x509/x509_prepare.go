@@ -3,7 +3,6 @@ package x509
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -38,8 +37,8 @@ func (*x509PrepareCommand) Synopsis() string {
 	return "Prepares a new X.509 authority for use by generating a new key and injecting the resulting CA certificate into the bundle"
 }
 
-func (c *x509PrepareCommand) AppendFlags(f *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintX509Prepare)
+func (c *x509PrepareCommand) AppendFlags(f *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintX509Prepare)
 }
 
 // Run executes all logic associated with a single invocation of the

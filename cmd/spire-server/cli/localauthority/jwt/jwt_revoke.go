@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,9 +38,9 @@ func (*jwtRevokeCommand) Synopsis() string {
 	return "Revokes the previously active JWT authority by removing it from the bundle and propagating this update throughout the cluster"
 }
 
-func (c *jwtRevokeCommand) AppendFlags(f *flag.FlagSet) {
+func (c *jwtRevokeCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.authorityID, "authorityID", "", "The authority ID of the JWT authority to revoke")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintJWTRevoke)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintJWTRevoke)
 }
 
 // Run executes all logic associated with a single invocation of the

@@ -3,7 +3,6 @@ package federation
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -37,9 +36,9 @@ func (c *deleteCommand) Synopsis() string {
 	return "Deletes a dynamic federation relationship"
 }
 
-func (c *deleteCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *deleteCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.id, "id", "", "SPIFFE ID of the trust domain")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintDelete)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintDelete)
 }
 
 func (c *deleteCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

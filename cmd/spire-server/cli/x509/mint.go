@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"net/url"
 	"time"
@@ -63,12 +62,12 @@ func (c *mintCommand) Synopsis() string {
 	return "Mints an X509-SVID"
 }
 
-func (c *mintCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *mintCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "SPIFFE ID of the X509-SVID")
 	fs.DurationVar(&c.ttl, "ttl", 0, "TTL of the X509-SVID")
 	fs.Var(&c.dnsNames, "dns", "DNS name that will be included in SVID. Can be used more than once.")
 	fs.StringVar(&c.write, "write", "", "Directory to write output to instead of stdout")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintMint)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintMint)
 }
 
 func (c *mintCommand) Run(ctx context.Context, env *commoncli.Env, serverClient serverutil.ServerClient) error {

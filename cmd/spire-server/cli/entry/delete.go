@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -43,10 +42,10 @@ func (*deleteCommand) Synopsis() string {
 	return "Deletes registration entries"
 }
 
-func (c *deleteCommand) AppendFlags(f *flag.FlagSet) {
+func (c *deleteCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.entryID, "entryID", "", "The Registration Entry ID of the record to delete.")
 	f.StringVar(&c.file, "file", "", "Path to a file containing a JSON structure for batch deletion (optional). If set to '-', read from stdin.")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, c.prettyPrintDelete)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, c.prettyPrintDelete)
 }
 
 func parseEntryDeleteJSON(path string) ([]string, error) {

@@ -3,7 +3,6 @@ package x509
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,8 +38,8 @@ func (*x509ShowCommand) Synopsis() string {
 	return "Shows the local X.509 authorities"
 }
 
-func (c *x509ShowCommand) AppendFlags(f *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintX509Show)
+func (c *x509ShowCommand) AppendFlags(f *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintX509Show)
 }
 
 // Run executes all logic associated with a single invocation of the

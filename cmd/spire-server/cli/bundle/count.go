@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -48,8 +47,8 @@ func (c *countCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient u
 	return c.printer.PrintProto(countResp)
 }
 
-func (c *countCommand) AppendFlags(fs *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintCount)
+func (c *countCommand) AppendFlags(fs *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintCount)
 }
 
 func prettyPrintCount(env *commoncli.Env, results ...any) error {

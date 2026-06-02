@@ -3,7 +3,6 @@ package upstreamauthority
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -42,9 +41,9 @@ func (*upstreamauthorityRevokeCommand) Synopsis() string {
 	return "Revokes the previously active X.509 upstream authority by removing it from the bundle and propagating this update throughout the cluster"
 }
 
-func (c *upstreamauthorityRevokeCommand) AppendFlags(f *flag.FlagSet) {
+func (c *upstreamauthorityRevokeCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.subjectKeyID, "subjectKeyID", "", "The X.509 Subject Key Identifier (or SKID) of the authority's CA certificate of the X.509 upstream authority to revoke")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintRevoke)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintRevoke)
 }
 
 // Run executes all logic associated with a single invocation of the

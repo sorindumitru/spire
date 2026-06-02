@@ -2,7 +2,6 @@ package entry
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -133,7 +132,7 @@ func (c *countCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient u
 	return c.printer.PrintProto(countResponse)
 }
 
-func (c *countCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *countCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.parentID, "parentID", "", "The Parent ID of the records to count")
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "The SPIFFE ID of the records to count")
 	fs.BoolVar(&c.downstream, "downstream", false, "A boolean value that, when set, indicates that the entry describes a downstream SPIRE server")
@@ -143,7 +142,7 @@ func (c *countCommand) AppendFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.matchSelectorsOn, "matchSelectorsOn", "superset", "The match mode used when filtering by selectors. Options: exact, any, superset and subset")
 	fs.StringVar(&c.hint, "hint", "", "The Hint of the records to count (optional)")
 
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintCount)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintCount)
 }
 
 func (c *countCommand) prettyPrintCount(env *commoncli.Env, results ...any) error {

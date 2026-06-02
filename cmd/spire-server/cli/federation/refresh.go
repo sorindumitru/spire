@@ -3,7 +3,6 @@ package federation
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -38,9 +37,9 @@ func (c *refreshCommand) Synopsis() string {
 	return "Refreshes the bundle from the specified federated trust domain"
 }
 
-func (c *refreshCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *refreshCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.id, "id", "", "SPIFFE ID of the trust domain")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintRefresh)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintRefresh)
 }
 
 func (c *refreshCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

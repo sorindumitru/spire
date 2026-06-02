@@ -3,7 +3,6 @@ package jwt
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -38,8 +37,8 @@ func (*jwtPrepareCommand) Synopsis() string {
 	return "Prepares a new JWT authority for use by generating a new key and injecting it into the bundle"
 }
 
-func (c *jwtPrepareCommand) AppendFlags(f *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, prettyPrintJWTPrepare)
+func (c *jwtPrepareCommand) AppendFlags(f *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, prettyPrintJWTPrepare)
 }
 
 // Run executes all logic associated with a single invocation of the

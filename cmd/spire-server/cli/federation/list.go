@@ -2,7 +2,6 @@ package federation
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -33,8 +32,8 @@ func (c *listCommand) Synopsis() string {
 	return "Lists all dynamic federation relationships"
 }
 
-func (c *listCommand) AppendFlags(fs *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintList)
+func (c *listCommand) AppendFlags(fs *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintList)
 }
 
 func (c *listCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"flag"
 
 	"github.com/mitchellh/cli"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -62,9 +61,9 @@ func (c *banCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient uti
 	return c.printer.PrintProto(banResponse)
 }
 
-func (c *banCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *banCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.spiffeID, "spiffeID", "", "The SPIFFE ID of the agent to ban (agent identity)")
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintBanResult)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintBanResult)
 }
 
 func prettyPrintBanResult(env *commoncli.Env, _ ...any) error {

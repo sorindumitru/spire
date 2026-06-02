@@ -3,7 +3,6 @@ package federation
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -46,11 +45,11 @@ func (*createCommand) Synopsis() string {
 	return "Creates a dynamic federation relationship with a foreign trust domain"
 }
 
-func (c *createCommand) AppendFlags(f *flag.FlagSet) {
+func (c *createCommand) AppendFlags(f *commoncli.FlagSet) {
 	f.StringVar(&c.path, "data", "", "Path to a file containing federation relationships in JSON format (optional). If set to '-', read the JSON from stdin.")
 	c.config = &federationRelationshipConfig{}
-	appendConfigFlags(c.config, f)
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, f, c.env, c.prettyPrintCreate)
+	appendConfigFlags(c.config, f.FlagSet)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, f.FlagSet, c.env, c.prettyPrintCreate)
 }
 
 func (c *createCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient serverutil.ServerClient) error {

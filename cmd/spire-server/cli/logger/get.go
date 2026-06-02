@@ -2,7 +2,6 @@ package logger
 
 import (
 	"context"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -39,8 +38,8 @@ func (*getCommand) Synopsis() string {
 }
 
 // Adds additional flags specific to the command.
-func (c *getCommand) AppendFlags(fs *flag.FlagSet) {
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, c.prettyPrintLogger)
+func (c *getCommand) AppendFlags(fs *commoncli.FlagSet) {
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, c.prettyPrintLogger)
 }
 
 // The routine that executes the command

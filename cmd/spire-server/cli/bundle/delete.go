@@ -3,7 +3,6 @@ package bundle
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -47,10 +46,10 @@ func (c *deleteCommand) Synopsis() string {
 	return "Deletes federated bundle data"
 }
 
-func (c *deleteCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *deleteCommand) AppendFlags(fs *commoncli.FlagSet) {
 	fs.StringVar(&c.id, "id", "", "SPIFFE ID of the trust domain")
 	fs.StringVar(&c.mode, "mode", deleteBundleRestrict, fmt.Sprintf("Deletion mode: one of %s, %s, or %s", deleteBundleRestrict, deleteBundleDelete, deleteBundleDissociate))
-	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs, c.env, prettyPrintDelete)
+	cliprinter.AppendFlagWithCustomPretty(&c.printer, fs.FlagSet, c.env, prettyPrintDelete)
 }
 
 func (c *deleteCommand) Run(ctx context.Context, _ *commoncli.Env, serverClient util.ServerClient) error {

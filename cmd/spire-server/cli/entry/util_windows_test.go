@@ -6,11 +6,11 @@ const (
 	createUsage = `Usage of entry create:
   -admin
     	If set, the SPIFFE ID in this entry will be granted access to the SPIRE Server's management APIs
-  -data string
+  -data, -d string
     	Path to a file containing registration JSON (optional). If set to '-', read the JSON from stdin.
   -disableX509SVIDPrefetch
     	A boolean value that, when set, disables prefetching X509 SVID for this entry
-  -dns value
+  -dns, -D value
     	A DNS name that will be included in SVIDs issued based on this entry, where appropriate. Can be used more than once
   -downstream
     	A boolean value that, when set, indicates that the entry describes a downstream SPIRE server
@@ -31,11 +31,11 @@ const (
     	If set, this entry will be applied to matching nodes rather than workloads
   -output value
     	Desired output format (pretty, json); default: pretty.
-  -parentID string
+  -parentID, -p string
     	The SPIFFE ID of this record's parent
-  -selector value
+  -selector, -S value
     	A colon-delimited type:value selector. Can be used more than once
-  -spiffeID string
+  -spiffeID, -s string
     	The SPIFFE ID that this record represents
   -storeSVID
     	A boolean value that, when set, indicates that the resulting issued SVID from this entry must be stored through an SVIDStore plugin

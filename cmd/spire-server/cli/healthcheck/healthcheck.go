@@ -3,7 +3,6 @@ package healthcheck
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 
 	"github.com/mitchellh/cli"
@@ -33,7 +32,7 @@ func (c *healthCheckCommand) Synopsis() string {
 	return "Determines server health status"
 }
 
-func (c *healthCheckCommand) AppendFlags(fs *flag.FlagSet) {
+func (c *healthCheckCommand) AppendFlags(fs *common_cli.FlagSet) {
 	fs.BoolVar(&c.shallow, "shallow", false, "Perform a less stringent health check")
 	fs.BoolVar(&c.verbose, "verbose", false, "Print verbose information")
 }
