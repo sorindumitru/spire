@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/spiffe/spire/proto/spire/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -96,6 +98,7 @@ type Config struct {
 	Log             logrus.FieldLogger
 	Metrics         telemetry.Metrics
 	Clock           clock.Clock
+	CAKeySlots      int
 }
 
 type Manager struct {
@@ -119,6 +122,10 @@ type Manager struct {
 	witKeyMutex   sync.RWMutex
 
 	journal *Journal
+
+	// poolSlotNum is the pool slot number this instance was assigned to
+	// (1..CAKeySlots). Only used when CAKeySlots > 0.
+	poolSlotNum int
 
 	// Used to log a warning only once when the UpstreamAuthority does not support JWT-SVIDs.
 	jwtUnimplementedWarnOnce sync.Once
@@ -154,12 +161,22 @@ func NewManager(ctx context.Context, c Config) (*Manager, error) {
 		m.upstreamPluginName = upstreamAuthority.Name()
 	}
 
+	if c.CAKeySlots > 0 {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(c.CAKeySlots)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to pick pool slot: %w", err)
+		}
+		m.poolSlotNum = int(n.Int64()) + 1
+		c.Log.WithField("pool_slot", m.poolSlotNum).Info("Assigned to shared key pool slot")
+	}
+
 	loader := &SlotLoader{
 		TrustDomain:    c.TrustDomain,
 		Log:            c.Log,
 		Dir:            c.Dir,
 		Catalog:        c.Catalog,
 		UpstreamClient: m.upstreamClient,
+		PoolSlotNum:    m.poolSlotNum,
 	}
 
 	journal, slots, err := loader.load(ctx)
@@ -217,6 +234,158 @@ func NewManager(ctx context.Context, c Config) (*Manager, error) {
 	return m, nil
 }
 
+func (m *Manager) IsPoolMode() bool {
+	return m.c.CAKeySlots > 0
+}
+
+func (m *Manager) PoolSlotNum() int {
+	return m.poolSlotNum
+}
+
+// SyncFromJournal re-reads the journal from the datastore and updates
+// local state if another instance has prepared or activated keys.
+func (m *Manager) SyncFromJournal(ctx context.Context) error {
+	ds := m.c.Catalog.GetDataStore()
+	km := m.c.Catalog.GetKeyManager()
+
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		return nil
+	}
+
+	caJournal, err := ds.FetchCAJournalByID(ctx, caJournalID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch CA journal: %w", err)
+	}
+	if caJournal == nil {
+		return nil
+	}
+
+	var entries journal.Entries
+	if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+		return fmt.Errorf("failed to unmarshal journal entries: %w", err)
+	}
+
+	m.x509CAMutex.Lock()
+	defer m.x509CAMutex.Unlock()
+
+	localActiveID := m.journal.getActiveX509AuthorityID()
+
+	// Check if the active X509 authority changed
+	if caJournal.ActiveX509AuthorityID != localActiveID && caJournal.ActiveX509AuthorityID != "" {
+		m.c.Log.WithFields(logrus.Fields{
+			"local_authority_id":  localActiveID,
+			"remote_authority_id": caJournal.ActiveX509AuthorityID,
+		}).Info("Detected X509 CA activation by another instance, syncing")
+
+		for _, entry := range entries.X509CAs {
+			if entry.AuthorityId == caJournal.ActiveX509AuthorityID && entry.Status == journal.Status_ACTIVE {
+				if err := m.loadX509CAFromEntry(ctx, m.currentX509CA, entry, km); err != nil {
+					return fmt.Errorf("failed to load activated X509 CA: %w", err)
+				}
+				m.nextX509CA.Reset()
+				m.journal.setEntries(&entries)
+				m.journal.setActiveX509AuthorityID(caJournal.ActiveX509AuthorityID)
+				m.c.CA.SetX509CA(m.currentX509CA.x509CA)
+				break
+			}
+		}
+	}
+
+	// Check if a next key was prepared that we don't have locally
+	if m.nextX509CA.IsEmpty() {
+		for _, entry := range entries.X509CAs {
+			if entry.Status == journal.Status_PREPARED {
+				m.c.Log.WithField(telemetry.LocalAuthorityID, entry.AuthorityId).
+					Info("Detected X509 CA preparation by another instance, loading")
+				if err := m.loadX509CAFromEntry(ctx, m.nextX509CA, entry, km); err != nil {
+					m.c.Log.WithError(err).Warn("Failed to load prepared X509 CA from another instance")
+				} else {
+					m.journal.setEntries(&entries)
+				}
+				break
+			}
+		}
+	}
+
+	// Sync JWT keys
+	if !m.IsJWTSVIDsDisabled() {
+		m.jwtKeyMutex.Lock()
+		m.syncJWTKeyFromEntries(ctx, &entries, km)
+		m.jwtKeyMutex.Unlock()
+	}
+
+	// Sync WIT keys
+	if !m.IsWITSVIDsDisabled() {
+		m.witKeyMutex.Lock()
+		m.syncWITKeyFromEntries(ctx, &entries, km)
+		m.witKeyMutex.Unlock()
+	}
+
+	return nil
+}
+
+func (m *Manager) syncJWTKeyFromEntries(ctx context.Context, entries *journal.Entries, km keymanager.KeyManager) {
+	// Check if another instance activated a JWT key we don't have
+	localActiveID := m.currentJWTKey.AuthorityID()
+	for _, entry := range entries.JwtKeys {
+		if entry.Status == journal.Status_ACTIVE && entry.AuthorityId != localActiveID {
+			m.c.Log.WithField(telemetry.LocalAuthorityID, entry.AuthorityId).
+				Info("Detected JWT key activation by another instance, syncing")
+			if err := m.loadJWTKeyFromEntry(ctx, m.currentJWTKey, entry, km); err != nil {
+				m.c.Log.WithError(err).Warn("Failed to load activated JWT key from another instance")
+			} else {
+				m.nextJWTKey.Reset()
+				m.c.CA.SetJWTKey(m.currentJWTKey.jwtKey)
+			}
+			break
+		}
+	}
+
+	if m.nextJWTKey.IsEmpty() {
+		for _, entry := range entries.JwtKeys {
+			if entry.Status == journal.Status_PREPARED {
+				m.c.Log.WithField(telemetry.LocalAuthorityID, entry.AuthorityId).
+					Info("Detected JWT key preparation by another instance, loading")
+				if err := m.loadJWTKeyFromEntry(ctx, m.nextJWTKey, entry, km); err != nil {
+					m.c.Log.WithError(err).Warn("Failed to load prepared JWT key from another instance")
+				}
+				break
+			}
+		}
+	}
+}
+
+func (m *Manager) syncWITKeyFromEntries(ctx context.Context, entries *journal.Entries, km keymanager.KeyManager) {
+	localActiveID := m.currentWITKey.AuthorityID()
+	for _, entry := range entries.WitKeys {
+		if entry.Status == journal.Status_ACTIVE && entry.AuthorityId != localActiveID {
+			m.c.Log.WithField(telemetry.LocalAuthorityID, entry.AuthorityId).
+				Info("Detected WIT key activation by another instance, syncing")
+			if err := m.loadWITKeyFromEntry(ctx, m.currentWITKey, entry, km); err != nil {
+				m.c.Log.WithError(err).Warn("Failed to load activated WIT key from another instance")
+			} else {
+				m.nextWITKey.Reset()
+				m.c.CA.SetWITKey(m.currentWITKey.witKey)
+			}
+			break
+		}
+	}
+
+	if m.nextWITKey.IsEmpty() {
+		for _, entry := range entries.WitKeys {
+			if entry.Status == journal.Status_PREPARED {
+				m.c.Log.WithField(telemetry.LocalAuthorityID, entry.AuthorityId).
+					Info("Detected WIT key preparation by another instance, loading")
+				if err := m.loadWITKeyFromEntry(ctx, m.nextWITKey, entry, km); err != nil {
+					m.c.Log.WithError(err).Warn("Failed to load prepared WIT key from another instance")
+				}
+				break
+			}
+		}
+	}
+}
+
 func (m *Manager) Close() {
 	if m.upstreamClient != nil {
 		_ = m.upstreamClient.Close()
@@ -262,6 +431,14 @@ func (m *Manager) PrepareX509CA(ctx context.Context) (err error) {
 	m.x509CAMutex.Lock()
 	defer m.x509CAMutex.Unlock()
 
+	if m.IsPoolMode() {
+		return m.prepareX509CAPoolMode(ctx)
+	}
+
+	return m.prepareX509CALocal(ctx)
+}
+
+func (m *Manager) prepareX509CALocal(ctx context.Context) error {
 	// If current is not empty, prepare the next.
 	// If the journal has been started, we will be preparing on next.
 	// This is only needed when the journal has not been started.
@@ -298,8 +475,6 @@ func (m *Manager) PrepareX509CA(ctx context.Context) (err error) {
 	slot.issuedAt = now
 	slot.x509CA = x509CA
 	slot.status = journal.Status_PREPARED
-	// Set key from new CA, to be able to get it after
-	// slot moved to old state
 	slot.authorityID = x509util.SubjectKeyIDToString(x509CA.Certificate.SubjectKeyId)
 	slot.upstreamAuthorityID = x509util.SubjectKeyIDToString(x509CA.Certificate.AuthorityKeyId)
 	slot.publicKey = slot.x509CA.Certificate.PublicKey
@@ -320,6 +495,175 @@ func (m *Manager) PrepareX509CA(ctx context.Context) (err error) {
 	return nil
 }
 
+func (m *Manager) prepareX509CAPoolMode(ctx context.Context) error {
+	slot := m.currentX509CA
+	if !slot.IsEmpty() {
+		slot = m.nextX509CA
+	}
+
+	log := m.c.Log.WithField(telemetry.Slot, slot.id)
+	log.Debug("Preparing X509 CA (pool mode)")
+
+	ds := m.c.Catalog.GetDataStore()
+	km := m.c.Catalog.GetKeyManager()
+
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		// No journal row yet — create an empty one. The first instance to
+		// get here creates the row; others will find it via findCAJournal.
+		return m.prepareX509CALocal(ctx)
+	}
+
+	return ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		// Check if another instance already prepared the next key
+		for _, entry := range entries.X509CAs {
+			if entry.SlotId == slot.id && entry.Status == journal.Status_PREPARED {
+				log.Info("X509 CA already prepared by another instance, loading key")
+				if err := m.loadX509CAFromEntry(ctx, slot, entry, km); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
+		}
+
+		// We're first: generate the key
+		slot.Reset()
+		now := m.c.Clock.Now()
+
+		signer, err := km.GenerateKey(ctx, slot.KmKeyID(), m.c.X509CAKeyType)
+		if err != nil {
+			return nil, err
+		}
+
+		var x509CA *ca.X509CA
+		if m.upstreamClient != nil {
+			x509CA, err = m.upstreamSignX509CA(ctx, signer)
+		} else {
+			x509CA, err = m.selfSignX509CA(ctx, signer)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		slot.issuedAt = now
+		slot.x509CA = x509CA
+		slot.status = journal.Status_PREPARED
+		slot.authorityID = x509util.SubjectKeyIDToString(x509CA.Certificate.SubjectKeyId)
+		slot.upstreamAuthorityID = x509util.SubjectKeyIDToString(x509CA.Certificate.AuthorityKeyId)
+		slot.publicKey = slot.x509CA.Certificate.PublicKey
+		slot.notAfter = slot.x509CA.Certificate.NotAfter
+
+		// Append the new entry and serialize back
+		entries.X509CAs = append(entries.X509CAs, &journal.X509CAEntry{
+			SlotId:              slot.id,
+			IssuedAt:            now.Unix(),
+			NotAfter:            x509CA.Certificate.NotAfter.Unix(),
+			Certificate:         x509CA.Certificate.Raw,
+			UpstreamChain:       chainDER(x509CA.UpstreamChain),
+			Status:              journal.Status_PREPARED,
+			AuthorityId:         slot.authorityID,
+			UpstreamAuthorityId: slot.upstreamAuthorityID,
+		})
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+
+		// Also update the in-memory journal
+		m.journal.setEntries(&entries)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:                slot.id,
+			telemetry.IssuedAt:            slot.issuedAt,
+			telemetry.Expiration:          slot.x509CA.Certificate.NotAfter,
+			telemetry.SelfSigned:          m.upstreamClient == nil,
+			telemetry.LocalAuthorityID:    slot.authorityID,
+			telemetry.UpstreamAuthorityID: slot.upstreamAuthorityID,
+		}).Info("X509 CA prepared (pool mode)")
+
+		return caJournal, nil
+	})
+}
+
+// loadX509CAFromEntry loads an X509 CA slot from a journal entry,
+// retrieving the key from the KeyManager rather than generating a new one.
+func (m *Manager) loadX509CAFromEntry(ctx context.Context, slot *x509CASlot, entry *journal.X509CAEntry, km keymanager.KeyManager) error {
+	cert, err := x509.ParseCertificate(entry.Certificate)
+	if err != nil {
+		return fmt.Errorf("unable to parse CA certificate from journal: %w", err)
+	}
+
+	var upstreamChain []*x509.Certificate
+	for _, certDER := range entry.UpstreamChain {
+		c, err := x509.ParseCertificate(certDER)
+		if err != nil {
+			return fmt.Errorf("unable to parse upstream chain certificate: %w", err)
+		}
+		upstreamChain = append(upstreamChain, c)
+	}
+
+	signer, err := km.GetKey(ctx, slot.KmKeyID())
+	if err != nil {
+		return fmt.Errorf("unable to get key from key manager: %w", err)
+	}
+
+	slot.issuedAt = time.Unix(entry.IssuedAt, 0)
+	slot.x509CA = &ca.X509CA{
+		Signer:        signer,
+		Certificate:   cert,
+		UpstreamChain: upstreamChain,
+	}
+	slot.status = entry.Status
+	slot.authorityID = entry.AuthorityId
+	slot.upstreamAuthorityID = entry.UpstreamAuthorityId
+	slot.publicKey = cert.PublicKey
+	slot.notAfter = cert.NotAfter
+	return nil
+}
+
+func (m *Manager) loadJWTKeyFromEntry(ctx context.Context, slot *jwtKeySlot, entry *journal.JWTKeyEntry, km keymanager.KeyManager) error {
+	signer, err := km.GetKey(ctx, slot.KmKeyID())
+	if err != nil {
+		return fmt.Errorf("unable to get key from key manager: %w", err)
+	}
+
+	slot.issuedAt = time.Unix(entry.IssuedAt, 0)
+	slot.jwtKey = &ca.JWTKey{
+		Signer:   signer,
+		NotAfter: time.Unix(entry.NotAfter, 0),
+		Kid:      entry.Kid,
+	}
+	slot.status = entry.Status
+	slot.authorityID = entry.AuthorityId
+	slot.notAfter = time.Unix(entry.NotAfter, 0)
+	return nil
+}
+
+func (m *Manager) loadWITKeyFromEntry(ctx context.Context, slot *witKeySlot, entry *journal.WITKeyEntry, km keymanager.KeyManager) error {
+	signer, err := km.GetKey(ctx, slot.KmKeyID())
+	if err != nil {
+		return fmt.Errorf("unable to get key from key manager: %w", err)
+	}
+
+	slot.issuedAt = time.Unix(entry.IssuedAt, 0)
+	slot.witKey = &ca.WITKey{
+		Signer:   signer,
+		NotAfter: time.Unix(entry.NotAfter, 0),
+		Kid:      entry.Kid,
+	}
+	slot.status = entry.Status
+	slot.authorityID = entry.AuthorityId
+	slot.notAfter = time.Unix(entry.NotAfter, 0)
+	return nil
+}
+
 func (m *Manager) IsUpstreamAuthority() bool {
 	return m.upstreamClient != nil
 }
@@ -335,6 +679,11 @@ func (m *Manager) RotateX509CA(ctx context.Context) {
 	m.x509CAMutex.Lock()
 	defer m.x509CAMutex.Unlock()
 
+	if m.IsPoolMode() {
+		m.rotateX509CAPoolMode(ctx)
+		return
+	}
+
 	m.currentX509CA, m.nextX509CA = m.nextX509CA, m.currentX509CA
 	m.nextX509CA.Reset()
 	if err := m.journal.UpdateX509CAStatus(ctx, m.nextX509CA.AuthorityID(), journal.Status_OLD); err != nil {
@@ -342,6 +691,77 @@ func (m *Manager) RotateX509CA(ctx context.Context) {
 	}
 
 	m.activateX509CA(ctx)
+}
+
+func (m *Manager) rotateX509CAPoolMode(ctx context.Context) {
+	ds := m.c.Catalog.GetDataStore()
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		// Fall back to local rotation if no journal row exists yet
+		m.currentX509CA, m.nextX509CA = m.nextX509CA, m.currentX509CA
+		m.nextX509CA.Reset()
+		if err := m.journal.UpdateX509CAStatus(ctx, m.nextX509CA.AuthorityID(), journal.Status_OLD); err != nil {
+			m.c.Log.WithError(err).Error("Failed to update status on X509CA journal entry")
+		}
+		m.activateX509CA(ctx)
+		return
+	}
+
+	err := ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		// Check if the next slot has already been activated by another instance
+		nextAuthorityID := m.nextX509CA.AuthorityID()
+		for _, entry := range entries.X509CAs {
+			if entry.AuthorityId == nextAuthorityID && entry.Status == journal.Status_ACTIVE {
+				m.c.Log.Info("X509 CA already activated by another instance")
+				return nil, nil
+			}
+		}
+
+		// We're first: do the rotation
+		m.currentX509CA, m.nextX509CA = m.nextX509CA, m.currentX509CA
+		m.nextX509CA.Reset()
+
+		// Update statuses in the entries
+		for _, entry := range entries.X509CAs {
+			if entry.AuthorityId == m.nextX509CA.AuthorityID() {
+				entry.Status = journal.Status_OLD
+			}
+			if entry.AuthorityId == m.currentX509CA.AuthorityID() {
+				entry.Status = journal.Status_ACTIVE
+			}
+		}
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+		caJournal.ActiveX509AuthorityID = m.currentX509CA.AuthorityID()
+
+		m.journal.setEntries(&entries)
+		m.journal.setActiveX509AuthorityID(m.currentX509CA.AuthorityID())
+
+		m.currentX509CA.status = journal.Status_ACTIVE
+		m.c.CA.SetX509CA(m.currentX509CA.x509CA)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:                m.currentX509CA.id,
+			telemetry.IssuedAt:            m.currentX509CA.issuedAt,
+			telemetry.Expiration:          m.currentX509CA.x509CA.Certificate.NotAfter,
+			telemetry.LocalAuthorityID:    m.currentX509CA.authorityID,
+			telemetry.UpstreamAuthorityID: m.currentX509CA.upstreamAuthorityID,
+		}).Info("X509 CA activated (pool mode)")
+
+		return caJournal, nil
+	})
+	if err != nil {
+		m.c.Log.WithError(err).Error("Failed to rotate X509 CA in pool mode")
+	}
 }
 
 func (m *Manager) GetCurrentJWTKeySlot() Slot {
@@ -369,7 +789,14 @@ func (m *Manager) PrepareJWTKey(ctx context.Context) (err error) {
 	m.jwtKeyMutex.Lock()
 	defer m.jwtKeyMutex.Unlock()
 
-	// If current slot is not empty, use next to prepare
+	if m.IsPoolMode() {
+		return m.prepareJWTKeyPoolMode(ctx)
+	}
+
+	return m.prepareJWTKeyLocal(ctx)
+}
+
+func (m *Manager) prepareJWTKeyLocal(ctx context.Context) error {
 	slot := m.currentJWTKey
 	if !slot.IsEmpty() {
 		slot = m.nextJWTKey
@@ -422,6 +849,102 @@ func (m *Manager) PrepareJWTKey(ctx context.Context) (err error) {
 	return nil
 }
 
+func (m *Manager) prepareJWTKeyPoolMode(ctx context.Context) error {
+	slot := m.currentJWTKey
+	if !slot.IsEmpty() {
+		slot = m.nextJWTKey
+	}
+
+	log := m.c.Log.WithField(telemetry.Slot, slot.id)
+	log.Debug("Preparing JWT key (pool mode)")
+
+	ds := m.c.Catalog.GetDataStore()
+	km := m.c.Catalog.GetKeyManager()
+
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		return m.prepareJWTKeyLocal(ctx)
+	}
+
+	return ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		for _, entry := range entries.JwtKeys {
+			if entry.SlotId == slot.id && entry.Status == journal.Status_PREPARED {
+				log.Info("JWT key already prepared by another instance, loading key")
+				if err := m.loadJWTKeyFromEntry(ctx, slot, entry, km); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
+		}
+
+		slot.Reset()
+		now := m.c.Clock.Now()
+		notAfter := now.Add(m.caTTL)
+
+		signer, err := km.GenerateKey(ctx, slot.KmKeyID(), m.c.JWTKeyType)
+		if err != nil {
+			return nil, err
+		}
+
+		jwtKey, err := newJWTKey(signer, notAfter)
+		if err != nil {
+			return nil, err
+		}
+
+		publicKey, err := publicKeyFromJWTKey(jwtKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := m.PublishJWTKey(ctx, publicKey); err != nil {
+			return nil, err
+		}
+
+		slot.issuedAt = now
+		slot.jwtKey = jwtKey
+		slot.status = journal.Status_PREPARED
+		slot.authorityID = jwtKey.Kid
+		slot.notAfter = jwtKey.NotAfter
+
+		pkixBytes, err := x509.MarshalPKIXPublicKey(jwtKey.Signer.Public())
+		if err != nil {
+			return nil, err
+		}
+
+		entries.JwtKeys = append(entries.JwtKeys, &journal.JWTKeyEntry{
+			SlotId:      slot.id,
+			IssuedAt:    now.Unix(),
+			Kid:         jwtKey.Kid,
+			PublicKey:   pkixBytes,
+			NotAfter:    jwtKey.NotAfter.Unix(),
+			Status:      journal.Status_PREPARED,
+			AuthorityId: jwtKey.Kid,
+		})
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+
+		m.journal.setEntries(&entries)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:             slot.id,
+			telemetry.IssuedAt:         slot.issuedAt,
+			telemetry.Expiration:       slot.jwtKey.NotAfter,
+			telemetry.LocalAuthorityID: slot.authorityID,
+		}).Info("JWT key prepared (pool mode)")
+
+		return caJournal, nil
+	})
+}
+
 func (m *Manager) ActivateJWTKey(ctx context.Context) {
 	if m.IsJWTSVIDsDisabled() {
 		return
@@ -440,6 +963,11 @@ func (m *Manager) RotateJWTKey(ctx context.Context) {
 	m.jwtKeyMutex.Lock()
 	defer m.jwtKeyMutex.Unlock()
 
+	if m.IsPoolMode() {
+		m.rotateJWTKeyPoolMode(ctx)
+		return
+	}
+
 	m.currentJWTKey, m.nextJWTKey = m.nextJWTKey, m.currentJWTKey
 	m.nextJWTKey.Reset()
 
@@ -448,6 +976,70 @@ func (m *Manager) RotateJWTKey(ctx context.Context) {
 	}
 
 	m.activateJWTKey(ctx)
+}
+
+func (m *Manager) rotateJWTKeyPoolMode(ctx context.Context) {
+	ds := m.c.Catalog.GetDataStore()
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		m.currentJWTKey, m.nextJWTKey = m.nextJWTKey, m.currentJWTKey
+		m.nextJWTKey.Reset()
+		if err := m.journal.UpdateJWTKeyStatus(ctx, m.nextJWTKey.AuthorityID(), journal.Status_OLD); err != nil {
+			m.c.Log.WithError(err).Error("Failed to update status on JWTKey journal entry")
+		}
+		m.activateJWTKey(ctx)
+		return
+	}
+
+	err := ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		nextAuthorityID := m.nextJWTKey.AuthorityID()
+		for _, entry := range entries.JwtKeys {
+			if entry.AuthorityId == nextAuthorityID && entry.Status == journal.Status_ACTIVE {
+				m.c.Log.Info("JWT key already activated by another instance")
+				return nil, nil
+			}
+		}
+
+		m.currentJWTKey, m.nextJWTKey = m.nextJWTKey, m.currentJWTKey
+		m.nextJWTKey.Reset()
+
+		for _, entry := range entries.JwtKeys {
+			if entry.AuthorityId == m.nextJWTKey.AuthorityID() {
+				entry.Status = journal.Status_OLD
+			}
+			if entry.AuthorityId == m.currentJWTKey.AuthorityID() {
+				entry.Status = journal.Status_ACTIVE
+			}
+		}
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+
+		m.journal.setEntries(&entries)
+
+		m.currentJWTKey.status = journal.Status_ACTIVE
+		m.c.CA.SetJWTKey(m.currentJWTKey.jwtKey)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:             m.currentJWTKey.id,
+			telemetry.IssuedAt:         m.currentJWTKey.issuedAt,
+			telemetry.Expiration:       m.currentJWTKey.jwtKey.NotAfter,
+			telemetry.LocalAuthorityID: m.currentJWTKey.authorityID,
+		}).Info("JWT key activated (pool mode)")
+
+		return caJournal, nil
+	})
+	if err != nil {
+		m.c.Log.WithError(err).Error("Failed to rotate JWT key in pool mode")
+	}
 }
 
 // PublishJWTKey publishes the passed JWK to the upstream server using the configured
@@ -520,7 +1112,14 @@ func (m *Manager) PrepareWITKey(ctx context.Context) (err error) {
 	m.witKeyMutex.Lock()
 	defer m.witKeyMutex.Unlock()
 
-	// If current slot is not empty, use next to prepare
+	if m.IsPoolMode() {
+		return m.prepareWITKeyPoolMode(ctx)
+	}
+
+	return m.prepareWITKeyLocal(ctx)
+}
+
+func (m *Manager) prepareWITKeyLocal(ctx context.Context) error {
 	slot := m.currentWITKey
 	if !slot.IsEmpty() {
 		slot = m.nextWITKey
@@ -574,6 +1173,102 @@ func (m *Manager) PrepareWITKey(ctx context.Context) (err error) {
 	return nil
 }
 
+func (m *Manager) prepareWITKeyPoolMode(ctx context.Context) error {
+	slot := m.currentWITKey
+	if !slot.IsEmpty() {
+		slot = m.nextWITKey
+	}
+
+	log := m.c.Log.WithField(telemetry.Slot, slot.id)
+	log.Debug("Preparing WIT key (pool mode)")
+
+	ds := m.c.Catalog.GetDataStore()
+	km := m.c.Catalog.GetKeyManager()
+
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		return m.prepareWITKeyLocal(ctx)
+	}
+
+	return ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		for _, entry := range entries.WitKeys {
+			if entry.SlotId == slot.id && entry.Status == journal.Status_PREPARED {
+				log.Info("WIT key already prepared by another instance, loading key")
+				if err := m.loadWITKeyFromEntry(ctx, slot, entry, km); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
+		}
+
+		slot.Reset()
+		now := m.c.Clock.Now()
+		notAfter := now.Add(m.caTTL)
+
+		signer, err := km.GenerateKey(ctx, slot.KmKeyID(), m.c.WITKeyType)
+		if err != nil {
+			return nil, err
+		}
+
+		witKey, err := newWITKey(signer, notAfter)
+		if err != nil {
+			return nil, err
+		}
+
+		publicKey, err := publicKeyFromWITKey(witKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err = m.appendBundle(ctx, nil, nil, []*common.PublicKey{publicKey}); err != nil {
+			return nil, err
+		}
+
+		slot.issuedAt = now
+		slot.witKey = witKey
+		slot.status = journal.Status_PREPARED
+		slot.authorityID = witKey.Kid
+		slot.notAfter = witKey.NotAfter
+
+		pkixBytes, err := x509.MarshalPKIXPublicKey(witKey.Signer.Public())
+		if err != nil {
+			return nil, err
+		}
+
+		entries.WitKeys = append(entries.WitKeys, &journal.WITKeyEntry{
+			SlotId:      slot.id,
+			IssuedAt:    now.Unix(),
+			Kid:         witKey.Kid,
+			PublicKey:   pkixBytes,
+			NotAfter:    witKey.NotAfter.Unix(),
+			Status:      journal.Status_PREPARED,
+			AuthorityId: witKey.Kid,
+		})
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+
+		m.journal.setEntries(&entries)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:             slot.id,
+			telemetry.IssuedAt:         slot.issuedAt,
+			telemetry.Expiration:       slot.witKey.NotAfter,
+			telemetry.LocalAuthorityID: slot.authorityID,
+		}).Info("WIT key prepared (pool mode)")
+
+		return caJournal, nil
+	})
+}
+
 func (m *Manager) ActivateWITKey(ctx context.Context) {
 	if m.IsWITSVIDsDisabled() {
 		return
@@ -592,6 +1287,11 @@ func (m *Manager) RotateWITKey(ctx context.Context) {
 	m.witKeyMutex.Lock()
 	defer m.witKeyMutex.Unlock()
 
+	if m.IsPoolMode() {
+		m.rotateWITKeyPoolMode(ctx)
+		return
+	}
+
 	m.currentWITKey, m.nextWITKey = m.nextWITKey, m.currentWITKey
 	m.nextWITKey.Reset()
 
@@ -600,6 +1300,70 @@ func (m *Manager) RotateWITKey(ctx context.Context) {
 	}
 
 	m.activateWITKey(ctx)
+}
+
+func (m *Manager) rotateWITKeyPoolMode(ctx context.Context) {
+	ds := m.c.Catalog.GetDataStore()
+	caJournalID := m.journal.getCAJournalID()
+	if caJournalID == 0 {
+		m.currentWITKey, m.nextWITKey = m.nextWITKey, m.currentWITKey
+		m.nextWITKey.Reset()
+		if err := m.journal.UpdateWITKeyStatus(ctx, m.nextWITKey.AuthorityID(), journal.Status_OLD); err != nil {
+			m.c.Log.WithError(err).Error("Failed to update status on WITKey journal entry")
+		}
+		m.activateWITKey(ctx)
+		return
+	}
+
+	err := ds.WithCAJournalTx(ctx, caJournalID, func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error) {
+		var entries journal.Entries
+		if err := proto.Unmarshal(caJournal.Data, &entries); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal journal entries: %w", err)
+		}
+
+		nextAuthorityID := m.nextWITKey.AuthorityID()
+		for _, entry := range entries.WitKeys {
+			if entry.AuthorityId == nextAuthorityID && entry.Status == journal.Status_ACTIVE {
+				m.c.Log.Info("WIT key already activated by another instance")
+				return nil, nil
+			}
+		}
+
+		m.currentWITKey, m.nextWITKey = m.nextWITKey, m.currentWITKey
+		m.nextWITKey.Reset()
+
+		for _, entry := range entries.WitKeys {
+			if entry.AuthorityId == m.nextWITKey.AuthorityID() {
+				entry.Status = journal.Status_OLD
+			}
+			if entry.AuthorityId == m.currentWITKey.AuthorityID() {
+				entry.Status = journal.Status_ACTIVE
+			}
+		}
+
+		data, err := proto.Marshal(&entries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal journal entries: %w", err)
+		}
+		caJournal.Data = data
+
+		m.journal.setEntries(&entries)
+
+		m.currentWITKey.status = journal.Status_ACTIVE
+		m.c.CA.SetWITKey(m.currentWITKey.witKey)
+
+		m.c.Log.WithFields(logrus.Fields{
+			telemetry.Slot:             m.currentWITKey.id,
+			telemetry.IssuedAt:         m.currentWITKey.issuedAt,
+			telemetry.Expiration:       m.currentWITKey.witKey.NotAfter,
+			telemetry.LocalAuthorityID: m.currentWITKey.authorityID,
+		}).Info("WIT key activated (pool mode)")
+
+		return caJournal, nil
+	})
+	if err != nil {
+		m.c.Log.WithError(err).Error("Failed to rotate WIT key in pool mode")
+	}
 }
 
 func (m *Manager) SubscribeToLocalBundle(ctx context.Context) error {

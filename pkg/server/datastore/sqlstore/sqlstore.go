@@ -772,6 +772,54 @@ func (ds *Plugin) FetchCAJournal(ctx context.Context, activeX509AuthorityID stri
 	return caJournal, nil
 }
 
+func (ds *Plugin) FetchCAJournalByID(ctx context.Context, id uint) (caJournal *datastore.CAJournal, err error) {
+	if id == 0 {
+		return nil, status.Error(codes.InvalidArgument, "ca journal ID is required")
+	}
+
+	if err = ds.withReadTx(ctx, func(tx *gorm.DB) (err error) {
+		var model CAJournal
+		err = tx.Find(&model, "id = ?", id).Error
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return nil
+		case err != nil:
+			return newWrappedSQLError(err)
+		}
+		caJournal = modelToCAJournal(model)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return caJournal, nil
+}
+
+func (ds *Plugin) WithCAJournalTx(ctx context.Context, caJournalID uint, fn func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error)) error {
+	return ds.withReadModifyWriteTx(ctx, func(tx *gorm.DB) error {
+		var model CAJournal
+		if err := tx.Find(&model, "id = ?", caJournalID).Error; err != nil {
+			return newWrappedSQLError(err)
+		}
+
+		caJournal := modelToCAJournal(model)
+		updated, err := fn(caJournal)
+		if err != nil {
+			return err
+		}
+
+		if updated != nil {
+			model.ActiveX509AuthorityID = updated.ActiveX509AuthorityID
+			model.Data = updated.Data
+			if err := tx.Save(&model).Error; err != nil {
+				return newWrappedSQLError(err)
+			}
+		}
+
+		return nil
+	})
+}
+
 // ListCAJournalsForTesting returns all the CA journal records, and is meant to
 // be used in tests.
 func (ds *Plugin) ListCAJournalsForTesting(ctx context.Context) (caJournals []*datastore.CAJournal, err error) {

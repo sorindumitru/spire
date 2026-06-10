@@ -153,6 +153,14 @@ type Config struct {
 
 	// DisableWITSVIDs, if true, WIT-SVID profile is disabled
 	DisableWITSVIDs bool
+
+	// CAKeySlots bounds the maximum number of distinct CA signing keys
+	// across all server instances. When set to a value > 0, instances
+	// randomly pick a slot at startup and share the corresponding key
+	// with other instances on the same slot via a shared KeyManager
+	// backend (e.g., KMS). A value of 0 (default) disables shared key
+	// pools and preserves per-instance key behavior.
+	CAKeySlots int
 }
 
 type ExperimentalConfig struct {

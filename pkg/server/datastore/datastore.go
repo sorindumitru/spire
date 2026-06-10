@@ -84,8 +84,16 @@ type DataStore interface {
 	// CA Journals
 	SetCAJournal(ctx context.Context, caJournal *CAJournal) (*CAJournal, error)
 	FetchCAJournal(ctx context.Context, activeX509AuthorityID string) (*CAJournal, error)
+	FetchCAJournalByID(ctx context.Context, id uint) (*CAJournal, error)
 	PruneCAJournals(ctx context.Context, allCAsExpireBefore int64) error
 	ListCAJournalsForTesting(ctx context.Context) ([]*CAJournal, error)
+
+	// WithCAJournalTx executes the given function within a transaction that
+	// holds a FOR UPDATE lock on the specified CA journal row. This is used
+	// for coordinating key operations across multiple server instances
+	// sharing the same key pool slot. The function receives the locked
+	// journal and must return the updated journal to be saved.
+	WithCAJournalTx(ctx context.Context, caJournalID uint, fn func(caJournal *CAJournal) (*CAJournal, error)) error
 }
 
 // DataConsistency indicates the required data consistency for a read operation.

@@ -48,6 +48,9 @@ type CAManager interface {
 
 	PruneBundle(ctx context.Context) error
 	PruneCAJournals(ctx context.Context) error
+
+	IsPoolMode() bool
+	SyncFromJournal(ctx context.Context) error
 }
 
 type Config struct {
@@ -132,6 +135,12 @@ func (r *Rotator) rotateEvery(ctx context.Context, interval time.Duration) error
 }
 
 func (r *Rotator) rotate(ctx context.Context) error {
+	if r.c.Manager.IsPoolMode() {
+		if err := r.c.Manager.SyncFromJournal(ctx); err != nil {
+			r.c.Log.WithError(err).Warn("Failed to sync from journal")
+		}
+	}
+
 	x509CAErr := r.rotateX509CA(ctx)
 	if x509CAErr != nil {
 		atomic.AddUint64(&r.failedRotationNum, 1)
