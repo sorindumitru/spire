@@ -103,6 +103,8 @@ func (c *JWTSVIDCache) SetJWTSVID(spiffeID spiffeid.ID, audience []string, svid 
 }
 
 func (c *JWTSVIDCache) TaintJWTSVIDs(ctx context.Context, taintedJWTAuthorities map[string]struct{}) {
+	defer func() { agent.SetSVIDMapSize(c.metrics, c.CountJWTSVIDs()) }()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
