@@ -87,6 +87,11 @@ func TestJWTSVIDCache(t *testing.T) {
 					Val:    0,
 					Labels: []metrics.Label{{Name: "status", Value: "OK"}},
 				},
+				{
+					Type: fakemetrics.SetGaugeType,
+					Key:  []string{telemetry.SVIDMapSize},
+					Val:  0,
+				},
 			},
 		},
 		{
@@ -123,6 +128,11 @@ func TestJWTSVIDCache(t *testing.T) {
 					Key:    []string{telemetry.CacheManager, agent.CacheTypeWorkload, telemetry.ProcessTaintedJWTSVIDs, telemetry.ElapsedTime},
 					Val:    0,
 					Labels: []metrics.Label{{Name: "status", Value: "OK"}},
+				},
+				{
+					Type: fakemetrics.SetGaugeType,
+					Key:  []string{telemetry.SVIDMapSize},
+					Val:  0,
 				},
 			},
 		},
@@ -170,6 +180,11 @@ func TestJWTSVIDCache(t *testing.T) {
 					Val:    0,
 					Labels: []metrics.Label{{Name: "status", Value: "OK"}},
 				},
+				{
+					Type: fakemetrics.SetGaugeType,
+					Key:  []string{telemetry.SVIDMapSize},
+					Val:  0,
+				},
 			},
 		},
 		{
@@ -197,6 +212,11 @@ func TestJWTSVIDCache(t *testing.T) {
 					Key:    []string{telemetry.CacheManager, agent.CacheTypeWorkload, telemetry.ProcessTaintedJWTSVIDs, telemetry.ElapsedTime},
 					Val:    0,
 					Labels: []metrics.Label{{Name: "status", Value: "OK"}},
+				},
+				{
+					Type: fakemetrics.SetGaugeType,
+					Key:  []string{telemetry.SVIDMapSize},
+					Val:  3,
 				},
 			},
 		},

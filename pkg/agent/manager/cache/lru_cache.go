@@ -114,7 +114,6 @@ type StaleEntry struct {
 // consumers MUST NOT mutate the data.
 type LRUCache struct {
 	*BundleCache
-	*JWTSVIDCache
 
 	log         logrus.FieldLogger
 	trustDomain spiffeid.TrustDomain
@@ -149,15 +148,13 @@ type LRUCache struct {
 	taintedBatchProcessedCh chan struct{}
 }
 
-func NewLRUCache(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundle, metrics telemetry.Metrics, x509SvidCacheMaxSize int, jwtSvidCacheMaxSize int, clk clock.Clock) *LRUCache {
+func NewLRUCache(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundle, metrics telemetry.Metrics, x509SvidCacheMaxSize int, clk clock.Clock) *LRUCache {
 	if x509SvidCacheMaxSize <= 0 {
 		x509SvidCacheMaxSize = DefaultSVIDCacheMaxSize
 	}
 
 	return &LRUCache{
 		BundleCache:  NewBundleCache(trustDomain, bundle),
-		JWTSVIDCache: NewJWTSVIDCache(log, metrics, jwtSvidCacheMaxSize),
-
 		log:          log,
 		metrics:      metrics,
 		trustDomain:  trustDomain,
@@ -214,10 +211,6 @@ func (c *LRUCache) CountX509SVIDs() int {
 	defer c.mu.RUnlock()
 
 	return len(c.svids)
-}
-
-func (c *LRUCache) CountJWTSVIDs() int {
-	return c.JWTSVIDCache.CountJWTSVIDs()
 }
 
 func (c *LRUCache) CountRecords() int {
