@@ -51,6 +51,10 @@ type Manager interface {
 	// for a particular set of selectors.
 	SubscribeToX509SVIDCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
 
+	// SubscribeToWITSVIDCacheChanges returns a Subscriber on which WIT-SVID cache entry updates
+	// are sent for a particular set of selectors.
+	SubscribeToWITSVIDCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error)
+
 	// SubscribeToSVIDChanges returns a new observer.Stream on which svid.State instances are received
 	// each time an SVID rotation finishes.
 	SubscribeToSVIDChanges() observer.Stream
@@ -136,6 +140,23 @@ type Cache interface {
 	Identities() []cache.X509Identity
 }
 
+type WITCache interface {
+	// UpdateEntries updates entries on cache
+	UpdateEntries(update *cache.UpdateEntries, checkSVID func(*common.RegistrationEntry, *common.RegistrationEntry, *cache.WITSVID) bool)
+
+	// UpdateSVIDs updates WIT-SVIDs on provided records
+	UpdateSVIDs(svids map[string]*cache.WITSVID)
+
+	// GetStaleEntries gets a list of records that need updated SVIDs
+	GetStaleEntries() []*cache.StaleEntry
+
+	// SyncSVIDsWithSubscribers syncs SVID cache
+	SyncSVIDsWithSubscribers()
+
+	// SubscribeToWorkloadUpdates creates a subscriber for given selector set.
+	SubscribeToWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error)
+}
+
 type JWTCache interface {
 	// CountJWTSVIDs in cache stored
 	CountJWTSVIDs() int
@@ -161,7 +182,7 @@ type manager struct {
 	updateSVIDMu sync.RWMutex
 
 	cache    Cache
-	witCache *cache.WITLRUCache
+	witCache WITCache
 	jwtCache JWTCache
 	svid  svid.Rotator
 
@@ -267,6 +288,13 @@ func (m *manager) Run(ctx context.Context) error {
 
 func (m *manager) SubscribeToX509SVIDCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
 	return m.cache.SubscribeToWorkloadUpdates(ctx, selectors)
+}
+
+func (m *manager) SubscribeToWITSVIDCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.WITWorkloadUpdate], error) {
+	if m.witCache == nil {
+		return nil, errors.New("WIT-SVID support is not enabled")
+	}
+	return m.witCache.SubscribeToWorkloadUpdates(ctx, selectors)
 }
 
 func (m *manager) SubscribeToSVIDChanges() observer.Stream {
