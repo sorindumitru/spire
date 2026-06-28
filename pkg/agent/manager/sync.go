@@ -45,7 +45,18 @@ type SVIDCache interface {
 
 func (m *manager) syncSVIDs(ctx context.Context) (err error) {
 	m.cache.SyncSVIDsWithSubscribers()
-	return m.updateSVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache)
+	if err := m.updateSVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache); err != nil {
+		return err
+	}
+
+	if m.witCache != nil {
+		m.witCache.SyncSVIDsWithSubscribers()
+		if err := m.updateWITSVIDs(ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // processTaintedAuthorities verifies if a new authority is tainted and forces rotation in all caches if required.
@@ -107,6 +118,15 @@ func (m *manager) synchronize(ctx context.Context) (err error) {
 
 	if err := m.updateCache(ctx, cacheUpdate, m.c.Log.WithField(telemetry.CacheType, telemetry_agent.CacheTypeWorkload), "", m.cache); err != nil {
 		return err
+	}
+
+	if m.witCache != nil {
+		m.witCache.UpdateEntries(cacheUpdate, func(_, _ *common.RegistrationEntry, svid *cache.WITSVID) bool {
+			if svid == nil {
+				return true
+			}
+			return m.c.Clk.Now().After(svid.ExpiresAt())
+		})
 	}
 
 	if err := m.updateCache(ctx, storeUpdate, m.c.Log.WithField(telemetry.CacheType, telemetry_agent.CacheTypeSVIDStore), telemetry_agent.CacheTypeSVIDStore, m.svidStoreCache); err != nil {
@@ -194,6 +214,44 @@ func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVI
 		// the values in `update` now belong to the cache. DO NOT MODIFY.
 		c.UpdateSVIDs(update)
 	}
+	return nil
+}
+
+func (m *manager) updateWITSVIDs(ctx context.Context) error {
+	staleEntries := m.witCache.GetStaleEntries()
+	if len(staleEntries) == 0 {
+		return nil
+	}
+
+	log := m.c.Log.WithField(telemetry.CacheType, "wit")
+	log.WithField(telemetry.Count, len(staleEntries)).Debug("Renewing stale WIT-SVID entries")
+
+	privateKeys := make(map[string]crypto.Signer, len(staleEntries))
+	publicKeys := make(map[string]crypto.PublicKey, len(staleEntries))
+	for _, entry := range staleEntries {
+		pk, err := m.c.WorkloadKeyType.GenerateSigner()
+		if err != nil {
+			return fmt.Errorf("failed to generate key for WIT-SVID: %w", err)
+		}
+		privateKeys[entry.Entry.EntryId] = pk
+		publicKeys[entry.Entry.EntryId] = pk.Public()
+	}
+
+	svids, err := m.client.NewWITSVIDs(ctx, publicKeys)
+	if err != nil {
+		return err
+	}
+
+	witSVIDs := make(map[string]*cache.WITSVID, len(svids))
+	for entryID, svid := range svids {
+		witSVIDs[entryID] = &cache.WITSVID{
+			Token:      svid.Token,
+			PrivateKey: privateKeys[entryID],
+			ExpiresOn:  svid.ExpiresAt,
+		}
+	}
+
+	m.witCache.UpdateSVIDs(witSVIDs)
 	return nil
 }
 
