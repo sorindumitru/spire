@@ -83,8 +83,14 @@ type Config struct {
 	// X509SVIDCacheMaxSize is a soft limit of max number of X509-SVIDs that would be stored in cache
 	X509SVIDCacheMaxSize int
 
+	// WITSVIDCacheMaxSize is a soft limit of max number of WIT-SVIDs that would be stored in cache
+	WITSVIDCacheMaxSize int
+
 	// JWTSVIDCacheMaxSize is a soft limit of max number of JWT-SVIDs that would be stored in cache
 	JWTSVIDCacheMaxSize int
+
+	// EnableWITSVIDs enables experimental WIT-SVID support
+	EnableWITSVIDs bool
 
 	// Trust domain and associated CA bundle
 	TrustDomain spiffeid.TrustDomain

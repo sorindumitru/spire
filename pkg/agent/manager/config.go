@@ -44,7 +44,9 @@ type Config struct {
 	RotationInterval         time.Duration
 	SVIDStoreCache           *storecache.Cache
 	X509SVIDCacheMaxSize     int
+	WITSVIDCacheMaxSize      int
 	JWTSVIDCacheMaxSize      int
+	EnableWITSVIDs           bool
 	DisableLRUCache          bool
 	NodeAttestor             nodeattestor.NodeAttestor
 	RotationStrategy         *rotationutil.RotationStrategy
@@ -82,6 +84,18 @@ func newManager(c *Config) *manager {
 		Clk:              c.Clk,
 	})
 
+	var witCache *managerCache.WITLRUCache
+	if c.EnableWITSVIDs {
+		witCache = managerCache.NewWITLRUCache(managerCache.LRUCacheConfig[managerCache.WITSVID, managerCache.WITWorkloadUpdate]{
+			Log:              logger,
+			TrustDomain:      c.TrustDomain,
+			Bundle:           c.Bundle,
+			Metrics:          c.Metrics,
+			SvidCacheMaxSize: c.WITSVIDCacheMaxSize,
+			Clk:              c.Clk,
+		})
+	}
+
 	jwtCache := managerCache.NewJWTSVIDCache(logger, c.Metrics, c.JWTSVIDCacheMaxSize)
 
 	rotCfg := &svid.RotatorConfig{
@@ -103,8 +117,8 @@ func newManager(c *Config) *manager {
 	svidRotator, client := svid.NewRotator(rotCfg)
 
 	m := &manager{
-		cache:          cache,
-		jwtCache:       jwtCache,
+		cache:    cache,
+		jwtCache: jwtCache,
 		c:              c,
 		mtx:            new(sync.RWMutex),
 		svid:           svidRotator,
@@ -115,6 +129,10 @@ func newManager(c *Config) *manager {
 
 		processedTaintedX509Authorities: make(map[string]struct{}),
 		processedTaintedJWTAuthorities:  make(map[string]struct{}),
+	}
+
+	if witCache != nil {
+		m.witCache = witCache
 	}
 
 	return m
