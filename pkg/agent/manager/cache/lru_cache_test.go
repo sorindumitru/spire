@@ -56,10 +56,10 @@ func TestLRUCacheFetchWorkloadUpdate(t *testing.T) {
 	cache.UpdateSVIDs(updateSVIDs)
 
 	workloadUpdate = cache.FetchWorkloadUpdate(makeSelectors("A", "B"))
-	assert.Equal(t, &WorkloadUpdate{
+	assert.Equal(t, &X509WorkloadUpdate{
 		Bundle:           bundleV1,
 		FederatedBundles: makeBundles(otherBundleV1),
-		Identities: []Identity{
+		Identities: []X509Identity{
 			{Entry: bar},
 			{Entry: foo},
 		},
@@ -138,18 +138,18 @@ func TestLRUCacheAllSubscribersNotifiedOnBundleChange(t *testing.T) {
 	// create some subscribers and assert they get the initial bundle
 	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{Bundle: bundleV1})
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{Bundle: bundleV1})
 
 	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
-	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{Bundle: bundleV1})
+	assertX509WorkloadUpdateEqual(t, subB, &X509WorkloadUpdate{Bundle: bundleV1})
 
 	// update the bundle and assert all subscribers gets the updated bundle
 	cache.UpdateEntries(&UpdateEntries{
 		Bundles: makeBundles(bundleV2),
 	}, nil)
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{Bundle: bundleV2})
-	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{Bundle: bundleV2})
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{Bundle: bundleV2})
+	assertX509WorkloadUpdateEqual(t, subB, &X509WorkloadUpdate{Bundle: bundleV2})
 }
 
 func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
@@ -169,11 +169,11 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 	// subscribe to A and B and assert initial updates are received.
 	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
-	assertAnyWorkloadUpdate(t, subA)
+	assertAnyX509WorkloadUpdate(t, subA)
 
 	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
-	assertAnyWorkloadUpdate(t, subB)
+	assertAnyX509WorkloadUpdate(t, subB)
 
 	// add the federated bundle with no registration entries federating with
 	// it and make sure nobody is notified.
@@ -181,8 +181,8 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 		Bundles:             makeBundles(bundleV1, otherBundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	assertNoWorkloadUpdate(t, subA)
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subA)
+	assertNoX509WorkloadUpdate(t, subB)
 
 	// update FOO to federate with otherdomain.test and make sure subA is
 	// notified but not subB.
@@ -192,12 +192,12 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 		Bundles:             makeBundles(bundleV1, otherBundleV1),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:           bundleV1,
 		FederatedBundles: makeBundles(otherBundleV1),
-		Identities:       []Identity{{Entry: foo}},
+		Identities:       []X509Identity{{Entry: foo}},
 	})
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 
 	// now change the federated bundle and make sure subA gets notified, but
 	// again, not subB.
@@ -205,12 +205,12 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 		Bundles:             makeBundles(bundleV1, otherBundleV2),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:           bundleV1,
 		FederatedBundles: makeBundles(otherBundleV2),
-		Identities:       []Identity{{Entry: foo}},
+		Identities:       []X509Identity{{Entry: foo}},
 	})
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 
 	// now drop the federation and make sure subA is again notified and no
 	// longer has the federated bundle.
@@ -219,11 +219,11 @@ func TestLRUCacheSomeSubscribersNotifiedOnFederatedBundleChange(t *testing.T) {
 		Bundles:             makeBundles(bundleV1, otherBundleV2),
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 }
 
 func TestLRUCacheSubscribersGetEntriesWithSelectorSubsets(t *testing.T) {
@@ -238,10 +238,10 @@ func TestLRUCacheSubscribersGetEntriesWithSelectorSubsets(t *testing.T) {
 	defer subAB.Finish()
 
 	// assert all subscribers get the initial update
-	initialUpdate := &WorkloadUpdate{Bundle: bundleV1}
-	assertWorkloadUpdateEqual(t, subA, initialUpdate)
-	assertWorkloadUpdateEqual(t, subB, initialUpdate)
-	assertWorkloadUpdateEqual(t, subAB, initialUpdate)
+	initialUpdate := &X509WorkloadUpdate{Bundle: bundleV1}
+	assertX509WorkloadUpdateEqual(t, subA, initialUpdate)
+	assertX509WorkloadUpdateEqual(t, subB, initialUpdate)
+	assertX509WorkloadUpdateEqual(t, subAB, initialUpdate)
 
 	// create entry FOO that will target any subscriber with containing (A)
 	foo := makeRegistrationEntry("FOO", "A")
@@ -259,19 +259,19 @@ func TestLRUCacheSubscribersGetEntriesWithSelectorSubsets(t *testing.T) {
 	})
 
 	// subA selector set contains (A), but not (A, C), so it should only get FOO
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 
 	// subB selector set does not contain either (A) or (A,C) so it isn't even
 	// notified.
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 
 	// subAB selector set contains (A) but not (A, C), so it should get FOO
-	assertWorkloadUpdateEqual(t, subAB, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subAB, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 }
 
@@ -289,7 +289,7 @@ func TestLRUCacheSubscriberIsNotNotifiedIfNothingChanges(t *testing.T) {
 
 	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
-	assertAnyWorkloadUpdate(t, sub)
+	assertAnyX509WorkloadUpdate(t, sub)
 
 	// Second update is the same (other than X509SVIDs, which, when set,
 	// always constitute a "change" for the impacted registration entries).
@@ -298,7 +298,7 @@ func TestLRUCacheSubscriberIsNotNotifiedIfNothingChanges(t *testing.T) {
 		RegistrationEntries: makeRegistrationEntries(foo),
 	}, nil)
 
-	assertNoWorkloadUpdate(t, sub)
+	assertNoX509WorkloadUpdate(t, sub)
 }
 
 func TestLRUCacheSubscriberNotifiedOnSVIDChanges(t *testing.T) {
@@ -315,16 +315,16 @@ func TestLRUCacheSubscriberNotifiedOnSVIDChanges(t *testing.T) {
 
 	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
-	assertAnyWorkloadUpdate(t, sub)
+	assertAnyX509WorkloadUpdate(t, sub)
 
 	// Update SVID
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 }
 
@@ -344,9 +344,9 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 	// create subscribers for A and make sure the initial update has FOO
 	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 
 	// update FOO to have selectors (A,B) and make sure the subscriber loses
@@ -359,7 +359,7 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle: bundleV1,
 	})
 
@@ -373,9 +373,9 @@ func TestLRUCacheSubscriberNotificationsOnSelectorChanges(t *testing.T) {
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 }
 
@@ -384,13 +384,13 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 
 	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer subA.Finish()
-	assertAnyWorkloadUpdate(t, subA)
+	assertAnyX509WorkloadUpdate(t, subA)
 
 	// subB's job here is to just make sure we don't notify unrelated
 	// subscribers when dropping registration entries
 	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
-	assertAnyWorkloadUpdate(t, subB)
+	assertAnyX509WorkloadUpdate(t, subB)
 
 	foo := makeRegistrationEntry("FOO", "A")
 	bar := makeRegistrationEntry("BAR", "B")
@@ -405,11 +405,11 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	})
 
 	// make sure subA gets notified with FOO but not subB
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 
 	// Swap out FOO for BAR
 	updateEntries.RegistrationEntries = makeRegistrationEntries(bar)
@@ -417,19 +417,19 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(bar),
 	})
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle: bundleV1,
 	})
-	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subB, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: bar}},
+		Identities: []X509Identity{{Entry: bar}},
 	})
 
 	// Drop both
 	updateEntries.RegistrationEntries = nil
 	cache.UpdateEntries(updateEntries, nil)
-	assertNoWorkloadUpdate(t, subA)
-	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{
+	assertNoX509WorkloadUpdate(t, subA)
+	assertX509WorkloadUpdateEqual(t, subB, &X509WorkloadUpdate{
 		Bundle: bundleV1,
 	})
 
@@ -437,7 +437,7 @@ func TestLRUCacheSubscriberNotifiedWhenEntryDropped(t *testing.T) {
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
-	assertNoWorkloadUpdate(t, subB)
+	assertNoX509WorkloadUpdate(t, subB)
 }
 
 func TestLRUCacheSubscriberOnlyGetsEntriesWithSVID(t *testing.T) {
@@ -452,15 +452,15 @@ func TestLRUCacheSubscriberOnlyGetsEntriesWithSVID(t *testing.T) {
 
 	sub := cache.NewSubscriber(makeSelectors("A"))
 	defer sub.Finish()
-	assertNoWorkloadUpdate(t, sub)
+	assertNoX509WorkloadUpdate(t, sub)
 
 	// update to include the SVID and now we should get the update
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 }
 
@@ -478,7 +478,7 @@ func TestLRUCacheSubscribersDoNotBlockNotifications(t *testing.T) {
 		Bundles: makeBundles(bundleV3),
 	}, nil)
 
-	assertWorkloadUpdateEqual(t, sub, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, sub, &X509WorkloadUpdate{
 		Bundle: bundleV3,
 	})
 }
@@ -630,14 +630,14 @@ func TestLRUCacheSubscriberNotNotifiedOnDifferentSVIDChanges(t *testing.T) {
 
 	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
 	defer sub.Finish()
-	assertAnyWorkloadUpdate(t, sub)
+	assertAnyX509WorkloadUpdate(t, sub)
 
 	// Update SVID
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(bar),
 	})
 
-	assertNoWorkloadUpdate(t, sub)
+	assertNoX509WorkloadUpdate(t, sub)
 }
 
 func TestLRUCacheSubscriberNotNotifiedOnOverlappingSVIDChanges(t *testing.T) {
@@ -655,14 +655,14 @@ func TestLRUCacheSubscriberNotNotifiedOnOverlappingSVIDChanges(t *testing.T) {
 
 	sub := subscribeToWorkloadUpdates(t, cache, makeSelectors("A", "B"))
 	defer sub.Finish()
-	assertAnyWorkloadUpdate(t, sub)
+	assertAnyX509WorkloadUpdate(t, sub)
 
 	// Update SVID
 	cache.UpdateSVIDs(&UpdateSVIDs{
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 
-	assertNoWorkloadUpdate(t, sub)
+	assertNoX509WorkloadUpdate(t, sub)
 }
 
 func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
@@ -681,9 +681,9 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 		X509SVIDs: makeX509SVIDs(foo),
 	})
 	subA := subscribeToWorkloadUpdates(t, cache, makeSelectors("A"))
-	assertWorkloadUpdateEqual(t, subA, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subA, &X509WorkloadUpdate{
 		Bundle:     bundleV1,
-		Identities: []Identity{{Entry: foo}},
+		Identities: []X509Identity{{Entry: foo}},
 	})
 	subA.Finish()
 
@@ -702,9 +702,9 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 	// not closing subscriber immediately
 	subB := subscribeToWorkloadUpdates(t, cache, makeSelectors("B"))
 	defer subB.Finish()
-	assertWorkloadUpdateEqual(t, subB, &WorkloadUpdate{
+	assertX509WorkloadUpdateEqual(t, subB, &X509WorkloadUpdate{
 		Bundle: bundleV1,
-		Identities: []Identity{
+		Identities: []X509Identity{
 			{Entry: bar},
 		},
 	})
@@ -735,9 +735,9 @@ func TestLRUCacheSVIDCacheExpiry(t *testing.T) {
 	assert.Equal(t, svidCacheMaxSize, cache.CountX509SVIDs())
 
 	// foo SVID should be removed from cache as it does not have active subscriber
-	assert.False(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("A"), subA.(*lruCacheSubscriber)))
+	assert.False(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("A"), subA.(*lruCacheSubscriber[X509WorkloadUpdate])))
 	// bar SVID should be cached as it has active subscriber
-	assert.True(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("B"), subB.(*lruCacheSubscriber)))
+	assert.True(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("B"), subB.(*lruCacheSubscriber[X509WorkloadUpdate])))
 
 	subA = cache.NewSubscriber(makeSelectors("A"))
 	defer subA.Finish()
@@ -821,7 +821,7 @@ func TestNotifySubscriberWhenSVIDIsAvailable(t *testing.T) {
 	cache := newTestLRUCache(t)
 
 	subscriber := cache.NewSubscriber(makeSelectors("A"))
-	sub, ok := subscriber.(*lruCacheSubscriber)
+	sub, ok := subscriber.(*lruCacheSubscriber[X509WorkloadUpdate])
 	require.True(t, ok)
 
 	foo := makeRegistrationEntry("FOO", "A")
@@ -837,7 +837,7 @@ func TestNotifySubscriberWhenSVIDIsAvailable(t *testing.T) {
 	assert.True(t, cache.notifySubscriberIfSVIDAvailable(makeSelectors("A"), sub))
 }
 
-func TestSubscribeToWorkloadUpdatesLRUNoSelectors(t *testing.T) {
+func TestSubscribeToX509WorkloadUpdatesLRUNoSelectors(t *testing.T) {
 	clk := clock.NewMock(t)
 	svidCacheMaxSize := 1
 	cache := newTestLRUCacheWithConfig(svidCacheMaxSize, clk)
@@ -1231,16 +1231,16 @@ func TestNewLRUCache(t *testing.T) {
 	// Negative for value for svidCacheMaxSize should set default value in
 	// cache.svidCacheMaxSize
 	cache := newTestLRUCacheWithConfig(-5, clock.NewMock(t))
-	require.Equal(t, DefaultSVIDCacheMaxSize, cache.x509SvidCacheMaxSize)
+	require.Equal(t, DefaultSVIDCacheMaxSize, cache.LRUCache.svidCacheMaxSize)
 
 	// Zero for value for svidCacheMaxSize should set default value in
 	// cache.svidCacheMaxSize
 	cache = newTestLRUCacheWithConfig(0, clock.NewMock(t))
-	require.Equal(t, DefaultSVIDCacheMaxSize, cache.x509SvidCacheMaxSize)
+	require.Equal(t, DefaultSVIDCacheMaxSize, cache.LRUCache.svidCacheMaxSize)
 
 	// Custom value for svidCacheMaxSize should propagate properly
 	cache = newTestLRUCacheWithConfig(55, clock.NewMock(t))
-	require.Equal(t, 55, cache.x509SvidCacheMaxSize)
+	require.Equal(t, 55, cache.LRUCache.svidCacheMaxSize)
 }
 
 func BenchmarkLRUCacheGlobalNotification(b *testing.B) {
@@ -1288,15 +1288,27 @@ func BenchmarkLRUCacheGlobalNotification(b *testing.B) {
 	}
 }
 
-func newTestLRUCache(t testing.TB) *LRUCache {
+func newTestLRUCache(t testing.TB) *X509LRUCache {
 	log, _ := test.NewNullLogger()
-	return NewLRUCache(log, spiffeid.RequireTrustDomainFromString("domain.test"), bundleV1,
-		telemetry.Blackhole{}, 0, clock.NewMock(t))
+	return NewX509LRUCache(LRUCacheConfig[X509SVID, X509WorkloadUpdate]{
+		Log:         log,
+		TrustDomain: spiffeid.RequireTrustDomainFromString("domain.test"),
+		Bundle:      bundleV1,
+		Metrics:     telemetry.Blackhole{},
+		Clk:         clock.NewMock(t),
+	})
 }
 
-func newTestLRUCacheWithConfig(svidCacheMaxSize int, clk clock.Clock) *LRUCache {
+func newTestLRUCacheWithConfig(svidCacheMaxSize int, clk clock.Clock) *X509LRUCache {
 	log, _ := test.NewNullLogger()
-	return NewLRUCache(log, trustDomain1, bundleV1, telemetry.Blackhole{}, svidCacheMaxSize, clk)
+	return NewX509LRUCache(LRUCacheConfig[X509SVID, X509WorkloadUpdate]{
+		Log:              log,
+		TrustDomain:      trustDomain1,
+		Bundle:           bundleV1,
+		Metrics:          telemetry.Blackhole{},
+		SvidCacheMaxSize: svidCacheMaxSize,
+		Clk:              clk,
+	})
 }
 
 // numEntries should not be more than 12 digits
@@ -1334,7 +1346,7 @@ func makeX509SVIDsFromStaleEntries(entries []*StaleEntry) map[string]*X509SVID {
 	return out
 }
 
-func subscribeToWorkloadUpdates(t *testing.T, cache *LRUCache, selectors []*common.Selector) Subscriber {
+func subscribeToWorkloadUpdates(t *testing.T, cache *X509LRUCache, selectors []*common.Selector) Subscriber[X509WorkloadUpdate] {
 	subscriber, err := cache.subscribeToWorkloadUpdates(context.Background(), selectors, nil)
 	assert.NoError(t, err)
 	return subscriber
@@ -1351,7 +1363,7 @@ func distinctSelectors(id, n int) []*common.Selector {
 	return out
 }
 
-func assertNoWorkloadUpdate(t *testing.T, sub Subscriber) {
+func assertNoX509WorkloadUpdate(t *testing.T, sub Subscriber[X509WorkloadUpdate]) {
 	select {
 	case update := <-sub.Updates():
 		assert.FailNow(t, "unexpected workload update", update)
@@ -1359,7 +1371,7 @@ func assertNoWorkloadUpdate(t *testing.T, sub Subscriber) {
 	}
 }
 
-func assertAnyWorkloadUpdate(t *testing.T, sub Subscriber) {
+func assertAnyX509WorkloadUpdate(t *testing.T, sub Subscriber[X509WorkloadUpdate]) {
 	select {
 	case <-sub.Updates():
 	case <-time.After(time.Minute):
@@ -1367,7 +1379,7 @@ func assertAnyWorkloadUpdate(t *testing.T, sub Subscriber) {
 	}
 }
 
-func assertWorkloadUpdateEqual(t *testing.T, sub Subscriber, expected *WorkloadUpdate) {
+func assertX509WorkloadUpdateEqual(t *testing.T, sub Subscriber[X509WorkloadUpdate], expected *X509WorkloadUpdate) {
 	select {
 	case actual := <-sub.Updates():
 		assert.NotNil(t, actual.Bundle, "bundle is not set")
