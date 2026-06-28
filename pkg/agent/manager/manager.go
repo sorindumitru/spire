@@ -49,7 +49,7 @@ type Manager interface {
 
 	// SubscribeToCacheChanges returns a Subscriber on which cache entry updates are sent
 	// for a particular set of selectors.
-	SubscribeToCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber, error)
+	SubscribeToCacheChanges(ctx context.Context, key cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
 
 	// SubscribeToSVIDChanges returns a new observer.Stream on which svid.State instances are received
 	// each time an SVID rotation finishes.
@@ -74,7 +74,7 @@ type Manager interface {
 	MatchingRegistrationEntries(selectors []*common.Selector) []*common.RegistrationEntry
 
 	// FetchWorkloadUpdates gets the latest workload update for the selectors
-	FetchWorkloadUpdate(selectors []*common.Selector) *cache.WorkloadUpdate
+	FetchWorkloadUpdate(selectors []*common.Selector) *cache.X509WorkloadUpdate
 
 	// FetchJWTSVID returns a JWT SVID for the specified SPIFFEID and audience. If there
 	// is no JWT cached, the manager will get one signed upstream.
@@ -114,7 +114,7 @@ type Cache interface {
 	SyncSVIDsWithSubscribers()
 
 	// SubscribeToWorkloadUpdates creates a subscriber for given selector set.
-	SubscribeToWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error)
+	SubscribeToWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
 
 	// SubscribeToBundleChanges creates a stream for providing bundle changes
 	SubscribeToBundleChanges() *cache.BundleStream
@@ -126,14 +126,14 @@ type Cache interface {
 	CountX509SVIDs() int
 
 	// FetchWorkloadUpdate for given selectors
-	FetchWorkloadUpdate(selectors []*common.Selector) *cache.WorkloadUpdate
+	FetchWorkloadUpdate(selectors []*common.Selector) *cache.X509WorkloadUpdate
 
 
 	// Entries get all registration entries
 	Entries() []*common.RegistrationEntry
 
 	// Identities get all identities in cache
-	Identities() []cache.Identity
+	Identities() []cache.X509Identity
 }
 
 type JWTCache interface {
@@ -264,7 +264,7 @@ func (m *manager) Run(ctx context.Context) error {
 	}
 }
 
-func (m *manager) SubscribeToCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber, error) {
+func (m *manager) SubscribeToCacheChanges(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
 	return m.cache.SubscribeToWorkloadUpdates(ctx, selectors)
 }
 
@@ -305,7 +305,7 @@ func (m *manager) CountSVIDStoreX509SVIDs() int {
 }
 
 // FetchWorkloadUpdates gets the latest workload update for the selectors
-func (m *manager) FetchWorkloadUpdate(selectors []*common.Selector) *cache.WorkloadUpdate {
+func (m *manager) FetchWorkloadUpdate(selectors []*common.Selector) *cache.X509WorkloadUpdate {
 	return m.cache.FetchWorkloadUpdate(selectors)
 }
 

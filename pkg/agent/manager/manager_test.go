@@ -1920,8 +1920,8 @@ func regEntriesAsMap(res []*common.RegistrationEntry) (result map[string]*common
 	return result
 }
 
-func identitiesByEntryID(ces []cache.Identity) (result map[string]cache.Identity) {
-	result = map[string]cache.Identity{}
+func identitiesByEntryID(ces []cache.X509Identity) (result map[string]cache.X509Identity) {
+	result = map[string]cache.X509Identity{}
 	for _, ce := range ces {
 		result[ce.Entry.EntryId] = ce
 	}
