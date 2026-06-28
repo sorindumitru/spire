@@ -45,7 +45,7 @@ type SVIDCache interface {
 
 func (m *manager) syncSVIDs(ctx context.Context) (err error) {
 	m.cache.SyncSVIDsWithSubscribers()
-	if err := m.updateSVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache); err != nil {
+	if err := m.updateX509SVIDs(ctx, m.c.Log.WithField(telemetry.CacheType, "workload"), m.cache); err != nil {
 		return err
 	}
 
@@ -178,10 +178,10 @@ func (m *manager) updateCache(ctx context.Context, update *cache.UpdateEntries, 
 		log.WithField(telemetry.OutdatedSVIDs, outdated).Debug("Updating SVIDs with outdated attributes in cache")
 	}
 
-	return m.updateSVIDs(ctx, log, c)
+	return m.updateX509SVIDs(ctx, log, c)
 }
 
-func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVIDCache) error {
+func (m *manager) updateX509SVIDs(ctx context.Context, log logrus.FieldLogger, c SVIDCache) error {
 	m.updateSVIDMu.Lock()
 	defer m.updateSVIDMu.Unlock()
 
@@ -207,7 +207,7 @@ func (m *manager) updateSVIDs(ctx context.Context, log logrus.FieldLogger, c SVI
 			})
 		}
 
-		update, err := m.fetchSVIDs(ctx, csrs)
+		update, err := m.fetchX509SVIDs(ctx, csrs)
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func (m *manager) updateWITSVIDs(ctx context.Context) error {
 	return nil
 }
 
-func (m *manager) fetchSVIDs(ctx context.Context, csrs []csrRequest) (_ *cache.UpdateSVIDs, err error) {
+func (m *manager) fetchX509SVIDs(ctx context.Context, csrs []csrRequest) (_ *cache.UpdateSVIDs, err error) {
 	// Put all the CSRs in an array to make just one call with all the CSRs.
 	counter := telemetry_agent.StartManagerFetchSVIDsUpdatesCall(m.c.Metrics)
 	defer counter.Done(&err)

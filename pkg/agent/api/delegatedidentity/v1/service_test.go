@@ -976,7 +976,7 @@ func (m *FakeManager) subscriberDone() {
 	m.subscribers.Add(-1)
 }
 
-func (m *FakeManager) SubscribeToCacheChanges(context.Context, cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
+func (m *FakeManager) SubscribeToX509SVIDCacheChanges(context.Context, cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error) {
 	if m.err != nil {
 		return nil, m.err
 	}
