@@ -160,7 +160,8 @@ type manager struct {
 	// Protects multiple goroutines from requesting SVID signings at the same time
 	updateSVIDMu sync.RWMutex
 
-	cache Cache
+	cache    Cache
+	witCache *cache.WITLRUCache
 	jwtCache JWTCache
 	svid  svid.Rotator
 
