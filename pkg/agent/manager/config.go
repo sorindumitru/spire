@@ -98,13 +98,15 @@ func newManager(c *Config) *manager {
 
 	jwtCache := managerCache.NewJWTSVIDCache(logger, c.Metrics, c.JWTSVIDCacheMaxSize)
 
+	bundleCache := managerCache.NewBundleCache(c.TrustDomain, c.Bundle)
+
 	rotCfg := &svid.RotatorConfig{
 		SVIDKeyManager:   keymanager.ForSVID(c.Catalog.GetKeyManager()),
 		Log:              c.Log,
 		Metrics:          c.Metrics,
 		SVID:             c.SVID,
 		SVIDKey:          c.SVIDKey,
-		BundleStream:     cache.SubscribeToBundleChanges(),
+		BundleStream:     bundleCache.SubscribeToBundleChanges(),
 		ServerAddr:       c.ServerAddr,
 		TrustDomain:      c.TrustDomain,
 		Interval:         c.RotationInterval,
@@ -117,8 +119,9 @@ func newManager(c *Config) *manager {
 	svidRotator, client := svid.NewRotator(rotCfg)
 
 	m := &manager{
-		cache:    cache,
-		jwtCache: jwtCache,
+		cache:       cache,
+		bundleCache: bundleCache,
+		jwtCache:    jwtCache,
 		c:              c,
 		mtx:            new(sync.RWMutex),
 		svid:           svidRotator,

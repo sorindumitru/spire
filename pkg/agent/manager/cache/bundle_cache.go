@@ -26,9 +26,24 @@ func NewBundleCache(trustDomain spiffeid.TrustDomain, bundle *Bundle) *BundleCac
 }
 
 func (c *BundleCache) Update(bundles map[spiffeid.TrustDomain]*Bundle) {
-	// the bundle map must be copied so that the source can be mutated
-	// afterward.
+	current := c.Bundles()
+	if bundleMapsEqual(current, bundles) {
+		return
+	}
 	c.bundles.Update(copyBundleMap(bundles))
+}
+
+func bundleMapsEqual(a, b map[spiffeid.TrustDomain]*Bundle) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for td, bundleA := range a {
+		bundleB, ok := b[td]
+		if !ok || !bundleA.Equal(bundleB) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *BundleCache) Bundle() *Bundle {

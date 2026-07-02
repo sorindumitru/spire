@@ -122,8 +122,6 @@ type LRUCacheConfig[SVID CachedSVID, Update any] struct {
 // presumed to own ALL data passing in and out of the cache. Producers and
 // consumers MUST NOT mutate the data.
 type LRUCache[SVID CachedSVID, Update any] struct {
-	*BundleCache
-
 	log         logrus.FieldLogger
 	trustDomain spiffeid.TrustDomain
 	clk         clock.Clock
@@ -166,7 +164,6 @@ func NewLRUCache[SVID CachedSVID, Update any](config LRUCacheConfig[SVID, Update
 	}
 
 	return &LRUCache[SVID, Update]{
-		BundleCache:  NewBundleCache(config.TrustDomain, config.Bundle),
 		log:          config.Log,
 		metrics:      config.Metrics,
 		trustDomain:  config.TrustDomain,
@@ -251,11 +248,8 @@ func (c *LRUCache[SVID, Update]) UpdateEntries(update *UpdateEntries, checkSVID 
 	// domain should NOT be removed even if not present (which should only be
 	// the case if there is a bug on the server) since it is necessary to
 	// authenticate the server.
-	bundleRemoved := false
 	for id := range c.bundles {
 		if _, ok := update.Bundles[id]; !ok && id != c.trustDomain {
-			bundleRemoved = true
-			// bundle no longer exists.
 			c.log.WithField(telemetry.TrustDomainID, id).Debug("Bundle removed")
 			delete(c.bundles, id)
 		}
@@ -452,10 +446,6 @@ func (c *LRUCache[SVID, Update]) UpdateEntries(update *UpdateEntries, checkSVID 
 		c.log.WithField(telemetry.OutdatedSVIDs, len(outdatedEntries)).
 			Debug("Updating SVIDs with outdated attributes in cache")
 	}
-	if bundleRemoved || len(bundleChanged) > 0 {
-		c.BundleCache.Update(c.bundles)
-	}
-
 	if trustDomainBundleChanged {
 		c.notifyAll()
 	} else {
