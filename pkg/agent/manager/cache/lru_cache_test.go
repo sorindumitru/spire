@@ -133,23 +133,18 @@ func TestLRUCacheCountRecords(t *testing.T) {
 }
 
 func TestLRUCacheBundleChanges(t *testing.T) {
-	cache := newTestLRUCache(t)
+	bundleCache := NewBundleCache(trustDomain1, bundleV1)
 
-	bundleStream := cache.SubscribeToBundleChanges()
+	bundleStream := bundleCache.SubscribeToBundleChanges()
 	assert.Equal(t, makeBundles(bundleV1), bundleStream.Value())
 
-	cache.UpdateEntries(&UpdateEntries{
-		Bundles: makeBundles(bundleV1, otherBundleV1),
-	}, nil)
+	bundleCache.Update(makeBundles(bundleV1, otherBundleV1))
 	if assert.True(t, bundleStream.HasNext(), "has new bundle value after adding bundle") {
 		bundleStream.Next()
 		assert.Equal(t, makeBundles(bundleV1, otherBundleV1), bundleStream.Value())
 	}
 
-	cache.UpdateEntries(&UpdateEntries{
-		Bundles: makeBundles(bundleV1),
-	}, nil)
-
+	bundleCache.Update(makeBundles(bundleV1))
 	if assert.True(t, bundleStream.HasNext(), "has new bundle value after removing bundle") {
 		bundleStream.Next()
 		assert.Equal(t, makeBundles(bundleV1), bundleStream.Value())

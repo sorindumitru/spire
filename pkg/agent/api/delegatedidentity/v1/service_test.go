@@ -1073,10 +1073,10 @@ func utilIDProtoFromString(t *testing.T, id string) *types.SPIFFEID {
 }
 
 func (m *FakeManager) SubscribeToBundleChanges() *cache.BundleStream {
-	myCache := newTestCache()
-	myCache.BundleCache.Update(m.cacheUpdate)
+	bundleCache := cache.NewBundleCache(trustDomain1, bundle1)
+	bundleCache.Update(m.cacheUpdate)
 
-	return myCache.BundleCache.SubscribeToBundleChanges()
+	return bundleCache.SubscribeToBundleChanges()
 }
 
 func newTestCache() *cache.X509LRUCache {

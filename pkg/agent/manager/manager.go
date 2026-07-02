@@ -108,20 +108,11 @@ type Manager interface {
 type Cache interface {
 	SVIDCache
 
-	// Bundle gets latest cached bundle
-	Bundle() *spiffebundle.Bundle
-
-	// Bundles gets the latest cached bundles for all trust domains.
-	Bundles() map[spiffeid.TrustDomain]*spiffebundle.Bundle
-
 	// SyncSVIDsWithSubscribers syncs SVID cache
 	SyncSVIDsWithSubscribers()
 
 	// SubscribeToWorkloadUpdates creates a subscriber for given selector set.
 	SubscribeToWorkloadUpdates(ctx context.Context, selectors cache.Selectors) (cache.Subscriber[cache.X509WorkloadUpdate], error)
-
-	// SubscribeToBundleChanges creates a stream for providing bundle changes
-	SubscribeToBundleChanges() *cache.BundleStream
 
 	// MatchingRegistrationEntries with given selectors
 	MatchingRegistrationEntries(selectors []*common.Selector) []*common.RegistrationEntry
@@ -131,7 +122,6 @@ type Cache interface {
 
 	// FetchWorkloadUpdate for given selectors
 	FetchWorkloadUpdate(selectors []*common.Selector) *cache.X509WorkloadUpdate
-
 
 	// Entries get all registration entries
 	Entries() []*common.RegistrationEntry
@@ -181,9 +171,10 @@ type manager struct {
 	// Protects multiple goroutines from requesting SVID signings at the same time
 	updateSVIDMu sync.RWMutex
 
-	cache    Cache
-	witCache WITCache
-	jwtCache JWTCache
+	cache       Cache
+	witCache    WITCache
+	jwtCache    JWTCache
+	bundleCache *cache.BundleCache
 	svid  svid.Rotator
 
 	storage storage.Storage
@@ -223,7 +214,7 @@ type manager struct {
 
 func (m *manager) Initialize(ctx context.Context) error {
 	m.storeSVID(m.svid.State().SVID, m.svid.State().Reattestable)
-	m.storeBundle(m.cache.Bundle())
+	m.storeBundle(m.bundleCache.Bundle())
 
 	// upper limit of backoff is 8 mins
 	synchronizeBackoffMaxInterval := min(synchronizeMaxInterval, synchronizeMaxIntervalMultiple*m.c.SyncInterval)
@@ -302,7 +293,7 @@ func (m *manager) SubscribeToSVIDChanges() observer.Stream {
 }
 
 func (m *manager) SubscribeToBundleChanges() *cache.BundleStream {
-	return m.cache.SubscribeToBundleChanges()
+	return m.bundleCache.SubscribeToBundleChanges()
 }
 
 func (m *manager) GetRotationMtx() *sync.RWMutex {
@@ -478,17 +469,11 @@ func (m *manager) GetLastSync() time.Time {
 }
 
 func (m *manager) GetBundle() *cache.Bundle {
-	m.mtx.RLock()
-	defer m.mtx.RUnlock()
-
-	return m.cache.Bundle()
+	return m.bundleCache.Bundle()
 }
 
 func (m *manager) GetBundles() map[spiffeid.TrustDomain]*cache.Bundle {
-	m.mtx.RLock()
-	defer m.mtx.RUnlock()
-
-	return m.cache.Bundles()
+	return m.bundleCache.Bundles()
 }
 
 func (m *manager) runSVIDObserver(ctx context.Context) error {

@@ -133,6 +133,9 @@ func (m *manager) synchronize(ctx context.Context) (err error) {
 		return err
 	}
 
+	// Update the shared bundle cache with the latest bundles
+	m.bundleCache.Update(cacheUpdate.Bundles)
+
 	// Set last success sync
 	m.setLastSync()
 	return nil
