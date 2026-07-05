@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/mitchellh/cli"
@@ -535,6 +536,267 @@ Claims    : {"aud":["foo"]}`,
 				assertOutputBasedOnFormat(t, format, test.stdout.String(), tt.expectedStdoutJSON, tt.expectedStdoutPretty)
 				assert.Empty(t, test.stderr.String())
 				assert.Equal(t, 0, rc)
+			})
+		}
+	}
+}
+
+func TestFetchWITCommandHelp(t *testing.T) {
+	test := setupTest(t, newFetchWITCommandWithEnv)
+	test.cmd.Help()
+	require.Equal(t, fetchWITUsage, test.stderr.String())
+}
+
+func TestFetchWITCommandSynopsis(t *testing.T) {
+	test := setupTest(t, newFetchWITCommandWithEnv)
+	require.Equal(t, "Fetches a WIT SVID from the Workload API", test.cmd.Synopsis())
+}
+
+func TestFetchWITCommand(t *testing.T) {
+	testDir := t.TempDir()
+
+	const (
+		witSvid1    = "eyJhbGciOiJFUzI1NiJ9.svid1"
+		witSvidKey1 = `{"kty":"EC","crv":"P-256","x":"key1x","y":"key1y","d":"key1d"}`
+		witSvid2    = "eyJhbGciOiJFUzI1NiJ9.svid2"
+		witSvidKey2 = `{"kty":"EC","crv":"P-256","x":"key2x","y":"key2y","d":"key2d"}`
+		bundle1     = `{"keys":[{"kty":"EC","crv":"P-256","x":"bundle1x","y":"bundle1y"}]}`
+		bundle2     = `{"keys":[{"kty":"EC","crv":"P-256","x":"bundle2x","y":"bundle2y"}]}`
+	)
+
+	tests := []struct {
+		name                 string
+		args                 []string
+		fakeRequests         []*fakeworkloadapi.FakeRequest
+		expectedStderr       string
+		expectedStdoutPretty []string
+		expectedStdoutJSON   string
+		expectedFileResult   bool
+	}{
+		{
+			name: "success fetching wit with bundles",
+			fakeRequests: []*fakeworkloadapi.FakeRequest{
+				{
+					Req: &workload.WITBundlesRequest{},
+					Resp: &workload.WITBundlesResponse{
+						Bundles: map[string]string{
+							"spiffe://domain1.test": bundle1,
+							"spiffe://domain2.test": bundle2,
+						},
+					},
+				},
+				{
+					Req: &workload.WITSVIDRequest{},
+					Resp: &workload.WITSVIDResponse{
+						Svids: []*workload.WITSVID{
+							{
+								SpiffeId:   "spiffe://domain1.test",
+								WitSvid:    witSvid1,
+								WitSvidKey: witSvidKey1,
+								Hint:       "external",
+							},
+							{
+								SpiffeId:   "spiffe://domain2.test",
+								WitSvid:    witSvid2,
+								WitSvidKey: witSvidKey2,
+							},
+						},
+					},
+				},
+			},
+			expectedStdoutPretty: []string{
+				"Received 2 svids after",
+				"SPIFFE ID:\tspiffe://domain1.test",
+				"Hint:\t\t\texternal",
+				fmt.Sprintf("Token:\t\t%s", witSvid1),
+				fmt.Sprintf("Key:\t\t%s", witSvidKey1),
+				"SPIFFE ID:\tspiffe://domain2.test",
+				fmt.Sprintf("Token:\t\t%s", witSvid2),
+				fmt.Sprintf("Key:\t\t%s", witSvidKey2),
+			},
+			expectedStdoutJSON: fmt.Sprintf(`[
+  {
+    "svids": [
+      {
+        "hint": "external",
+        "spiffe_id": "spiffe://domain1.test",
+        "wit_svid": "%s",
+        "wit_svid_key": %s
+      },
+      {
+        "hint": "",
+        "spiffe_id": "spiffe://domain2.test",
+        "wit_svid": "%s",
+        "wit_svid_key": %s
+      }
+    ]
+  },
+  {
+    "bundles": {
+      "spiffe://domain1.test": %s,
+      "spiffe://domain2.test": %s
+    }
+  }
+]`,
+				witSvid1, strconv.Quote(witSvidKey1),
+				witSvid2, strconv.Quote(witSvidKey2),
+				strconv.Quote(bundle1), strconv.Quote(bundle2)),
+		},
+		{
+			name: "success fetching wit and writing to file",
+			args: []string{"-write", testDir},
+			fakeRequests: []*fakeworkloadapi.FakeRequest{
+				{
+					Req: &workload.WITBundlesRequest{},
+					Resp: &workload.WITBundlesResponse{
+						Bundles: map[string]string{
+							"spiffe://domain1.test": bundle1,
+						},
+					},
+				},
+				{
+					Req: &workload.WITSVIDRequest{},
+					Resp: &workload.WITSVIDResponse{
+						Svids: []*workload.WITSVID{
+							{
+								SpiffeId:   "spiffe://domain1.test",
+								WitSvid:    witSvid1,
+								WitSvidKey: witSvidKey1,
+							},
+						},
+					},
+				},
+			},
+			expectedStdoutPretty: []string{
+				"Received 1 svid after",
+				"SPIFFE ID:\tspiffe://domain1.test",
+				fmt.Sprintf("Writing SVID #0 to file %s.", filepath.Join(testDir, "svid.0.token")),
+				fmt.Sprintf("Writing key #0 to file %s.", filepath.Join(testDir, "svid.0.key")),
+			},
+			expectedStdoutJSON: fmt.Sprintf(`[
+  {
+    "svids": [
+      {
+        "hint": "",
+        "spiffe_id": "spiffe://domain1.test",
+        "wit_svid": "%s",
+        "wit_svid_key": %s
+      }
+    ]
+  },
+  {
+    "bundles": {
+      "spiffe://domain1.test": %s
+    }
+  }
+]`, witSvid1, strconv.Quote(witSvidKey1), strconv.Quote(bundle1)),
+			expectedFileResult: true,
+		},
+		{
+			name: "success fetching wit with silent flag",
+			args: []string{"-silent"},
+			fakeRequests: []*fakeworkloadapi.FakeRequest{
+				{
+					Req: &workload.WITBundlesRequest{},
+					Resp: &workload.WITBundlesResponse{
+						Bundles: map[string]string{
+							"spiffe://domain1.test": bundle1,
+						},
+					},
+				},
+				{
+					Req: &workload.WITSVIDRequest{},
+					Resp: &workload.WITSVIDResponse{
+						Svids: []*workload.WITSVID{
+							{
+								SpiffeId:   "spiffe://domain1.test",
+								WitSvid:    witSvid1,
+								WitSvidKey: witSvidKey1,
+							},
+						},
+					},
+				},
+			},
+			// With -silent the pretty output is suppressed. JSON output is
+			// unaffected because it does not go through the custom pretty printer.
+			expectedStdoutJSON: fmt.Sprintf(`[
+  {
+    "svids": [
+      {
+        "hint": "",
+        "spiffe_id": "spiffe://domain1.test",
+        "wit_svid": "%s",
+        "wit_svid_key": %s
+      }
+    ]
+  },
+  {
+    "bundles": {
+      "spiffe://domain1.test": %s
+    }
+  }
+]`, witSvid1, strconv.Quote(witSvidKey1), strconv.Quote(bundle1)),
+		},
+		{
+			name: "fail with error fetching bundles",
+			fakeRequests: []*fakeworkloadapi.FakeRequest{
+				{
+					Req:  &workload.WITBundlesRequest{},
+					Resp: &workload.WITBundlesResponse{},
+					Err:  errors.New("error fetching bundles"),
+				},
+			},
+			expectedStderr: "rpc error: code = Unknown desc = error fetching bundles\n",
+		},
+		{
+			name: "fail with error fetching svid",
+			fakeRequests: []*fakeworkloadapi.FakeRequest{
+				{
+					Req: &workload.WITBundlesRequest{},
+					Resp: &workload.WITBundlesResponse{
+						Bundles: map[string]string{
+							"spiffe://domain1.test": bundle1,
+						},
+					},
+				},
+				{
+					Req:  &workload.WITSVIDRequest{},
+					Resp: &workload.WITSVIDResponse{},
+					Err:  errors.New("error fetching svid"),
+				},
+			},
+			expectedStderr: "rpc error: code = Unknown desc = error fetching svid\n",
+		},
+	}
+
+	for _, tt := range tests {
+		for _, format := range availableFormats {
+			t.Run(fmt.Sprintf("%s using %s format", tt.name, format), func(t *testing.T) {
+				test := setupTest(t, newFetchWITCommandWithEnv, tt.fakeRequests...)
+				args := tt.args
+				args = append(args, "-output", format)
+
+				rc := test.cmd.Run(test.args(args...))
+
+				if tt.expectedStderr != "" {
+					assert.Equal(t, 1, rc)
+					assert.Equal(t, tt.expectedStderr, test.stderr.String())
+					return
+				}
+
+				assertOutputBasedOnFormat(t, format, test.stdout.String(), tt.expectedStdoutJSON, tt.expectedStdoutPretty...)
+				assert.Empty(t, test.stderr.String())
+				assert.Equal(t, 0, rc)
+
+				if tt.expectedFileResult && format == "pretty" {
+					content, err := os.ReadFile(filepath.Join(testDir, "svid.0.token"))
+					assert.NoError(t, err)
+					assert.Equal(t, witSvid1, string(content))
+
+					content, err = os.ReadFile(filepath.Join(testDir, "svid.0.key"))
+					assert.NoError(t, err)
+					assert.Equal(t, witSvidKey1, string(content))
+				}
 			})
 		}
 	}

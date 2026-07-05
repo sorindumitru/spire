@@ -41,4 +41,16 @@ const (
   -timeout value
     	Time to wait for a response (default 5s)
 `
+	fetchWITUsage = `Usage of fetch wit:
+  -namedPipeName string
+    	Pipe name of the SPIRE Agent API named pipe (default "\\spire-agent\\public\\api")
+  -output value
+    	Desired output format (pretty, json); default: pretty.
+  -silent
+    	Suppress stdout
+  -timeout value
+    	Time to wait for a response (default 5s)
+  -write string
+    	Write SVID data to the specified path (optional; only available for pretty output format)
+`
 )
