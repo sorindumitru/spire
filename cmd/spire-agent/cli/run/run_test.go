@@ -595,6 +595,56 @@ func TestNewAgentConfig(t *testing.T) {
 			},
 		},
 		{
+			msg: "explicit dns server_resolver produces a dns target",
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "192.168.1.1"
+				c.Agent.ServerPort = 1337
+				c.Agent.Experimental.ServerResolver = "dns"
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Equal(t, "dns:///192.168.1.1:1337", c.ServerAddress)
+			},
+		},
+		{
+			msg: "xds server_resolver produces an xds target from server_address",
+			input: func(c *Config) {
+				c.Agent.ServerAddress = "spire-server"
+				c.Agent.ServerPort = 1337
+				c.Agent.Experimental.ServerResolver = "xds"
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				// server_port is intentionally ignored in xds mode; the port
+				// is delivered by the management server via EDS.
+				require.Equal(t, "xds:///spire-server", c.ServerAddress)
+			},
+		},
+		{
+			msg:                "unsupported server_resolver should return an error",
+			expectError:        true,
+			requireErrorPrefix: `unsupported experimental.server_resolver "grpclb"`,
+			input: func(c *Config) {
+				c.Agent.Experimental.ServerResolver = "grpclb"
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
+			msg:                "xds server_resolver cannot be combined with insecure_bootstrap",
+			expectError:        true,
+			requireErrorPrefix: "the xds server_resolver cannot be used with insecure_bootstrap",
+			input: func(c *Config) {
+				// trust_bundle_path (from defaultValidConfig) is mutually
+				// exclusive with insecure_bootstrap, so clear it first.
+				c.Agent.TrustBundlePath = ""
+				c.Agent.InsecureBootstrap = true
+				c.Agent.Experimental.ServerResolver = "xds"
+			},
+			test: func(t *testing.T, c *agent.Config) {
+				require.Nil(t, c)
+			},
+		},
+		{
 			msg: "trust_domain should be correctly parsed",
 			input: func(c *Config) {
 				c.Agent.TrustDomain = "foo"

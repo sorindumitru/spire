@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -290,12 +291,30 @@ func (a *attestor) serverConn(bundle *spiffebundle.Bundle) (*grpc.ClientConn, er
 		},
 	}
 
+	var dialOpts []grpc.DialOption
+	if isXDSTarget(a.c.ServerAddress) {
+		dialOpts = []grpc.DialOption{
+			grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		}
+	} else {
+		dialOpts = []grpc.DialOption{
+			grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
+			grpc.WithDisableServiceConfig(),
+			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		}
+	}
+
 	return grpc.NewClient(
 		a.c.ServerAddress,
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-		grpc.WithDisableServiceConfig(),
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		dialOpts...,
 	)
+}
+
+// isXDSTarget reports whether the gRPC target uses the xds name resolver
+// (e.g. "xds:///spire-server").
+func isXDSTarget(target string) bool {
+	return strings.HasPrefix(target, "xds:")
 }
 
 type ServerStream struct {

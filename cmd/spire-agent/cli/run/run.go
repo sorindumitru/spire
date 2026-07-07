@@ -247,6 +247,15 @@ type experimentalConfig struct {
 	UseSyncAuthorizedEntries *bool  `hcl:"use_sync_authorized_entries"`
 	RequirePQKEM             bool   `hcl:"require_pq_kem"`
 
+	// ServerResolver selects the gRPC name resolver used to reach the SPIRE
+	// server. "dns" (default) resolves server_address/server_port directly.
+	// "xds" turns server_address into an xDS listener name so an xDS
+	// management server can drive locality-aware routing and priority-based
+	// failover across the servers in the trust domain. The management server
+	// endpoint and this agent's node locality are configured out-of-band via
+	// the gRPC xDS bootstrap (GRPC_XDS_BOOTSTRAP / GRPC_XDS_BOOTSTRAP_CONFIG).
+	ServerResolver string `hcl:"server_resolver"`
+
 	RateLimit workloadAPIRateLimitConfig `hcl:"ratelimit"`
 
 	// Broker holds the configuration for the SPIFFE Broker API endpoint
@@ -563,7 +572,17 @@ func NewAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool)
 	}
 
 	serverHostPort := net.JoinHostPort(c.Agent.ServerAddress, strconv.Itoa(c.Agent.ServerPort))
-	ac.ServerAddress = fmt.Sprintf("dns:///%s", serverHostPort)
+	switch c.Agent.Experimental.ServerResolver {
+	case "", "dns":
+		ac.ServerAddress = fmt.Sprintf("dns:///%s", serverHostPort)
+	case "xds":
+		// With xDS the endpoint set (and port) is delivered by the management
+		// server via EDS, so server_address is used as the xDS listener name
+		// rather than a host:port. server_port is ignored in this mode.
+		ac.ServerAddress = fmt.Sprintf("xds:///%s", serverHostPort)
+	default:
+		return nil, fmt.Errorf("unsupported experimental.server_resolver %q; expected \"dns\" or \"xds\"", c.Agent.Experimental.ServerResolver)
+	}
 
 	logOptions = append(logOptions,
 		log.WithLevel(c.Agent.LogLevel),
@@ -589,6 +608,10 @@ func NewAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig bool)
 	ac.Log = logger
 	if reopenableFile != nil {
 		ac.LogReopener = log.ReopenOnSignal(logger, reopenableFile)
+	}
+
+	if c.Agent.Experimental.ServerResolver == "xds" {
+		logger.Warn("The 'xds' server_resolver is experimental and may change or be removed in a future release")
 	}
 
 	if c.Agent.Experimental.JWTSVIDCacheHitTimeout != "" {

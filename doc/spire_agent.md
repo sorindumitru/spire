@@ -84,6 +84,7 @@ This may be useful for templating configuration files, for example across differ
 | `sync_interval`               | Sync interval with SPIRE server with exponential backoff                                                                                                                            | 5 sec                   |
 | `use_sync_authorized_entries` | Use SyncAuthorizedEntries API for periodically synchronization of authorized entries                                                                                                | true                    |
 | `require_pq_kem`              | Require use of a post-quantum-safe key exchange method for TLS handshakes                                                                                                           | false                   |
+| `server_resolver`             | gRPC name resolver used to reach the SPIRE server: `dns` or `xds`. See [xDS server resolution](#xds-server-resolution).                                                              | dns                     |
 | `jwt_svid_cache_hit_timeout`  | Custom gRPC timeout (between 5 and 30s) when retrieving a NewJWTSVID when a valid JWT-SVID in cache                                                                                 | 30s                     |
 | `ratelimit`                   | Optional per-caller rate limiting for Workload API and SDS methods, enforced after workload attestation. See [Workload API Rate Limiting](#workload-api-rate-limiting) for details. |                         |
 | `broker`                      | Optional SPIFFE Broker API endpoint configuration. See [SPIFFE Broker API](#spiffe-broker-api).                                                                                     |                         |
@@ -197,6 +198,39 @@ If the `availability_target` is set, the agent will rotate an X509 SVID when its
 
 To guarantee the `availability_target`, grace period (`SVID lifetime - availability_target`) must be at least 12h.
 If not satisfied, the agent will rotate the SVID by the default rotation strategy (1/2 of lifetime).
+
+### xDS server resolution
+
+_Note: `server_resolver = "xds"` is experimental and may change or be removed in a future release._
+
+By default (`server_resolver = "dns"`) the agent resolves `server_address`/`server_port`
+directly and load balances across the returned addresses using round robin. Every server
+is treated equally, so there is no notion of locality (for example, "prefer the servers in
+my datacenter") or priority-based failover.
+
+Setting `server_resolver = "xds"` makes the agent an [xDS](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol)
+client instead. In this mode:
+
+- `server_address` is used as the xDS listener (service) name rather than a host:port, and
+  `server_port` is ignored. The endpoint set and port are delivered by the xDS management
+  server via EDS.
+- The load balancing policy — including locality weighting and priority-based failover
+  between datacenters — is driven entirely by the management server. The agent does not
+  need to be redeployed to change routing.
+- Server identity is still verified by SPIFFE ID (`spiffe://<trust_domain>/spire/server`),
+  so any endpoint the resolver selects is authenticated with SPIRE's own mTLS. SPIRE's mTLS
+  is supplied as the fallback credential and is used whenever the management server does not
+  push transport security of its own.
+
+The agent does **not** ship or run an xDS management server; you must provide one (for
+example [go-control-plane](https://github.com/envoyproxy/go-control-plane) or another
+control plane) and configure the priority/locality policy there. The management server
+endpoint and this agent's node locality are configured out-of-band through the gRPC xDS
+bootstrap, referenced by the `GRPC_XDS_BOOTSTRAP` (file path) or `GRPC_XDS_BOOTSTRAP_CONFIG`
+(inline JSON) environment variables. The `node.locality` `{region, zone}` in that bootstrap
+is how each agent tells the management server which datacenter it is in.
+
+`server_resolver = "xds"` cannot be combined with `insecure_bootstrap`.
 
 ## Plugin configuration
 
