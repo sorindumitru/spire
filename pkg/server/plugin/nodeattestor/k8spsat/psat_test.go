@@ -30,6 +30,7 @@ import (
 	"github.com/spiffe/spire/test/testkey"
 	"google.golang.org/grpc/codes"
 	authv1 "k8s.io/api/authentication/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -554,4 +555,8 @@ func (c *fakeAPIServerClient) ValidateToken(_ context.Context, token string, aud
 		return nil, fmt.Errorf("got audiences %q; expected %q", audiences, status.Audiences)
 	}
 	return status, nil
+}
+
+func (c *fakeAPIServerClient) SubjectAccessReview(context.Context, authzv1.SubjectAccessReviewSpec) (*authzv1.SubjectAccessReviewStatus, error) {
+	return nil, errors.New("subject access review is not expected")
 }

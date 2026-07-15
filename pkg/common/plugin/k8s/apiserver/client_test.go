@@ -10,11 +10,13 @@ import (
 
 	"github.com/spiffe/spire/test/spiretest"
 	authv1 "k8s.io/api/authentication/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	fake_authv1 "k8s.io/client-go/kubernetes/typed/authentication/v1/fake"
+	fake_authzv1 "k8s.io/client-go/kubernetes/typed/authorization/v1/fake"
 	fake_corev1 "k8s.io/client-go/kubernetes/typed/core/v1/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -312,6 +314,71 @@ func (s *ClientSuite) TestValidateTokenSucceeds() {
 	s.NoError(err)
 	s.NotNil(status)
 	s.True(status.Authenticated)
+}
+
+func (s *ClientSuite) TestSubjectAccessReviewFailsToLoadClient() {
+	client := s.createDefectiveClient("")
+	status, err := client.SubjectAccessReview(ctx, authzv1.SubjectAccessReviewSpec{})
+	s.AssertErrorContains(err, "unable to get clientset")
+	s.Nil(status)
+}
+
+func (s *ClientSuite) TestSubjectAccessReviewFailsIfGetsErrorFromAPIServer() {
+	fakeClient := fake.NewClientset()
+	fakeClient.AuthorizationV1().(*fake_authzv1.FakeAuthorizationV1).PrependReactor("create", "subjectaccessreviews",
+		func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+			return true, &authzv1.SubjectAccessReview{}, errors.New("error creating subject access review")
+		})
+
+	client := s.createClient(fakeClient)
+	status, err := client.SubjectAccessReview(ctx, authzv1.SubjectAccessReviewSpec{})
+	s.AssertErrorContains(err, "unable to query subject access review API")
+	s.Nil(status)
+}
+
+func (s *ClientSuite) TestSubjectAccessReviewSucceedsWhenAllowed() {
+	var gotSpec authzv1.SubjectAccessReviewSpec
+	fakeClient := fake.NewClientset()
+	fakeClient.AuthorizationV1().(*fake_authzv1.FakeAuthorizationV1).PrependReactor("create", "subjectaccessreviews",
+		func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+			gotSpec = action.(k8stesting.CreateAction).GetObject().(*authzv1.SubjectAccessReview).Spec
+			return true, &authzv1.SubjectAccessReview{
+				Status: authzv1.SubjectAccessReviewStatus{Allowed: true},
+			}, nil
+		})
+
+	spec := authzv1.SubjectAccessReviewSpec{
+		User: "system:serviceaccount:spire:spire-agent",
+		ResourceAttributes: &authzv1.ResourceAttributes{
+			Verb:     "get",
+			Resource: "configmaps",
+		},
+	}
+
+	client := s.createClient(fakeClient)
+	status, err := client.SubjectAccessReview(ctx, spec)
+	s.Require().NoError(err)
+	s.Require().NotNil(status)
+	s.True(status.Allowed)
+	s.Equal(spec, gotSpec)
+}
+
+func (s *ClientSuite) TestSubjectAccessReviewSucceedsWhenDenied() {
+	fakeClient := fake.NewClientset()
+	fakeClient.AuthorizationV1().(*fake_authzv1.FakeAuthorizationV1).PrependReactor("create", "subjectaccessreviews",
+		func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+			return true, &authzv1.SubjectAccessReview{
+				Status: authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: true, Reason: "nope"},
+			}, nil
+		})
+
+	client := s.createClient(fakeClient)
+	status, err := client.SubjectAccessReview(ctx, authzv1.SubjectAccessReviewSpec{})
+	s.Require().NoError(err)
+	s.Require().NotNil(status)
+	s.False(status.Allowed)
+	s.True(status.Denied)
+	s.Equal("nope", status.Reason)
 }
 
 func (s *ClientSuite) TestLoadClientFailsIfConfigCannotBeCreated() {

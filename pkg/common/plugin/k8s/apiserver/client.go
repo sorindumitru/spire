@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	authv1 "k8s.io/api/authentication/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +25,11 @@ type Client interface {
 
 	// ValidateToken queries k8s token review API and returns information about the given token
 	ValidateToken(ctx context.Context, token string, audiences []string) (*authv1.TokenReviewStatus, error)
+
+	// SubjectAccessReview queries the k8s subject access review API to determine
+	// whether the subject described by spec is authorized to perform the
+	// requested action.
+	SubjectAccessReview(ctx context.Context, spec authzv1.SubjectAccessReviewSpec) (*authzv1.SubjectAccessReviewStatus, error)
 }
 
 type client struct {
@@ -130,6 +136,24 @@ func (c *client) ValidateToken(ctx context.Context, token string, audiences []st
 		if !atLeastOnePresent {
 			return nil, fmt.Errorf("token review API did not validate audience: wanted one of %q but got %q", audiences, resp.Status.Audiences)
 		}
+	}
+
+	return &resp.Status, nil
+}
+
+func (c *client) SubjectAccessReview(ctx context.Context, spec authzv1.SubjectAccessReviewSpec) (*authzv1.SubjectAccessReviewStatus, error) {
+	// Reload config
+	clientset, err := c.loadClientHook(c.kubeConfigFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get clientset: %w", err)
+	}
+
+	// Do request
+	resp, err := clientset.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authzv1.SubjectAccessReview{
+		Spec: spec,
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("unable to query subject access review API: %w", err)
 	}
 
 	return &resp.Status, nil
