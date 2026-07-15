@@ -7,7 +7,8 @@ metadata:
 
 ---
 # Cluster role granting the agent permission to:
-#  - read pods/nodes for the legacy PID/k8s_psat path
+#  - read pods/nodes for the legacy PID path and the k8s_resource node
+#    attestor's declared-resource authorization checks
 #  - read Kustomization CRs so the broker API can attest non-pod object references
 #  - create SubjectAccessReviews for broker authorization checks
 kind: ClusterRole
@@ -57,6 +58,8 @@ subjects:
     name: spiffe://example.org/local-only-object-broker
   - kind: User
     name: spiffe://example.org/restricted-broker
+  - kind: User
+    name: system:serviceaccount:spire:spire-agent
 roleRef:
   kind: ClusterRole
   name: spire-broker-impersonation-role
@@ -168,9 +171,16 @@ data:
     }
 
     plugins {
-      NodeAttestor "k8s_psat" {
+      NodeAttestor "k8s_resource" {
         plugin_data {
           cluster = "example-cluster"
+          # The agent declares the resources its service account must be
+          # authorized for. The server verifies each via SubjectAccessReview
+          # and fails attestation closed if any is denied. These map to the
+          # spire-agent-cluster-role grants above.
+          resource = [
+            { verb = "impersonate-via-spire", resource = "kustomizations", group = "kustomize.toolkit.fluxcd.io" },
+          ]
         }
       }
 

@@ -16,11 +16,16 @@ rules:
 - apiGroups: [""]
   resources: ["pods", "nodes"]
   verbs: ["get", "list", "watch"]
-  # allow TokenReview requests (to verify service account tokens for PSAT
-  # attestation)
+  # allow TokenReview requests (to verify service account tokens for
+  # k8s_resource attestation)
 - apiGroups: ["authentication.k8s.io"]
   resources: ["tokenreviews"]
   verbs: ["get", "create"]
+  # allow SubjectAccessReview requests (the k8s_resource node attestor checks
+  # that the agent's service account is authorized for its declared resources)
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
 
 ---
 
@@ -131,7 +136,7 @@ data:
         }
       }
 
-      NodeAttestor "k8s_psat" {
+      NodeAttestor "k8s_resource" {
         plugin_data {
           clusters = {
             "example-cluster" = {

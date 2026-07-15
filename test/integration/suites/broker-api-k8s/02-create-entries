@@ -4,29 +4,32 @@ set -e
 
 source init-kubectl
 
-readarray -t NODEUIDS < <(./bin/kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}')
-PARENTS=()
-for nodeUID in "${NODEUIDS[@]}"; do
-    if [ -n "${nodeUID}" ]; then
-        PARENTS+=("spiffe://example.org/spire/agent/k8s_psat/example-cluster/${nodeUID}")
-    fi
-done
+# The k8s_resource node attestor derives the agent SPIFFE ID from the agent pod
+# UID, which changes every time the agent DaemonSet rolls and new pods are
+# created. Instead of parenting workload entries to those churning per-pod IDs,
+# create a node alias keyed on the stable resource selector the attestor emits
+# for the agent's declared resource authorization. Every broker agent that is
+# authorized for that resource inherits the alias as an additional parent, so
+# entries parented to the alias survive agent pod churn.
+NODE_ALIAS="spiffe://example.org/nodes/broker-agent"
+RESOURCE_SELECTOR="k8s_resource:resource:impersonate-via-spire:kustomize.toolkit.fluxcd.io/kustomizations"
 
-if [ "${#PARENTS[@]}" -eq 0 ]; then
-    fail-now "no Kubernetes nodes found for agent parent IDs"
-fi
+log-info "creating node alias ${NODE_ALIAS} for ${RESOURCE_SELECTOR}..."
+./bin/kubectl -nspire exec -t deployment/spire-server -- \
+    /opt/spire/bin/spire-server entry create \
+        -node \
+        -spiffeID "${NODE_ALIAS}" \
+        -parentID "spiffe://example.org/spire/server" \
+        -selector "${RESOURCE_SELECTOR}"
 
 create-entry() {
     local spiffeID=$1; shift
-    local parent
-    for parent in "${PARENTS[@]}"; do
-        log-info "creating entry ${spiffeID} under ${parent}..."
-        ./bin/kubectl -nspire exec -t deployment/spire-server -- \
-            /opt/spire/bin/spire-server entry create \
-                -spiffeID "${spiffeID}" \
-                -parentID "${parent}" \
-                "$@"
-    done
+    log-info "creating entry ${spiffeID} under ${NODE_ALIAS}..."
+    ./bin/kubectl -nspire exec -t deployment/spire-server -- \
+        /opt/spire/bin/spire-server entry create \
+            -spiffeID "${spiffeID}" \
+            -parentID "${NODE_ALIAS}" \
+            "$@"
 }
 
 # Brokers — registered by their pod-name selectors.

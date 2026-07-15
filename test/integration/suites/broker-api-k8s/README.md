@@ -5,6 +5,15 @@
 Spins up a KIND cluster and exercises the SPIFFE Broker API end-to-end against
 real workloads. Covers:
 
+* The SPIRE agents are node-attested with the `k8s_resource` node attestor:
+  each agent declares a Kubernetes resource its service account must be
+  authorized for (`impersonate-via-spire` on
+  `kustomizations.kustomize.toolkit.fluxcd.io`) and the server authorizes it via
+  a SubjectAccessReview before issuing the agent SVID, emitting a `resource`
+  selector for it. Because the agent SPIFFE ID is keyed on the agent pod UID
+  (which changes across DaemonSet rollouts), workload entries are parented to a
+  node alias (`spiffe://example.org/nodes/broker-agent`) keyed on that stable
+  resource selector rather than to the churning per-pod agent IDs.
 * A broker fetches a pod workload's SVID via `WorkloadPIDReference` (legacy
   PID-based path).
 * A broker fetches a pod workload's SVID via `KubernetesObjectReference`
@@ -48,3 +57,8 @@ The agent RBAC fixture grants `create` on
 `subjectaccessreviews.authorization.k8s.io` because this suite opts in with
 `experimental.broker.access_policy = "enforced"` and the k8s workload attestor uses
 SubjectAccessReview API calls to authorize Broker API reference requests.
+
+The server RBAC fixture likewise grants `create` on
+`subjectaccessreviews.authorization.k8s.io` because the `k8s_resource` node
+attestor issues SubjectAccessReview calls to authorize the agent's declared
+resources during node attestation.
