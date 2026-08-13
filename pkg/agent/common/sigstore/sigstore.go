@@ -20,8 +20,8 @@ import (
 	cosignremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"github.com/sigstore/rekor/pkg/client"
 	rekorclient "github.com/sigstore/rekor/pkg/generated/client"
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
-	"github.com/sigstore/sigstore/pkg/fulcioroots"
 	"github.com/spiffe/spire/pkg/common/telemetry"
 )
 
@@ -81,8 +81,8 @@ func NewVerifier(config *Config) *ImageVerifier {
 			verifyImageSignatures:   cosign.VerifyImageSignatures,
 			verifyImageAttestations: cosign.VerifyImageAttestations,
 			getRekorClient:          client.GetRekorClient,
-			getFulcioRoots:          fulcioroots.Get,
-			getFulcioIntermediates:  fulcioroots.GetIntermediates,
+			getFulcioRoots:          getFulcioRoots,
+			getFulcioIntermediates:  getFulcioIntermediates,
 			getRekorPublicKeys:      cosign.GetRekorPubs,
 			getCTLogPublicKeys:      cosign.GetCTLogPubs,
 		},
@@ -99,6 +99,43 @@ func NewVerifier(config *Config) *ImageVerifier {
 	verifier.allowedIdentities = processAllowedIdentities(config.AllowedIdentities)
 
 	return verifier
+}
+
+// getFulcioRoots returns the Fulcio root certificates from the Sigstore trusted root.
+func getFulcioRoots() (*x509.CertPool, error) {
+	return fulcioCertPool(func(ca *root.FulcioCertificateAuthority) []*x509.Certificate {
+		if ca.Root == nil {
+			return nil
+		}
+		return []*x509.Certificate{ca.Root}
+	})
+}
+
+// getFulcioIntermediates returns the Fulcio intermediate certificates from the Sigstore trusted root.
+func getFulcioIntermediates() (*x509.CertPool, error) {
+	return fulcioCertPool(func(ca *root.FulcioCertificateAuthority) []*x509.Certificate {
+		return ca.Intermediates
+	})
+}
+
+func fulcioCertPool(certsFromCA func(*root.FulcioCertificateAuthority) []*x509.Certificate) (*x509.CertPool, error) {
+	trustedRoot, err := cosign.TrustedRoot()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sigstore trusted root: %w", err)
+	}
+
+	pool := x509.NewCertPool()
+	for _, ca := range trustedRoot.FulcioCertificateAuthorities() {
+		fulcioCA, ok := ca.(*root.FulcioCertificateAuthority)
+		if !ok {
+			continue
+		}
+		for _, cert := range certsFromCA(fulcioCA) {
+			pool.AddCert(cert)
+		}
+	}
+
+	return pool, nil
 }
 
 // Init prepares the verifier by retrieving the Fulcio certificates and Rekor and CT public keys.
