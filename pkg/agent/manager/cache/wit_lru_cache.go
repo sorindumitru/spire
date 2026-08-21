@@ -32,6 +32,11 @@ type WITIdentity struct {
 	PrivateKey crypto.Signer
 }
 
+// GetEntry returns the registration entry the identity was issued for.
+func (i WITIdentity) GetEntry() *common.RegistrationEntry {
+	return i.Entry
+}
+
 // WITWorkloadUpdate is used to convey WIT workload information to cache subscribers.
 type WITWorkloadUpdate struct {
 	Identities       []WITIdentity

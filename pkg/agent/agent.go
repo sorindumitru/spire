@@ -468,6 +468,8 @@ func (a *Agent) newManager(ctx context.Context, sto storage.Storage, cat catalog
 		UseSyncAuthorizedEntries: a.c.UseSyncAuthorizedEntries,
 		X509SVIDCacheMaxSize:     a.c.X509SVIDCacheMaxSize,
 		JWTSVIDCacheMaxSize:      a.c.JWTSVIDCacheMaxSize,
+		WITSVIDCacheMaxSize:      a.c.WITSVIDCacheMaxSize,
+		EnableWITSVIDs:           a.c.EnableWITSVIDs,
 		SVIDStoreCache:           cache,
 		NodeAttestor:             na,
 		RotationStrategy:         rotationutil.NewRotationStrategy(a.c.AvailabilityTarget),
