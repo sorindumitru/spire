@@ -1,0 +1,255 @@
+name: spire-telemetry
+
+x-spire-server-image: &spire-server-image ${SPIRE_SERVER_IMAGE:-spire-server:latest-local}
+x-spire-agent-image: &spire-agent-image ${SPIRE_AGENT_IMAGE:-spire-agent:latest-local}
+
+services:
+  spire-server:
+    image: *spire-server-image
+    hostname: spire-server
+    command: ["-config", "/etc/spire/server/server.conf"]
+    configs:
+      - source: spire-server
+        target: /etc/spire/server/server.conf
+    volumes:
+      - server-data:/var/lib/spire/server
+      - server-socket:/run/spire/server/private
+    healthcheck:
+      test:
+        - CMD
+        - /opt/spire/bin/spire-server
+        - healthcheck
+        - -socketPath
+        - /run/spire/server/private/api.sock
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  agent-token:
+    build:
+      context: .
+      args:
+        SPIRE_SERVER_IMAGE: *spire-server-image
+      dockerfile_inline: |
+        ARG SPIRE_SERVER_IMAGE=spire-server:latest-local
+        FROM $${SPIRE_SERVER_IMAGE} AS spire
+        FROM alpine:3.23
+        COPY --from=spire /opt/spire/bin/spire-server /opt/spire/bin/spire-server
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        attempts=0
+        until /opt/spire/bin/spire-server healthcheck \
+          -socketPath /run/spire/server/private/api.sock >/dev/null 2>&1; do
+          attempts=$$((attempts + 1))
+          if [ "$$attempts" -ge 60 ]; then
+            echo "SPIRE Server did not become healthy" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        token_output="$$(/opt/spire/bin/spire-server token generate \
+          -socketPath /run/spire/server/private/api.sock \
+          -ttl 3600)"
+        printf '%s\n' "$$token_output" | sed -n 's/^Token: //p' > /run/spire/join-token/token
+        test -s /run/spire/join-token/token
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - server-socket:/run/spire/server/private
+      - join-token:/run/spire/join-token
+    restart: "no"
+
+  spire-agent:
+    image: *spire-agent-image
+    hostname: spire-agent
+    command: ["-config", "/etc/spire/agent/agent.conf"]
+    configs:
+      - source: spire-agent
+        target: /etc/spire/agent/agent.conf
+    depends_on:
+      agent-token:
+        condition: service_completed_successfully
+    volumes:
+      - agent-data:/var/lib/spire/agent
+      - agent-socket:/run/spire/agent/public
+      - join-token:/run/spire/join-token:ro
+    healthcheck:
+      test:
+        - CMD
+        - /opt/spire/bin/spire-agent
+        - healthcheck
+        - -socketPath
+        - /run/spire/agent/public/api.sock
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    configs:
+      - source: prometheus
+        target: /etc/prometheus/prometheus.yml
+    depends_on:
+      spire-server:
+        condition: service_healthy
+      spire-agent:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/spire.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    configs:
+      - source: grafana-datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yaml
+      - source: grafana-dashboard-provider
+        target: /etc/grafana/provisioning/dashboards/spire.yaml
+    depends_on:
+      prometheus:
+        condition: service_started
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./spire_grafana_dashboard.json:/var/lib/grafana/dashboards/spire.json:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+configs:
+  spire-server:
+    content: |
+      server {
+          bind_address = "0.0.0.0"
+          bind_port = "8081"
+          socket_path = "/run/spire/server/private/api.sock"
+          trust_domain = "example.org"
+          data_dir = "/var/lib/spire/server/data"
+          log_level = "INFO"
+      }
+
+      plugins {
+          DataStore "sql" {
+              plugin_data {
+                  database_type = "sqlite3"
+                  connection_string = "/var/lib/spire/server/data/datastore.sqlite3"
+              }
+          }
+          NodeAttestor "join_token" {
+              plugin_data {}
+          }
+          KeyManager "disk" {
+              plugin_data {
+                  keys_path = "/var/lib/spire/server/data/keys.json"
+              }
+          }
+      }
+
+      telemetry {
+          Prometheus {
+              host = "0.0.0.0"
+              port = 9988
+          }
+          EnableTrustDomainLabel = true
+          EnableHostnameLabel = true
+      }
+
+  spire-agent:
+    content: |
+      agent {
+          data_dir = "/var/lib/spire/agent/data"
+          log_level = "INFO"
+          server_address = "spire-server"
+          server_port = "8081"
+          socket_path = "/run/spire/agent/public/api.sock"
+          trust_domain = "example.org"
+          insecure_bootstrap = true
+          join_token_file = "/run/spire/join-token/token"
+      }
+
+      plugins {
+          NodeAttestor "join_token" {
+              plugin_data {}
+          }
+          KeyManager "disk" {
+              plugin_data {
+                  directory = "/var/lib/spire/agent/data"
+              }
+          }
+          WorkloadAttestor "unix" {
+              plugin_data {}
+          }
+      }
+
+      telemetry {
+          Prometheus {
+              host = "0.0.0.0"
+              port = 9989
+          }
+          EnableTrustDomainLabel = true
+          EnableHostnameLabel = true
+      }
+
+  prometheus:
+    content: |
+      global:
+        scrape_interval: 5s
+        evaluation_interval: 5s
+
+      scrape_configs:
+        - job_name: spire-server
+          static_configs:
+            - targets: ["spire-server:9988"]
+        - job_name: spire-agent
+          static_configs:
+            - targets: ["spire-agent:9989"]
+
+  grafana-datasource:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          uid: uid_prometheus_grafana_datasource
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+          editable: true
+
+  grafana-dashboard-provider:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: SPIRE
+          type: file
+          allowUiUpdates: true
+          updateIntervalSeconds: 10
+          options:
+            path: /var/lib/grafana/dashboards
+
+volumes:
+  server-data:
+  server-socket:
+  agent-data:
+  agent-socket:
+  join-token:
+  prometheus-data:
+  grafana-data:
