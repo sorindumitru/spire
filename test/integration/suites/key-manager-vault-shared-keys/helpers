@@ -1,0 +1,56 @@
+#!/bin/bash
+
+source init-kubectl
+
+spire-server-pods() {
+    ./bin/kubectl get pods -n spire -l app=spire-server -o name
+}
+
+spire-server-exec() {
+    local pod=$1
+    shift
+    ./bin/kubectl exec -n spire "${pod}" -- /opt/spire/bin/spire-server "$@"
+}
+
+active-x509-authority() {
+    spire-server-exec "$1" localauthority x509 show -output json | jq -r '.active.authority_id // empty'
+}
+
+active-jwt-authority() {
+    spire-server-exec "$1" localauthority jwt show -output json | jq -r '.active.authority_id // empty'
+}
+
+bundle-key-count() {
+    local pod=$1
+    local use=$2
+    spire-server-exec "${pod}" bundle show -format spiffe | jq "[.keys[] | select(.use == \"${use}\")] | length"
+}
+
+# Counts Vault transit keys created for the given SPIRE key ID prefix
+# (e.g. x509-CA-pool-1-).
+vault-key-count() {
+    ./bin/kubectl exec -n vault vault-0 -- vault list -format=json transit/keys \
+        | jq "[.[] | select(test(\"^spire-shared-.*-$1\"))] | length"
+}
+
+prepared-x509-authority() {
+    spire-server-exec "$1" localauthority x509 show -output json | jq -r '.prepared.authority_id // empty'
+}
+
+# Prints the active X509 authority ID if every replica reports the same,
+# non-empty active X509 and JWT authorities; fails otherwise.
+same-active-authorities() {
+    local x509_ids jwt_ids
+    x509_ids=$(for pod in $(spire-server-pods); do active-x509-authority "${pod}"; done)
+    jwt_ids=$(for pod in $(spire-server-pods); do active-jwt-authority "${pod}"; done)
+
+    log-debug "active X509 authorities: ${x509_ids//$'\n'/ }" >&2
+    log-debug "active JWT authorities: ${jwt_ids//$'\n'/ }" >&2
+
+    [ "$(echo "${x509_ids}" | grep -c .)" -eq 2 ] || return 1
+    [ "$(echo "${x509_ids}" | sort -u | grep -c .)" -eq 1 ] || return 1
+    [ "$(echo "${jwt_ids}" | grep -c .)" -eq 2 ] || return 1
+    [ "$(echo "${jwt_ids}" | sort -u | grep -c .)" -eq 1 ] || return 1
+
+    echo "${x509_ids}" | head -n1
+}

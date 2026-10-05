@@ -846,6 +846,14 @@ func (f *fakeCAManager) IsJWTSVIDsDisabled() bool {
 	return f.disableJWTSVIDs
 }
 
+func (f *fakeCAManager) IsPoolMode() bool {
+	return false
+}
+
+func (f *fakeCAManager) SyncFromJournal(context.Context) error {
+	return nil
+}
+
 type fakeSlot struct {
 	manager.Slot
 

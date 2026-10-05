@@ -1,0 +1,24 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+source helpers
+
+./bin/kubectl create secret -n spire generic vault-tls \
+              --from-file=vault_ca.pem=vault_ca.pem
+
+# Start a single replica first so it creates the shared keys and journal, then
+# scale out. The second replica must reuse them instead of minting its own.
+log-info "deploying first spire-server replica..."
+./bin/kubectl apply -f ./conf/spire-server.yaml
+./bin/kubectl rollout status deployment -n spire spire-server --timeout=90s
+
+log-info "scaling spire-server to 2 replicas..."
+./bin/kubectl scale deployment -n spire spire-server --replicas=2
+./bin/kubectl rollout status deployment -n spire spire-server --timeout=90s
+./bin/kubectl wait pods -n spire -l app=spire-server --for=condition=Ready --timeout=90s
+
+for pod in $(spire-server-pods); do
+    ./bin/kubectl logs -n spire "${pod}" | grep -q 'Assigned to shared key pool slot.*pool_slot=1' \
+        || fail-now "${pod} was not assigned to pool slot 1"
+done

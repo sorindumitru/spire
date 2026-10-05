@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: spire
+
+---
+
+# ConfigMap containing the SPIRE server configuration. All replicas share the
+# same datastore and Vault key identifier, and use a single key pool slot so
+# they must all end up with the same keys.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server
+  namespace: spire
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      trust_domain = "example.org"
+      data_dir = "/run/spire/data"
+      log_level = "DEBUG"
+      ca_key_slots = 1
+      ca_subject {
+        country = ["US"]
+        organization = ["SPIFFE"]
+        common_name = ""
+      }
+    }
+
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "postgres"
+          connection_string = "dbname=spire user=spire password=spire host=postgres.spire.svc port=5432 sslmode=disable"
+        }
+      }
+
+      NodeAttestor "join_token" {
+        plugin_data {}
+      }
+
+      KeyManager "hashicorp_vault" {
+        plugin_data {
+          vault_addr = "https://vault.vault.svc:8200/"
+          ca_cert_path = "/run/spire/vault/vault_ca.pem"
+          key_identifier_value = "spire-shared"
+          k8s_auth {
+            k8s_auth_role_name = "my-role"
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+          }
+        }
+      }
+    }
+
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app: spire-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spire-server
+  template:
+    metadata:
+      namespace: spire
+      labels:
+        app: spire-server
+    spec:
+      serviceAccountName: spire-server
+      containers:
+        - name: spire-server
+          image: spire-server:latest-local
+          imagePullPolicy: Never
+          args: ["-config", "/run/spire/config/server.conf"]
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+            - name: vault-tls
+              mountPath: /run/spire/vault
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-server
+        # Per-replica scratch space; all shared state lives in Postgres and Vault.
+        - name: spire-data
+          emptyDir: {}
+        - name: vault-tls
+          secret:
+            secretName: vault-tls

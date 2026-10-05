@@ -311,6 +311,18 @@ func (w metricsWrapper) FetchCAJournal(ctx context.Context, activeX509AuthorityI
 	return w.ds.FetchCAJournal(ctx, activeX509AuthorityID)
 }
 
+func (w metricsWrapper) FetchCAJournalByID(ctx context.Context, id uint) (_ *datastore.CAJournal, err error) {
+	callCounter := StartFetchCAJournal(w.m)
+	defer callCounter.Done(&err)
+	return w.ds.FetchCAJournalByID(ctx, id)
+}
+
+func (w metricsWrapper) WithCAJournalTx(ctx context.Context, caJournalID uint, fn func(caJournal *datastore.CAJournal) (*datastore.CAJournal, error)) (err error) {
+	callCounter := StartSetCAJournal(w.m)
+	defer callCounter.Done(&err)
+	return w.ds.WithCAJournalTx(ctx, caJournalID, fn)
+}
+
 func (w metricsWrapper) PruneCAJournals(ctx context.Context, allCAsExpireBefore int64) (err error) {
 	callCounter := StartPruneCAJournalsCall(w.m)
 	defer callCounter.Done(&err)

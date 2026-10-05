@@ -54,6 +54,7 @@ type SlotLoader struct {
 	Dir            string
 	Catalog        catalog.Catalog
 	UpstreamClient *ca.UpstreamClient
+	PoolSlotNum    int
 }
 
 func (s *SlotLoader) load(ctx context.Context) (*Journal, map[SlotPosition]Slot, error) {
@@ -187,15 +188,15 @@ func (s *SlotLoader) getX509CASlots(ctx context.Context, entries []*journal.X509
 	case current != nil:
 		// current is set, complete next if required
 		if next == nil {
-			next = newX509CASlot(otherSlotID(current.id))
+			next = newX509CASlot(otherSlotID(current.id), s.PoolSlotNum)
 		}
 	case next != nil:
 		// next is set but not current. swap them and initialize next with an empty slot.
-		current, next = next, newX509CASlot(otherSlotID(next.id))
+		current, next = next, newX509CASlot(otherSlotID(next.id), s.PoolSlotNum)
 	default:
 		// neither are set. initialize them with empty slots.
-		current = newX509CASlot("A")
-		next = newX509CASlot("B")
+		current = newX509CASlot("A", s.PoolSlotNum)
+		next = newX509CASlot("B", s.PoolSlotNum)
 	}
 
 	return current, next, migratedExpirations, nil
@@ -249,15 +250,15 @@ func (s *SlotLoader) getJWTKeysSlots(ctx context.Context, entries []*journal.JWT
 	case current != nil:
 		// current is set, complete next if required
 		if next == nil {
-			next = newJWTKeySlot(otherSlotID(current.id))
+			next = newJWTKeySlot(otherSlotID(current.id), s.PoolSlotNum)
 		}
 	case next != nil:
 		// next is set but not current. swap them and initialize next with an empty slot.
-		current, next = next, newJWTKeySlot(otherSlotID(next.id))
+		current, next = next, newJWTKeySlot(otherSlotID(next.id), s.PoolSlotNum)
 	default:
 		// neither are set. initialize them with empty slots.
-		current = newJWTKeySlot("A")
-		next = newJWTKeySlot("B")
+		current = newJWTKeySlot("A", s.PoolSlotNum)
+		next = newJWTKeySlot("B", s.PoolSlotNum)
 	}
 
 	return current, next, nil
@@ -311,15 +312,15 @@ func (s *SlotLoader) getWITKeysSlots(ctx context.Context, entries []*journal.WIT
 	case current != nil:
 		// current is set, complete next if required
 		if next == nil {
-			next = newWITKeySlot(otherSlotID(current.id))
+			next = newWITKeySlot(otherSlotID(current.id), s.PoolSlotNum)
 		}
 	case next != nil:
 		// next is set but not current. swap them and initialize next with an empty slot.
-		current, next = next, newWITKeySlot(otherSlotID(next.id))
+		current, next = next, newWITKeySlot(otherSlotID(next.id), s.PoolSlotNum)
 	default:
 		// neither are set. initialize them with empty slots.
-		current = newWITKeySlot("A")
-		next = newWITKeySlot("B")
+		current = newWITKeySlot("A", s.PoolSlotNum)
+		next = newWITKeySlot("B", s.PoolSlotNum)
 	}
 
 	return current, next, nil
@@ -453,7 +454,7 @@ func (s *SlotLoader) loadX509CASlotFromEntry(ctx context.Context, entry *journal
 		return nil, "slot expired", nil
 	}
 
-	signer, err := s.makeSigner(ctx, x509CAKmKeyID(entry.SlotId))
+	signer, err := s.makeSigner(ctx, x509CAKmKeyID(entry.SlotId, s.PoolSlotNum))
 	if err != nil {
 		return nil, "", err
 	}
@@ -481,6 +482,7 @@ func (s *SlotLoader) loadX509CASlotFromEntry(ctx context.Context, entry *journal
 		upstreamAuthorityID: entry.UpstreamAuthorityId,
 		publicKey:           signer.Public(),
 		notAfter:            notAfter,
+		poolSlotNum:         s.PoolSlotNum,
 	}, "", nil
 }
 
@@ -564,7 +566,7 @@ func (s *SlotLoader) loadJWTKeySlotFromEntry(ctx context.Context, entry *journal
 		return nil, "", err
 	}
 
-	signer, err := s.makeSigner(ctx, jwtKeyKmKeyID(entry.SlotId))
+	signer, err := s.makeSigner(ctx, jwtKeyKmKeyID(entry.SlotId, s.PoolSlotNum))
 	if err != nil {
 		return nil, "", err
 	}
@@ -587,6 +589,7 @@ func (s *SlotLoader) loadJWTKeySlotFromEntry(ctx context.Context, entry *journal
 		status:      entry.Status,
 		authorityID: entry.AuthorityId,
 		notAfter:    time.Unix(entry.NotAfter, 0),
+		poolSlotNum: s.PoolSlotNum,
 	}, "", nil
 }
 
@@ -627,7 +630,7 @@ func (s *SlotLoader) loadWITKeySlotFromEntry(ctx context.Context, entry *journal
 		return nil, "", err
 	}
 
-	signer, err := s.makeSigner(ctx, witKeyKmKeyID(entry.SlotId))
+	signer, err := s.makeSigner(ctx, witKeyKmKeyID(entry.SlotId, s.PoolSlotNum))
 	if err != nil {
 		return nil, "", err
 	}
@@ -650,6 +653,7 @@ func (s *SlotLoader) loadWITKeySlotFromEntry(ctx context.Context, entry *journal
 		status:      entry.Status,
 		authorityID: entry.AuthorityId,
 		notAfter:    time.Unix(entry.NotAfter, 0),
+		poolSlotNum: s.PoolSlotNum,
 	}, "", nil
 }
 
@@ -667,15 +671,24 @@ func (s *SlotLoader) makeSigner(ctx context.Context, keyID string) (crypto.Signe
 	}
 }
 
-func x509CAKmKeyID(id string) string {
+func x509CAKmKeyID(id string, poolSlotNum int) string {
+	if poolSlotNum > 0 {
+		return fmt.Sprintf("x509-CA-pool-%d-%s", poolSlotNum, id)
+	}
 	return fmt.Sprintf("x509-CA-%s", id)
 }
 
-func jwtKeyKmKeyID(id string) string {
+func jwtKeyKmKeyID(id string, poolSlotNum int) string {
+	if poolSlotNum > 0 {
+		return fmt.Sprintf("JWT-Signer-pool-%d-%s", poolSlotNum, id)
+	}
 	return fmt.Sprintf("JWT-Signer-%s", id)
 }
 
-func witKeyKmKeyID(id string) string {
+func witKeyKmKeyID(id string, poolSlotNum int) string {
+	if poolSlotNum > 0 {
+		return fmt.Sprintf("WIT-Signer-pool-%d-%s", poolSlotNum, id)
+	}
 	return fmt.Sprintf("WIT-Signer-%s", id)
 }
 
@@ -734,11 +747,13 @@ type x509CASlot struct {
 	publicKey           crypto.PublicKey
 	notAfter            time.Time
 	upstreamAuthorityID string
+	poolSlotNum         int
 }
 
-func newX509CASlot(id string) *x509CASlot {
+func newX509CASlot(id string, poolSlotNum int) *x509CASlot {
 	return &x509CASlot{
-		id: id,
+		id:          id,
+		poolSlotNum: poolSlotNum,
 	}
 }
 
@@ -747,7 +762,7 @@ func (s *x509CASlot) UpstreamAuthorityID() string {
 }
 
 func (s *x509CASlot) KmKeyID() string {
-	return x509CAKmKeyID(s.id)
+	return x509CAKmKeyID(s.id, s.poolSlotNum)
 }
 
 func (s *x509CASlot) IsEmpty() bool {
@@ -794,16 +809,18 @@ type jwtKeySlot struct {
 	status      journal.Status
 	authorityID string
 	notAfter    time.Time
+	poolSlotNum int
 }
 
-func newJWTKeySlot(id string) *jwtKeySlot {
+func newJWTKeySlot(id string, poolSlotNum int) *jwtKeySlot {
 	return &jwtKeySlot{
-		id: id,
+		id:          id,
+		poolSlotNum: poolSlotNum,
 	}
 }
 
 func (s *jwtKeySlot) KmKeyID() string {
-	return jwtKeyKmKeyID(s.id)
+	return jwtKeyKmKeyID(s.id, s.poolSlotNum)
 }
 
 func (s *jwtKeySlot) Status() journal.Status {
@@ -853,16 +870,18 @@ type witKeySlot struct {
 	status      journal.Status
 	authorityID string
 	notAfter    time.Time
+	poolSlotNum int
 }
 
-func newWITKeySlot(id string) *witKeySlot {
+func newWITKeySlot(id string, poolSlotNum int) *witKeySlot {
 	return &witKeySlot{
-		id: id,
+		id:          id,
+		poolSlotNum: poolSlotNum,
 	}
 }
 
 func (s *witKeySlot) KmKeyID() string {
-	return witKeyKmKeyID(s.id)
+	return witKeyKmKeyID(s.id, s.poolSlotNum)
 }
 
 func (s *witKeySlot) Status() journal.Status {

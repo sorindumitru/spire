@@ -55,6 +55,24 @@ func (j *Journal) getEntries() *journal.Entries {
 	return proto.Clone(j.entries).(*journal.Entries)
 }
 
+func (j *Journal) getCAJournalID() uint {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.caJournalID
+}
+
+func (j *Journal) getActiveX509AuthorityID() string {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.activeX509AuthorityID
+}
+
+func (j *Journal) setActiveX509AuthorityID(id string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.activeX509AuthorityID = id
+}
+
 func (j *Journal) AppendX509CA(ctx context.Context, slotID string, issuedAt time.Time, x509CA *ca.X509CA) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()

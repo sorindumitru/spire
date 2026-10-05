@@ -56,7 +56,7 @@ func (t *windowsTracker) newWindowsWatcher(info CallerInfo, log logrus.FieldLogg
 	// keeping the process ID valid, so this is the first thing that we do.
 	procHandle, err := t.sc.OpenProcess(info.PID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not open process: %w", err)
 	}
 
 	// Find out if the PID is a well known PID that we don't

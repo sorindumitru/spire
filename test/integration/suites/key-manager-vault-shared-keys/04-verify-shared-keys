@@ -1,0 +1,38 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+source helpers
+
+log-info "verifying replicas share signing keys..."
+
+# Replicas may need a journal sync interval to converge.
+for ((i=1; i<=12; i++)); do
+    if X509_ID=$(same-active-authorities); then
+        break
+    fi
+    [ "$i" -eq 12 ] && fail-now "replicas did not converge on the same active authorities"
+    sleep 5
+done
+log-info "replicas share active X509 authority ${X509_ID}"
+
+for pod in $(spire-server-pods); do
+    x509_count=$(bundle-key-count "${pod}" x509-svid)
+    jwt_count=$(bundle-key-count "${pod}" jwt-svid)
+    log-debug "${pod} bundle: ${x509_count} X509 authorities, ${jwt_count} JWT authorities"
+    [ "${x509_count}" -eq 1 ] || fail-now "${pod}: expected 1 X509 authority in bundle, got ${x509_count}"
+    [ "${jwt_count}" -eq 1 ] || fail-now "${pod}: expected 1 JWT authority in bundle, got ${jwt_count}"
+done
+
+for prefix in x509-CA-pool-1- JWT-Signer-pool-1-; do
+    count=$(vault-key-count "${prefix}")
+    log-debug "vault has ${count} ${prefix}* keys"
+    [ "${count}" -eq 1 ] || fail-now "expected 1 ${prefix}* key in vault, got ${count}"
+done
+
+for prefix in x509-CA- JWT-Signer-; do
+    count=$(./bin/kubectl exec -n vault vault-0 -- vault list -format=json transit/keys \
+        | jq "[.[] | select(test(\"-${prefix}[AB]$\"))] | length")
+    [ "${count}" -eq 0 ] || fail-now "found ${count} non-pool ${prefix}* keys in vault"
+done
+

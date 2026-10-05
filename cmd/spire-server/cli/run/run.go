@@ -73,6 +73,7 @@ type serverConfig struct {
 	AuditLogExcludeAgentSync     bool                 `hcl:"audit_log_exclude_agent_sync"`
 	BindAddress                  string               `hcl:"bind_address"`
 	BindPort                     int                  `hcl:"bind_port"`
+	CAKeySlots                   int                  `hcl:"ca_key_slots"`
 	CAKeyType                    string               `hcl:"ca_key_type"`
 	CASubject                    *caSubjectConfig     `hcl:"ca_subject"`
 	CATTL                        string               `hcl:"ca_ttl"`
@@ -692,6 +693,11 @@ func newServerConfig(c *Config, logOptions []log.Option, allowUnknownConfig, ski
 			sc.Log.Warn(message)
 		}
 	}
+
+	if c.Server.CAKeySlots < 0 {
+		return nil, fmt.Errorf("ca_key_slots must be >= 0")
+	}
+	sc.CAKeySlots = c.Server.CAKeySlots
 
 	if c.Server.CAKeyType != "" {
 		keyType, err := keymanager.KeyTypeFromString(c.Server.CAKeyType)
