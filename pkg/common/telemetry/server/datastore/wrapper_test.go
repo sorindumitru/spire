@@ -230,6 +230,14 @@ func TestWithMetrics(t *testing.T) {
 			methodName: "FetchCAJournal",
 		},
 		{
+			key:        "datastore.ca_journal.fetch",
+			methodName: "FetchCAJournalByID",
+		},
+		{
+			key:        "datastore.ca_journal.set",
+			methodName: "WithCAJournalTx",
+		},
+		{
 			key:        "datastore.ca_journal.prune",
 			methodName: "PruneCAJournals",
 		},
@@ -502,6 +510,19 @@ func (ds *fakeDataStore) SetCAJournal(context.Context, *datastore.CAJournal) (*d
 
 func (ds *fakeDataStore) FetchCAJournal(context.Context, string) (*datastore.CAJournal, error) {
 	return &datastore.CAJournal{}, ds.err
+}
+
+func (ds *fakeDataStore) FetchCAJournalByID(context.Context, uint) (*datastore.CAJournal, error) {
+	return &datastore.CAJournal{}, ds.err
+}
+
+func (ds *fakeDataStore) WithCAJournalTx(_ context.Context, _ uint, fn func(*datastore.CAJournal) (*datastore.CAJournal, error)) error {
+	if fn != nil {
+		if _, err := fn(&datastore.CAJournal{}); err != nil {
+			return err
+		}
+	}
+	return ds.err
 }
 
 func (ds *fakeDataStore) PruneCAJournals(context.Context, int64) error {

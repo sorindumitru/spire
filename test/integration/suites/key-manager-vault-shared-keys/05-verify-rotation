@@ -1,0 +1,53 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+source helpers
+
+read -r -a PODS <<< "$(spire-server-pods | tr '\n' ' ')"
+[ "${#PODS[@]}" -eq 2 ] || fail-now "expected 2 spire-server pods, got ${#PODS[@]}"
+FIRST=${PODS[0]}
+SECOND=${PODS[1]}
+
+BEFORE=$(active-x509-authority "${FIRST}")
+
+# Rotation is driven through one replica; the other must pick it up from the
+# shared journal and load the key from Vault.
+log-info "preparing X509 authority on ${FIRST}..."
+spire-server-exec "${FIRST}" localauthority x509 prepare
+PREPARED=$(prepared-x509-authority "${FIRST}")
+[ -n "${PREPARED}" ] || fail-now "${FIRST} has no prepared X509 authority"
+
+log-info "waiting for ${SECOND} to sync prepared authority ${PREPARED}..."
+for ((i=1; i<=12; i++)); do
+    [ "$(prepared-x509-authority "${SECOND}")" == "${PREPARED}" ] && break
+    [ "$i" -eq 12 ] && fail-now "${SECOND} did not sync prepared X509 authority ${PREPARED}"
+    sleep 5
+done
+
+log-info "activating X509 authority ${PREPARED} on ${FIRST}..."
+spire-server-exec "${FIRST}" localauthority x509 activate -authorityID "${PREPARED}"
+
+log-info "waiting for ${SECOND} to sync activated authority..."
+for ((i=1; i<=12; i++)); do
+    if AFTER=$(same-active-authorities) && [ "${AFTER}" == "${PREPARED}" ]; then
+        break
+    fi
+    [ "$i" -eq 12 ] && fail-now "replicas did not converge on activated X509 authority ${PREPARED}"
+    sleep 5
+done
+[ "${AFTER}" != "${BEFORE}" ] || fail-now "active X509 authority did not change"
+log-info "replicas rotated from ${BEFORE} to ${AFTER}"
+
+count=$(vault-key-count x509-CA-pool-1-)
+log-debug "vault has ${count} x509-CA-pool-1-* keys"
+[ "${count}" -eq 2 ] || fail-now "expected 2 x509-CA-pool-1-* keys in vault, got ${count}"
+
+for pod in "${PODS[@]}"; do
+    x509_count=$(bundle-key-count "${pod}" x509-svid)
+    log-debug "${pod} bundle: ${x509_count} X509 authorities"
+    [ "${x509_count}" -eq 2 ] || fail-now "${pod}: expected 2 X509 authorities in bundle, got ${x509_count}"
+
+    spire-server-exec "${pod}" x509 mint -spiffeID spiffe://example.org/shared-keys-test > /dev/null \
+        || fail-now "${pod} failed to mint an X509-SVID after rotation"
+done

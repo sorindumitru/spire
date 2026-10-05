@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+source init-kubectl
+
+log-info "deploying postgres..."
+./bin/kubectl create namespace spire
+./bin/kubectl apply -f ./conf/postgres.yaml
+./bin/kubectl rollout status deployment -n spire postgres --timeout=120s

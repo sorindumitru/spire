@@ -1,0 +1,10 @@
+#!/bin/bash
+
+source init-kubectl
+
+if [ -z "$SUCCESS" ]; then
+   ./bin/kubectl -nspire logs -l app=spire-server --all-containers --prefix --tail=-1 || true
+fi
+
+export KUBECONFIG=
+./bin/kind delete cluster --name vault-shared-keys

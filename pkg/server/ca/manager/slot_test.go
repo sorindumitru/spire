@@ -165,7 +165,7 @@ func TestLegacyX509CAExpiryMigration(t *testing.T) {
 		testca.WithLifetime(now.Add(-time.Minute), now.Add(2*time.Hour)),
 		testca.WithKeyUsage(x509.KeyUsageCertSign|x509.KeyUsageCRLSign),
 	)
-	localKey, err := km.GenerateKey(ctx, x509CAKmKeyID("A"), keymanager.ECP256)
+	localKey, err := km.GenerateKey(ctx, x509CAKmKeyID("A", 0), keymanager.ECP256)
 	require.NoError(t, err)
 	localTemplate.SubjectKeyId, err = x509util.GetSubjectKeyID(localKey.Public())
 	require.NoError(t, err)
@@ -422,8 +422,8 @@ func TestJournalLoad(t *testing.T) {
 				NextX509CASlot:    &x509CASlot{id: "B"},
 				CurrentJWTKeySlot: &jwtKeySlot{id: "A"},
 				NextJWTKeySlot:    &jwtKeySlot{id: "B"},
-				CurrentWITKeySlot: newWITKeySlot("A"),
-				NextWITKeySlot:    newWITKeySlot("B"),
+				CurrentWITKeySlot: newWITKeySlot("A", 0),
+				NextWITKeySlot:    newWITKeySlot("B", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
@@ -510,7 +510,7 @@ func TestJournalLoad(t *testing.T) {
 					authorityID: "",
 					notAfter:    notAfter,
 				},
-				NextWITKeySlot: newWITKeySlot("A"),
+				NextWITKeySlot: newWITKeySlot("A", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
@@ -604,7 +604,7 @@ func TestJournalLoad(t *testing.T) {
 					authorityID: "a",
 					notAfter:    notAfter,
 				},
-				NextWITKeySlot: newWITKeySlot("B"),
+				NextWITKeySlot: newWITKeySlot("B", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
@@ -1029,12 +1029,12 @@ func TestJournalLoad(t *testing.T) {
 				},
 			},
 			expectSlots: map[SlotPosition]Slot{
-				CurrentX509CASlot: newX509CASlot("A"),
-				NextX509CASlot:    newX509CASlot("B"),
-				CurrentJWTKeySlot: newJWTKeySlot("A"),
-				NextJWTKeySlot:    newJWTKeySlot("B"),
-				CurrentWITKeySlot: newWITKeySlot("A"),
-				NextWITKeySlot:    newWITKeySlot("B"),
+				CurrentX509CASlot: newX509CASlot("A", 0),
+				NextX509CASlot:    newX509CASlot("B", 0),
+				CurrentJWTKeySlot: newJWTKeySlot("A", 0),
+				NextJWTKeySlot:    newJWTKeySlot("B", 0),
+				CurrentWITKeySlot: newWITKeySlot("A", 0),
+				NextWITKeySlot:    newWITKeySlot("B", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
@@ -1115,12 +1115,12 @@ func TestJournalLoad(t *testing.T) {
 				},
 			},
 			expectSlots: map[SlotPosition]Slot{
-				CurrentX509CASlot: newX509CASlot("A"),
-				NextX509CASlot:    newX509CASlot("B"),
-				CurrentJWTKeySlot: newJWTKeySlot("A"),
-				NextJWTKeySlot:    newJWTKeySlot("B"),
-				CurrentWITKeySlot: newWITKeySlot("A"),
-				NextWITKeySlot:    newWITKeySlot("B"),
+				CurrentX509CASlot: newX509CASlot("A", 0),
+				NextX509CASlot:    newX509CASlot("B", 0),
+				CurrentJWTKeySlot: newJWTKeySlot("A", 0),
+				NextJWTKeySlot:    newJWTKeySlot("B", 0),
+				CurrentWITKeySlot: newWITKeySlot("A", 0),
+				NextWITKeySlot:    newWITKeySlot("B", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
@@ -1200,12 +1200,12 @@ func TestJournalLoad(t *testing.T) {
 				},
 			},
 			expectSlots: map[SlotPosition]Slot{
-				CurrentX509CASlot: newX509CASlot("A"),
-				NextX509CASlot:    newX509CASlot("B"),
-				CurrentJWTKeySlot: newJWTKeySlot("A"),
-				NextJWTKeySlot:    newJWTKeySlot("B"),
-				CurrentWITKeySlot: newWITKeySlot("A"),
-				NextWITKeySlot:    newWITKeySlot("B"),
+				CurrentX509CASlot: newX509CASlot("A", 0),
+				NextX509CASlot:    newX509CASlot("B", 0),
+				CurrentJWTKeySlot: newJWTKeySlot("A", 0),
+				NextJWTKeySlot:    newJWTKeySlot("B", 0),
+				CurrentWITKeySlot: newWITKeySlot("A", 0),
+				NextWITKeySlot:    newWITKeySlot("B", 0),
 			},
 			expectLogs: []spiretest.LogEntry{
 				{
