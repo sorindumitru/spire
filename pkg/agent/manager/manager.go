@@ -216,11 +216,11 @@ func (m *manager) Initialize(ctx context.Context) error {
 		}
 	}
 	if nodeutil.ShouldAgentReattest(err) {
-		m.c.Log.WithError(err).Error("Agent needs to re-attest: removing SVID and shutting down")
+		m.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.ReattestationFailedAlertReason)).WithError(err).Error("Agent needs to re-attest: removing SVID and shutting down")
 		m.deleteSVID()
 	}
 	if nodeutil.ShouldAgentShutdown(err) {
-		m.c.Log.WithError(err).Error("Agent is banned: removing SVID and shutting down")
+		m.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.BannedAlertReason)).WithError(err).Error("Agent is banned: removing SVID and shutting down")
 		m.deleteSVID()
 	}
 	return err
@@ -250,12 +250,12 @@ func (m *manager) Run(ctx context.Context) error {
 			m.c.Log.WithError(err).Warn("Agent needs to re-attest; will attempt to re-attest")
 			reattestError := m.svid.Reattest(ctx)
 			if reattestError != nil {
-				m.c.Log.WithError(reattestError).Error("Agent failed re-attestation; removing SVID and shutting down")
+				m.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.ReattestationFailedAlertReason)).WithError(reattestError).Error("Agent failed re-attestation; removing SVID and shutting down")
 				m.deleteSVID()
 				return err
 			}
 		case nodeutil.ShouldAgentShutdown(err):
-			m.c.Log.WithError(err).Warn("Agent is banned: removing SVID and shutting down")
+			m.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.BannedAlertReason)).WithError(err).Error("Agent is banned: removing SVID and shutting down")
 			m.deleteSVID()
 			return err
 		default:
@@ -390,7 +390,7 @@ func (m *manager) runSynchronizer(ctx context.Context) error {
 			if seconds < m.c.RebootstrapDelay {
 				m.c.Log.WithField("time_left", m.c.RebootstrapDelay-seconds).Info("Trust Bundle and Server don't agree, ignoring for now")
 			} else {
-				m.c.Log.Warn("Trust Bundle and Server don't agree, rebootstrapping")
+				m.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.RebootstrapAlertReason)).Warn("Trust Bundle and Server don't agree, rebootstrapping")
 				err = m.c.TrustBundleSources.SetForceRebootstrap()
 				if err != nil {
 					return err
@@ -515,7 +515,7 @@ func (m *manager) runBundleObserver(ctx context.Context) error {
 
 func (m *manager) storeSVID(svidChain []*x509.Certificate, reattestable bool) {
 	if err := m.storage.StoreSVID(svidChain, reattestable); err != nil {
-		m.c.Log.WithError(err).Warn("Could not store SVID")
+		m.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.DurabilityRiskAlertReason)).WithError(err).Warn("Could not store SVID")
 	}
 }
 
@@ -525,7 +525,7 @@ func (m *manager) storeBundle(bundle *spiffebundle.Bundle) {
 		rootCAs = bundle.X509Authorities()
 	}
 	if err := m.storage.StoreBundle(rootCAs); err != nil {
-		m.c.Log.WithError(err).Error("Could not store bundle")
+		m.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.DurabilityRiskAlertReason)).WithError(err).Error("Could not store bundle")
 	}
 }
 

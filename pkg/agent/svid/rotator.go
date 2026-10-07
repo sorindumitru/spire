@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/andres-erbsen/clock"
 	"github.com/spiffe/go-spiffe/v2/bundle/spiffebundle"
@@ -69,6 +70,10 @@ type rotator struct {
 		runRotatorSignal chan struct{}
 	}
 	tainted bool
+
+	// TTL left on the SVID when rotation started failing; zero while rotation is healthy.
+	failingSinceTTL time.Duration
+	expiringAlerted bool
 }
 
 type State struct {
@@ -100,7 +105,7 @@ func (r *rotator) runRotation(ctx context.Context) error {
 
 		switch {
 		case err != nil && rotationutil.X509Expired(r.clk.Now(), state.SVID[0]):
-			r.c.Log.WithError(err).Errorf("Could not %s", rotationError(state))
+			r.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.SVIDExpiredAlertReason)).WithError(err).Errorf("Could not %s", rotationError(state))
 			// Since our X509 cert has expired, and we weren't able to carry out a rotation request, we're probably unrecoverable without re-attesting.
 			return fmt.Errorf("current SVID has already expired and %s failed: %w", rotationError(state), err)
 		case err != nil && nodeutil.ShouldAgentReattest(err):
@@ -111,9 +116,11 @@ func (r *rotator) runRotation(ctx context.Context) error {
 			return err
 		case err != nil:
 			// Just log the error and wait for next rotation
-			r.c.Log.WithError(err).Errorf("Could not %s", rotationError(state))
+			r.logRotationFailure(err, state)
 		default:
 			r.backoff.Reset()
+			r.failingSinceTTL = 0
+			r.expiringAlerted = false
 		}
 
 		select {
@@ -370,6 +377,21 @@ func (r *rotator) serverConn(bundle *spiffebundle.Bundle) (*grpc.ClientConn, err
 		TLSPolicy:           r.c.TLSPolicy,
 		LoadBalancingConfig: r.c.LoadBalancingConfig,
 	})
+}
+
+// logRotationFailure alerts once if half of the TTL left when rotation started failing has elapsed.
+func (r *rotator) logRotationFailure(err error, state State) {
+	log := r.c.Log.WithError(err)
+	ttl := state.SVID[0].NotAfter.Sub(r.clk.Now())
+	if r.failingSinceTTL == 0 {
+		r.failingSinceTTL = ttl
+	}
+	if !r.expiringAlerted && ttl <= r.failingSinceTTL/2 {
+		r.expiringAlerted = true
+		log = log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.SVIDExpiringAlertReason)).
+			WithField(telemetry.Expiration, state.SVID[0].NotAfter)
+	}
+	log.Errorf("Could not %s", rotationError(state))
 }
 
 func rotationError(state State) string {

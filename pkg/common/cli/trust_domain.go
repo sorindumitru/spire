@@ -5,6 +5,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire/pkg/common/telemetry"
 )
 
 // maxTrustDomainLength is the maximum length of a trust domain according
@@ -25,7 +26,8 @@ func ParseTrustDomain(trustDomain string, logger logrus.FieldLogger) (spiffeid.T
 func WarnOnLongTrustDomainName(td spiffeid.TrustDomain, logger logrus.FieldLogger) {
 	// Warn on a non-conforming trust domain to avoid breaking backwards compatibility
 	if parsedDomain := td.Name(); len(parsedDomain) > maxTrustDomainLength {
-		logger.WithField("trust_domain", parsedDomain).
+		logger.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)).
+			WithField("trust_domain", parsedDomain).
 			Warnf("Configured trust domain name should be less than %d characters to be SPIFFE compliant; "+
 				"a longer trust domain name may impact interoperability",
 				maxTrustDomainLength)

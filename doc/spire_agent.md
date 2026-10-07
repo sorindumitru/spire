@@ -352,6 +352,33 @@ SPIRE Agent, upon receipt of the signal, does the following:
 
 Please see the [Telemetry Configuration](./telemetry/telemetry_config.md) guide for more information about configuring SPIRE Agent to emit telemetry.
 
+## Alert log markers
+
+Log events that operators should act on include `alert=true`, an `alert_type` field describing the category, and, except for deprecations, an `alert_reason` field with the specific cause.
+
+| `alert_type`           | `alert_reason`         | Meaning                                                                                                                                                    |
+|------------------------|------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `agent_identity`       | `banned`               | The agent was banned; it removed its SVID and shut down.                                                                                                   |
+|                        | `reattestation_failed` | The agent needed to re-attest and could not; it removed its SVID and shut down.                                                                            |
+|                        | `svid_expired`         | The agent SVID expired before it could be rotated.                                                                                                         |
+|                        | `svid_expiring`        | Agent SVID rotation keeps failing and half of the remaining lifetime at the first failure has elapsed. Logged once until rotation succeeds.                |
+|                        | `rebootstrap`          | The trust bundle and server disagree; the agent is rebootstrapping.                                                                                        |
+| `config`               | `misconfiguration`     | A configuration setting is invalid or has no effect.                                                                                                       |
+|                        | `insecure`             | Insecure bootstrap is in use or the umask was too permissive.                                                                                              |
+|                        | `experimental`         | Experimental features or developer feature flags are enabled.                                                                                              |
+|                        | `durability_risk`      | The agent identity may not survive a restart: node attestation is not reattestable with the `memory` key manager, or persisting the SVID or bundle failed. |
+| `deprecated_config`    |                        | A deprecated configuration setting is in use. See [Deprecation Log Markers](./upgrading.md#deprecation-log-markers).                                       |
+| `deprecated_service`   |                        | A plugin uses a deprecated service. See [Deprecation Log Markers](./upgrading.md#deprecation-log-markers).                                                 |
+| `server_compatibility` | `malformed_bundle`     | The server sent a bundle the agent could not parse.                                                                                                        |
+|                        | `malformed_entry`      | The server sent a registration entry the agent could not parse.                                                                                            |
+|                        | `malformed_revision`   | The server sent an invalid registration entry revision.                                                                                                    |
+| `workload_attestation` | `attestor_failing`     | A workload attestor plugin failed several consecutive attestations. Logged once until the plugin recovers.                                                 |
+|                        | `partial_selectors`    | Some workload attestor plugins failed, so a workload was attested with only some of its selectors and may match an unexpected entry.                       |
+|                        | `anomaly`              | A workload attestor plugin detected an unexpected condition, such as two pods sharing a container ID or its Kubernetes cache stopping.                     |
+| `workload_delivery`    | `sds_rejected`         | An SDS client (e.g. Envoy) rejected secrets sent by the agent and rolled back.                                                                             |
+
+The `config` alerts for a too permissive umask and non-compliant trust domain names are also logged by SPIRE Server.
+
 ## Health check configuration
 
 The agent can expose additional endpoint that can be used for health checking. It is enabled by setting `listener_enabled = true`. Currently, it exposes 2 paths: one for liveness (is agent up) and one for readiness (is agent ready to serve requests). By default, health checking endpoint will listen on localhost:80, unless configured otherwise.

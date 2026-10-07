@@ -416,7 +416,8 @@ func processRegistryCredentials(credentials map[string]*RegistryCredential, logg
 			})
 			authOptions[registry] = authOption
 		} else if usernameProvided || passwordProvided {
-			logger.Warn("Incomplete credentials for registry %q. Both username and password must be provided.", registry)
+			logger.With(telemetry.AlertArgs(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)...).
+				Warn("Incomplete credentials for registry; both username and password must be provided", "registry", registry)
 		}
 	}
 

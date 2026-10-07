@@ -284,6 +284,50 @@ const (
 	// DeprecatedServiceAlertType tags alerts for deprecated plugin services.
 	DeprecatedServiceAlertType = "deprecated_service"
 
+	// AgentIdentityAlertType tags alerts for an agent losing, or about to lose, its identity.
+	AgentIdentityAlertType = "agent_identity"
+
+	// ConfigAlertType tags alerts for problematic configuration.
+	ConfigAlertType = "config"
+
+	// ServerCompatibilityAlertType tags alerts for unexpected data received from the server.
+	ServerCompatibilityAlertType = "server_compatibility"
+
+	// WorkloadAttestationAlertType tags alerts for degraded workload attestation.
+	WorkloadAttestationAlertType = "workload_attestation"
+
+	// WorkloadDeliveryAlertType tags alerts for SVIDs not reaching or being applied by workloads.
+	WorkloadDeliveryAlertType = "workload_delivery"
+
+	// AlertReason tags the specific reason for an alert log event.
+	AlertReason = "alert_reason"
+
+	// Alert reasons for AgentIdentityAlertType.
+	BannedAlertReason              = "banned"
+	ReattestationFailedAlertReason = "reattestation_failed"
+	SVIDExpiredAlertReason         = "svid_expired"
+	SVIDExpiringAlertReason        = "svid_expiring"
+	RebootstrapAlertReason         = "rebootstrap"
+
+	// Alert reasons for ConfigAlertType.
+	MisconfigurationAlertReason = "misconfiguration"
+	InsecureAlertReason         = "insecure"
+	ExperimentalAlertReason     = "experimental"
+	DurabilityRiskAlertReason   = "durability_risk"
+
+	// Alert reasons for ServerCompatibilityAlertType.
+	MalformedBundleAlertReason   = "malformed_bundle"
+	MalformedEntryAlertReason    = "malformed_entry"
+	MalformedRevisionAlertReason = "malformed_revision"
+
+	// Alert reasons for WorkloadAttestationAlertType.
+	AttestorFailingAlertReason  = "attestor_failing"
+	PartialSelectorsAlertReason = "partial_selectors"
+	AnomalyAlertReason          = "anomaly"
+
+	// Alert reasons for WorkloadDeliveryAlertType.
+	SDSRejectedAlertReason = "sds_rejected"
+
 	// DeprecatedServiceName tags the deprecated service name
 	DeprecatedServiceName = "deprecated_service_name"
 

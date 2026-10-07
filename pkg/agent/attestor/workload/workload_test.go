@@ -128,10 +128,92 @@ func (s *WorkloadAttestorTestSuite) TestAttestLogsOnPartialFailure() {
 			Level:   logrus.ErrorLevel,
 			Message: "Failed to collect all selectors",
 			Data: logrus.Fields{
-				logrus.ErrorKey: `workload attestor "fake1" failed: rpc error: code = Unknown desc = workloadattestor(fake1): cannot attest pid 3`,
+				logrus.ErrorKey:       `workload attestor "fake1" failed: rpc error: code = Unknown desc = workloadattestor(fake1): cannot attest pid 3`,
+				telemetry.Alert:       "true",
+				telemetry.AlertType:   telemetry.WorkloadAttestationAlertType,
+				telemetry.AlertReason: telemetry.PartialSelectorsAlertReason,
 			},
 		},
 	})
+}
+
+func (s *WorkloadAttestorTestSuite) TestAttestAlertsOnFailingAttestor() {
+	s.catalog.SetWorkloadAttestors(
+		fakeworkloadattestor.New(s.T(), "fake1", attestor1Pids),
+		fakeworkloadattestor.New(s.T(), "fake2", attestor2Pids),
+	)
+
+	alertsFor := func(reason string) int {
+		n := 0
+		for _, entry := range s.loggerHook.AllEntries() {
+			if entry.Data[telemetry.AlertReason] == reason {
+				n++
+			}
+		}
+		return n
+	}
+
+	// fake1 fails to attest pid 3; fake2 succeeds.
+	for range attestorFailureThreshold - 1 {
+		_, err := s.attestor.Attest(ctx, 3)
+		s.Require().NoError(err)
+	}
+	s.Equal(0, alertsFor(telemetry.AttestorFailingAlertReason))
+	s.Equal(attestorFailureThreshold-1, alertsFor(telemetry.PartialSelectorsAlertReason))
+
+	s.loggerHook.Reset()
+	_, err := s.attestor.Attest(ctx, 3)
+	s.Require().NoError(err)
+	spiretest.AssertLogsContainEntries(s.T(), s.loggerHook.AllEntries(), []spiretest.LogEntry{
+		{
+			Level:   logrus.ErrorLevel,
+			Message: "Workload attestor is failing",
+			Data: logrus.Fields{
+				telemetry.WorkloadAttestor: "fake1",
+				telemetry.Count:            fmt.Sprint(attestorFailureThreshold),
+				logrus.ErrorKey:            "rpc error: code = Unknown desc = workloadattestor(fake1): cannot attest pid 3",
+				telemetry.Alert:            "true",
+				telemetry.AlertType:        telemetry.WorkloadAttestationAlertType,
+				telemetry.AlertReason:      telemetry.AttestorFailingAlertReason,
+			},
+		},
+	})
+	// Already alerted as failing, so no partial selectors alert.
+	s.Equal(0, alertsFor(telemetry.PartialSelectorsAlertReason))
+
+	// Further failures don't alert again.
+	s.loggerHook.Reset()
+	_, err = s.attestor.Attest(ctx, 3)
+	s.Require().NoError(err)
+	s.Equal(0, alertsFor(telemetry.AttestorFailingAlertReason))
+	s.Equal(0, alertsFor(telemetry.PartialSelectorsAlertReason))
+
+	// Success logs recovery and resets the failure count.
+	s.loggerHook.Reset()
+	_, err = s.attestor.Attest(ctx, 2)
+	s.Require().NoError(err)
+	spiretest.AssertLogsContainEntries(s.T(), s.loggerHook.AllEntries(), []spiretest.LogEntry{
+		{
+			Level:   logrus.InfoLevel,
+			Message: "Workload attestor recovered",
+			Data: logrus.Fields{
+				telemetry.WorkloadAttestor: "fake1",
+			},
+		},
+	})
+	s.Empty(s.attestor.failures)
+}
+
+func (s *WorkloadAttestorTestSuite) TestAttestIgnoresCallerErrorsForFailingAttestor() {
+	s.catalog.SetWorkloadAttestors(
+		&referenceWorkloadAttestor{name: "k8s", err: status.Error(codes.InvalidArgument, "bad reference")},
+	)
+
+	for range attestorFailureThreshold {
+		_, err := s.attestor.AttestReference(ctx, &anypb.Any{TypeUrl: "type.googleapis.com/example.Reference"})
+		s.Require().Error(err)
+	}
+	s.Empty(s.attestor.failures)
 }
 
 func (s *WorkloadAttestorTestSuite) TestAttestReferenceSkipsUnsupportedAttestors() {

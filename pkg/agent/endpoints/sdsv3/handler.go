@@ -170,7 +170,7 @@ func (h *Handler) StreamSecrets(stream secret_v3.SecretDiscoveryService_StreamSe
 				if newReq.VersionInfo == "" || newReq.VersionInfo != versionInfo {
 					// The caller has failed to apply the last update.
 					// A NACK might also contain an update to the resource hint, so we need to continue processing.
-					log.WithFields(logrus.Fields{
+					log.WithFields(telemetry.AlertFields(telemetry.WorkloadDeliveryAlertType, telemetry.SDSRejectedAlertReason)).WithFields(logrus.Fields{
 						telemetry.VersionInfo: newReq.VersionInfo,
 						telemetry.Expect:      versionInfo,
 					}).Error("Client rejected expected version and rolled back")

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/spire/pkg/common/telemetry"
 	"golang.org/x/sys/unix"
 )
 
@@ -18,7 +19,7 @@ func SetUmask(log logrus.FieldLogger) {
 	if (currentUmask & minimumUmask) != minimumUmask {
 		badUmask := currentUmask
 		currentUmask |= minimumUmask
-		log.Warnf("Current umask %#04o is too permissive; setting umask %#04o", badUmask, currentUmask)
+		log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.InsecureAlertReason)).Warnf("Current umask %#04o is too permissive; setting umask %#04o", badUmask, currentUmask)
 	}
 	_ = unix.Umask(currentUmask)
 }

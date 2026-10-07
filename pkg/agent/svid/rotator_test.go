@@ -330,7 +330,7 @@ func TestRotationFails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svidKM := keymanager.ForSVID(fakeagentkeymanager.New(t, ""))
 			clk := clock.NewMock(t)
-			log, _ := test.NewNullLogger()
+			log, hook := test.NewNullLogger()
 			mockClient := &fakeClient{
 				clk:      clk,
 				caCert:   caCert,
@@ -383,8 +383,59 @@ func TestRotationFails(t *testing.T) {
 			defer cancel()
 			err = rotator.Run(ctx)
 			spiretest.RequireErrorPrefix(t, err, tt.expectErr)
+
+			var expiredAlerts int
+			for _, entry := range hook.AllEntries() {
+				if entry.Data[telemetry.AlertReason] == telemetry.SVIDExpiredAlertReason {
+					expiredAlerts++
+				}
+			}
+			if tt.expiration < 0 {
+				require.Equal(t, 1, expiredAlerts)
+			} else {
+				require.Zero(t, expiredAlerts)
+			}
 		})
 	}
+}
+
+func TestRotationFailureAlertsWhenExpiring(t *testing.T) {
+	clk := clock.NewMock(t)
+	log, hook := test.NewNullLogger()
+	r := &rotator{c: &RotatorConfig{Log: log}, clk: clk}
+	state := State{SVID: []*x509.Certificate{{NotAfter: clk.Now().Add(time.Hour)}}}
+	rotateErr := errors.New("oh no")
+
+	countAlerts := func() int {
+		n := 0
+		for _, entry := range hook.AllEntries() {
+			if entry.Data[telemetry.AlertReason] == telemetry.SVIDExpiringAlertReason {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Less than half of the TTL left when rotation started failing has elapsed.
+	r.logRotationFailure(rotateErr, state)
+	clk.Add(29 * time.Minute)
+	r.logRotationFailure(rotateErr, state)
+	require.Zero(t, countAlerts())
+
+	// Half has elapsed: alert once.
+	clk.Add(time.Minute)
+	r.logRotationFailure(rotateErr, state)
+	require.Equal(t, 1, countAlerts())
+	entry := hook.LastEntry()
+	require.Equal(t, logrus.ErrorLevel, entry.Level)
+	require.Equal(t, "Could not rotate agent SVID", entry.Message)
+	require.Equal(t, true, entry.Data[telemetry.Alert])
+	require.Equal(t, telemetry.AgentIdentityAlertType, entry.Data[telemetry.AlertType])
+	require.Equal(t, state.SVID[0].NotAfter, entry.Data[telemetry.Expiration])
+
+	clk.Add(10 * time.Minute)
+	r.logRotationFailure(rotateErr, state)
+	require.Equal(t, 1, countAlerts())
 }
 
 func TestNotifyTaintedAuthority(t *testing.T) {

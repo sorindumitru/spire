@@ -75,7 +75,9 @@ func (p *Plugin) createHelper(c *dockerPluginConfig, status *pluginconf.Status) 
 			status.ReportError("the new container locator and custom cgroup matchers cannot both be used; please open an issue if the new container locator fails to locate workload containers in your environment; to continue using custom matchers set use_new_container_locator=false")
 			return nil
 		}
-		p.log.Warn("Using the legacy container locator with custom cgroup matchers. This feature will be removed in a future release.")
+		p.log.Warn("Using the legacy container locator with custom cgroup matchers. This feature will be removed in a future release.",
+			telemetry.Alert, true,
+			telemetry.AlertType, telemetry.DeprecatedConfigAlertType)
 		status.ReportInfo("Using the legacy container locator with custom cgroup matchers. This feature will be removed in a future release.")
 		var err error
 		containerIDFinder, err = cgroup.NewContainerIDFinder(c.ContainerIDCGroupMatchers)
@@ -173,7 +175,8 @@ func (h *containerHelper) detectPodmanSocket(cgroupList []cgroups.Cgroup, log hc
 		}
 		if m := reUserSliceUID.FindStringSubmatch(cg.GroupPath); m != nil {
 			if !h.useRootlessPodman {
-				log.Warn("Rootless Podman workload detected but rootless Podman support is disabled; not attesting it. Set use_rootless_podman to true to enable it, and pair it with unix:uid or unix:user selectors", telemetry.CGroupPath, cg.GroupPath)
+				log.With(telemetry.AlertArgs(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)...).
+					Warn("Rootless Podman workload detected but rootless Podman support is disabled; not attesting it. Set use_rootless_podman to true to enable it, and pair it with unix:uid or unix:user selectors", telemetry.CGroupPath, cg.GroupPath)
 				return "", false
 			}
 			if uid, err := strconv.ParseUint(m[1], 10, 32); err == nil {

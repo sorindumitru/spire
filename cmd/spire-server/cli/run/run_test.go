@@ -1356,7 +1356,7 @@ func TestNewServerConfig(t *testing.T) {
 			},
 			logOptions: assertLogsContainEntries([]spiretest.LogEntry{
 				{
-					Data:  map[string]any{"trust_domain": strings.Repeat("a", 256)},
+					Data:  map[string]any{"trust_domain": strings.Repeat("a", 256), "alert": "true", "alert_type": "config", "alert_reason": "misconfiguration"},
 					Level: logrus.WarnLevel,
 					Message: "Configured trust domain name should be less than 255 characters to be " +
 						"SPIFFE compliant; a longer trust domain name may impact interoperability",

@@ -752,7 +752,7 @@ func (p *Plugin) attestByPIDReference(ctx context.Context, pid int32) (*attestRe
 
 			if len(selectorValues) > 0 {
 				if result != nil {
-					log.Warn("Two pods found with same container Id")
+					log.With(telemetry.AlertArgs(telemetry.WorkloadAttestationAlertType, telemetry.AnomalyAlertReason)...).Warn("Two pods found with same container Id")
 					return nil, status.Error(codes.Internal, "two pods found with same container Id")
 				}
 				result = &attestReferenceResult{
@@ -1364,7 +1364,7 @@ func (p *Plugin) getOrCreateKubeMetadataClient(ctx context.Context) (client.Clie
 		defer close(cacheDone)
 		if err := kubeCache.Start(cacheCtx); err != nil && cacheCtx.Err() == nil {
 			if p.log != nil {
-				p.log.Warn("Kubernetes cache stopped unexpectedly", telemetry.Error, err)
+				p.log.With(telemetry.AlertArgs(telemetry.WorkloadAttestationAlertType, telemetry.AnomalyAlertReason)...).Warn("Kubernetes cache stopped unexpectedly", telemetry.Error, err)
 			}
 		}
 	}()

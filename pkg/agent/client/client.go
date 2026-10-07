@@ -211,7 +211,7 @@ func (c *client) SyncUpdates(ctx context.Context, cachedEntries map[string]*comm
 	for _, b := range protoBundles {
 		bundle, err := bundleutil.CommonBundleFromProto(b)
 		if err != nil {
-			c.c.Log.WithError(err).Warn("Received malformed bundle from SPIRE server; are the server and agent versions compatible?")
+			c.c.Log.WithFields(telemetry.AlertFields(telemetry.ServerCompatibilityAlertType, telemetry.MalformedBundleAlertReason)).WithError(err).Warn("Received malformed bundle from SPIRE server; are the server and agent versions compatible?")
 			continue
 		}
 		cachedBundles[bundle.TrustDomainId] = bundle
@@ -555,7 +555,7 @@ func (c *client) streamAndSyncEntries(ctx context.Context, entryClient entryv1.E
 	processEntryRevisions := func(entryRevisions []*entryv1.EntryRevision) {
 		for _, entryRevision := range entryRevisions {
 			if entryRevision.Id == "" || entryRevision.RevisionNumber < 0 {
-				c.c.Log.WithFields(logrus.Fields{
+				c.c.Log.WithFields(telemetry.AlertFields(telemetry.ServerCompatibilityAlertType, telemetry.MalformedRevisionAlertReason)).WithFields(logrus.Fields{
 					telemetry.RegistrationID: entryRevision.Id,
 					telemetry.RevisionNumber: entryRevision.RevisionNumber,
 				}).Warn("Received malformed entry revision from SPIRE server; are the server and agent versions compatible?")
@@ -579,7 +579,7 @@ func (c *client) streamAndSyncEntries(ctx context.Context, entryClient entryv1.E
 		for _, serverEntry := range serverEntries {
 			entry, err := slicedEntryFromProto(serverEntry)
 			if err != nil {
-				c.c.Log.WithFields(logrus.Fields{
+				c.c.Log.WithFields(telemetry.AlertFields(telemetry.ServerCompatibilityAlertType, telemetry.MalformedEntryAlertReason)).WithFields(logrus.Fields{
 					telemetry.RegistrationID: serverEntry.Id,
 					telemetry.RevisionNumber: serverEntry.RevisionNumber,
 					telemetry.SPIFFEID:       serverEntry.SpiffeId,

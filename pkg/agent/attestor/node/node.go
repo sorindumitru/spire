@@ -150,8 +150,11 @@ func (a *attestor) loadBundle() (*spiffebundle.Bundle, error) {
 	bundle, err := a.c.Storage.LoadBundle()
 	if errors.Is(err, storage.ErrNotCached) {
 		if a.c.InsecureBootstrap {
+			log := a.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.InsecureAlertReason))
 			if len(a.c.BootstrapTrustBundle) > 0 {
-				a.c.Log.Warn("Trust bundle will be ignored; performing insecure bootstrap")
+				log.Warn("Trust bundle will be ignored; performing insecure bootstrap")
+			} else {
+				log.Warn("Performing insecure bootstrap")
 			}
 			return nil, nil
 		}

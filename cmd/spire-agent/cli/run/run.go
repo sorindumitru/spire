@@ -781,7 +781,7 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	if c.Agent.Experimental.EnableWITSVIDs {
 		ac.EnableWITSVIDs = fflag.IsSet(fflag.FlagWITSVID)
 		if !ac.EnableWITSVIDs {
-			logger.Warnf("The experimental.enable_wit_svids configuration requires the %q feature flag; WIT-SVIDs remain disabled", fflag.FlagWITSVID)
+			logger.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)).Warnf("The experimental.enable_wit_svids configuration requires the %q feature flag; WIT-SVIDs remain disabled", fflag.FlagWITSVID)
 		}
 	}
 
@@ -828,7 +828,10 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	ac.DefaultBundleName = c.Agent.SDS.DefaultBundleName
 	ac.DefaultAllBundlesName = c.Agent.SDS.DefaultAllBundlesName
 	if ac.DefaultAllBundlesName == ac.DefaultBundleName {
-		logger.Warn(`The "default_bundle_name" and "default_all_bundles_name" configurables have the same value. "default_all_bundles_name" will be ignored. Please configure distinct values or use the defaults. This will be a configuration error in a future release.`)
+		logger.WithFields(logrus.Fields{
+			telemetry.Alert:     true,
+			telemetry.AlertType: telemetry.DeprecatedConfigAlertType,
+		}).Warn(`The "default_bundle_name" and "default_all_bundles_name" configurables have the same value. "default_all_bundles_name" will be ignored. Please configure distinct values or use the defaults. This will be a configuration error in a future release.`)
 	}
 	ac.DisableSPIFFECertValidation = c.Agent.SDS.DisableSPIFFECertValidation
 
@@ -990,11 +993,11 @@ func newAgentConfig(c *Config, logOptions []log.Option, allowUnknownConfig, skip
 	}
 
 	if cmp.Diff(experimentalConfig{}, c.Agent.Experimental) != "" {
-		logger.Warn("Experimental features have been enabled. Please see doc/upgrading.md for upgrade and compatibility considerations for experimental features.")
+		logger.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.ExperimentalAlertReason)).Warn("Experimental features have been enabled. Please see doc/upgrading.md for upgrade and compatibility considerations for experimental features.")
 	}
 
 	for _, f := range c.Agent.Experimental.Flags {
-		logger.Warnf("Developer feature flag %q has been enabled", f)
+		logger.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.ExperimentalAlertReason)).Warnf("Developer feature flag %q has been enabled", f)
 	}
 
 	return ac, nil

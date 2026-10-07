@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/spiffe/spire/pkg/agent/common/cgroups"
 	"github.com/spiffe/spire/pkg/common/containerinfo"
+	"github.com/spiffe/spire/pkg/common/telemetry"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/types"
@@ -47,7 +48,9 @@ func (h *containerHelper) Configure(config *HCLConfig, log hclog.Logger) error {
 	if h.useNewContainerLocator {
 		log.Info("Using the new container locator")
 	} else {
-		log.Warn("Using the legacy container locator. This option will be removed in a future release.")
+		log.Warn("Using the legacy container locator. This option will be removed in a future release.",
+			telemetry.Alert, true,
+			telemetry.AlertType, telemetry.DeprecatedConfigAlertType)
 	}
 
 	return nil

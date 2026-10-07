@@ -206,7 +206,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			if a.c.RebootstrapMode == RebootstrapAlways {
 				return errors.New("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it")
 			} else {
-				a.c.Log.Warn("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it. Disabling")
+				a.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)).Warn("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it. Disabling")
 				a.c.RebootstrapMode = RebootstrapNever
 			}
 		}
@@ -242,7 +242,7 @@ func (a *Agent) Run(ctx context.Context) error {
 						if a.c.RebootstrapMode == RebootstrapAlways {
 							return errors.New("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it")
 						} else {
-							a.c.Log.Warn("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it. Disabling")
+							a.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.MisconfigurationAlertReason)).Warn("you have requested rebootstrap support but the NodeAttestor plugin or the spire server configuration is not allowing it. Disabling")
 							a.c.RebootstrapMode = RebootstrapNever
 						}
 					}
@@ -264,7 +264,7 @@ func (a *Agent) Run(ctx context.Context) error {
 							"time_left": a.c.RebootstrapDelay - seconds,
 						}).Info("Trust Bundle and Server don't agree, ignoring for now")
 					} else {
-						a.c.Log.Warn("Trust Bundle and Server don't agree, rebootstrapping")
+						a.c.Log.WithFields(telemetry.AlertFields(telemetry.AgentIdentityAlertType, telemetry.RebootstrapAlertReason)).Warn("Trust Bundle and Server don't agree, rebootstrapping")
 						err = sto.StoreBundle(nil)
 						if err != nil {
 							return err
@@ -450,7 +450,7 @@ func (a *Agent) attest(ctx context.Context, sto storage.Storage, cat catalog.Cat
 
 func (a *Agent) newManager(ctx context.Context, sto storage.Storage, cat catalog.Catalog, metrics telemetry.Metrics, as *node_attestor.AttestationResult, cache *storecache.Cache, na nodeattestor.NodeAttestor) (manager.Manager, error) {
 	if !as.Reattestable && cat.GetKeyManager().Name() == "memory" {
-		a.c.Log.Warn("Node attestation is not reattestable and the 'memory' key manager is in use; if the agent process is restarted, it will be unable to obtain a new SVID and will need to be manually evicted to be able to re-attest.")
+		a.c.Log.WithFields(telemetry.AlertFields(telemetry.ConfigAlertType, telemetry.DurabilityRiskAlertReason)).Warn("Node attestation is not reattestable and the 'memory' key manager is in use; if the agent process is restarted, it will be unable to obtain a new SVID and will need to be manually evicted to be able to re-attest.")
 	}
 
 	config := &manager.Config{
