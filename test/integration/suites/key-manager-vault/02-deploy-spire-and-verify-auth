@@ -2,6 +2,28 @@
 
 set -e -o pipefail
 
+# Waits for the spire-bundle ClusterTrustBundle to match the server's X.509 authorities.
+assert-clustertrustbundle-published() {
+    local context=$1
+    local expected
+    expected=$(./bin/kubectl -n spire exec deployment/spire-server -- \
+        /opt/spire/bin/spire-server bundle show -format pem)
+    for ((i=1; i<=30; i++)); do
+        if [ "$(./bin/kubectl get clustertrustbundles.v1.certificates.k8s.io spire-bundle \
+                -o jsonpath='{.spec.trustBundle}' 2>/dev/null)" == "${expected}" ]; then
+            log-info "ClusterTrustBundle published ${context}"
+            return
+        fi
+        sleep 2
+    done
+    fail-now "ClusterTrustBundle not published ${context}"
+}
+
+# Deletes the ClusterTrustBundle so each auth method has to publish it again.
+delete-clustertrustbundle() {
+    ./bin/kubectl delete clustertrustbundles.v1.certificates.k8s.io spire-bundle --ignore-not-found
+}
+
 ./bin/kubectl create namespace spire
 ./bin/kubectl create secret -n spire generic vault-tls \
               --from-file=vault_ca.pem=vault_ca.pem
@@ -18,10 +40,12 @@ SECRET_ID=$(./bin/kubectl exec -n vault vault-0 -- vault write --format json -f 
 ./bin/kubectl rollout status deployment -n spire spire-server --timeout=60s
 
 BUNDLE_BASELINE=$(fetch-spire-bundle spire spire-server)
+assert-clustertrustbundle-published "with approle auth"
 
 ./bin/kubectl delete -k ./conf/server/approle-auth
 ./bin/kubectl delete secret -n spire vault-credential
 ./bin/kubectl wait pods -n spire -l app=spire-server --for=delete --timeout=60s
+delete-clustertrustbundle
 
 # Verify K8s Auth
 log-info "verifying k8s auth..."
@@ -29,9 +53,11 @@ log-info "verifying k8s auth..."
 ./bin/kubectl rollout status deployment -n spire spire-server --timeout=60s
 
 assert-spire-bundle-unchanged "${BUNDLE_BASELINE}" "$(fetch-spire-bundle spire spire-server)" "after switching to k8s auth"
+assert-clustertrustbundle-published "with k8s auth"
 
 ./bin/kubectl delete -k ./conf/server/k8s-auth
 ./bin/kubectl wait pods -n spire -l app=spire-server --for=delete --timeout=60s
+delete-clustertrustbundle
 
 # Verify Cert Auth
 log-info "verifying cert auth..."
@@ -42,10 +68,12 @@ log-info "verifying cert auth..."
 ./bin/kubectl rollout status deployment -n spire spire-server --timeout=60s
 
 assert-spire-bundle-unchanged "${BUNDLE_BASELINE}" "$(fetch-spire-bundle spire spire-server)" "after switching to cert auth"
+assert-clustertrustbundle-published "with cert auth"
 
 ./bin/kubectl delete -k ./conf/server/cert-auth
 ./bin/kubectl delete secret -n spire vault-credential
 ./bin/kubectl wait pods -n spire -l app=spire-server --for=delete --timeout=60s
+delete-clustertrustbundle
 
 # Verify Token Auth
 log-info "verifying token auth..."
@@ -56,3 +84,4 @@ TOKEN=$(./bin/kubectl exec -n vault vault-0 -- vault token create -policy=spire 
 ./bin/kubectl rollout status deployment -n spire spire-server --timeout=60s
 
 assert-spire-bundle-unchanged "${BUNDLE_BASELINE}" "$(fetch-spire-bundle spire spire-server)" "after switching to token auth"
+assert-clustertrustbundle-published "with token auth"

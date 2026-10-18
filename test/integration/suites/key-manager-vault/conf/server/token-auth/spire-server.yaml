@@ -47,16 +47,13 @@ data:
         }
       }
 
-      BundlePublisher "k8s_configmap" {
+      BundlePublisher "k8s_clustertrustbundle" {
         plugin_data {
-          # Publishes the trust bundle to the bundle.crt key of the
-          # spire:spire-bundle ConfigMap.
+          # Publishes the X.509 authorities to the spire-bundle
+          # ClusterTrustBundle.
           clusters = {
             "example-cluster" = {
-              configmap_name = "spire-bundle"
-              configmap_key  = "bundle.crt"
-              namespace      = "spire"
-              format         = "pem"
+              clustertrustbundle_name = "spire-bundle"
             }
           }
         }

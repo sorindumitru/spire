@@ -16,6 +16,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "nodes"]
     verbs: ["get", "list", "watch"]
+  # allow managing the spire-bundle ClusterTrustBundle
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["clustertrustbundles"]
+    resourceNames: ["spire-bundle"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["clustertrustbundles"]
+    verbs: ["create"]
 
 ---
 
@@ -47,15 +55,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get"]
-    # allow access to "get" and "patch" the spire-bundle ConfigMap (for SPIRE
-    # agent bootstrapping, see the spire-bundle ConfigMap below)
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["spire-bundle"]
-    verbs: ["get", "patch"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["create"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["create", "update", "get"]
@@ -80,16 +79,6 @@ roleRef:
   kind: Role
   name: spire-server-role
   apiGroup: rbac.authorization.k8s.io
-
----
-
-# ConfigMap containing the latest trust bundle for the trust domain. It is
-# updated by SPIRE using the k8s_configmap BundlePublisher plugin.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: spire-bundle
-  namespace: spire
 
 ---
 
@@ -147,16 +136,13 @@ data:
         }
       }
 
-      BundlePublisher "k8s_configmap" {
+      BundlePublisher "k8s_clustertrustbundle" {
         plugin_data {
-          # Publishes the trust bundle to the bundle.crt key of the
-          # spire:spire-bundle ConfigMap.
+          # Publishes the X.509 authorities to the spire-bundle
+          # ClusterTrustBundle.
           clusters = {
             "example-cluster" = {
-              configmap_name = "spire-bundle"
-              configmap_key  = "bundle.crt"
-              namespace      = "spire"
-              format         = "pem"
+              clustertrustbundle_name = "spire-bundle"
             }
           }
         }
