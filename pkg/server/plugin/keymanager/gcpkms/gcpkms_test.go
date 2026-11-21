@@ -2,6 +2,7 @@ package gcpkms
 
 import (
 	"context"
+	"crypto/mldsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
@@ -1343,7 +1344,9 @@ func TestGetPublicKeys(t *testing.T) {
 			for _, fakeKey := range storedFakeCryptoKeys {
 				storedFakeCryptoKeyVersions := fakeKey.fetchFakeCryptoKeyVersions()
 				for _, fakeKeyVersion := range storedFakeCryptoKeyVersions {
-					pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, ts.plugin.log, ts.fakeKMSClient, fakeKeyVersion.CryptoKeyVersion.Name, ts.plugin.hooks.clk)
+					keyType, ok := keyTypeFromCryptoKeyVersionAlgorithm(fakeKeyVersion.Algorithm)
+					require.True(t, ok)
+					pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, ts.plugin.log, ts.fakeKMSClient, fakeKeyVersion.CryptoKeyVersion.Name, keyType, ts.plugin.hooks.clk)
 					require.NoError(t, err)
 					require.Equal(t, pubKey, resp.PublicKeys[0].PkixData)
 				}
@@ -1353,6 +1356,44 @@ func TestGetPublicKeys(t *testing.T) {
 }
 
 func TestGetPublicKey(t *testing.T) {
+	mldsaKey, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	require.NoError(t, err)
+	mldsaPubKey, err := fakePublicKey(mldsaKey.Public())
+	require.NoError(t, err)
+	mldsaPKIX, err := x509.MarshalPKIXPublicKey(mldsaKey.Public())
+	require.NoError(t, err)
+
+	// A raw public key that doesn't have the ML-DSA-65 length.
+	malformedMLDSAPubKey := &kmspb.PublicKey{
+		PublicKeyFormat: kmspb.PublicKey_NIST_PQC,
+		PublicKey: &kmspb.ChecksummedData{
+			Data:           []byte("malformed"),
+			Crc32CChecksum: wrapperspb.Int64(int64(crc32Checksum([]byte("malformed")))),
+		},
+	}
+
+	mldsaCryptoKeys := func(publicKey *kmspb.PublicKey) []*fakeCryptoKey {
+		return []*fakeCryptoKey{
+			{
+				CryptoKey: &kmspb.CryptoKey{
+					Name:            cryptoKeyName1,
+					Labels:          map[string]string{labelNameActive: "true"},
+					VersionTemplate: &kmspb.CryptoKeyVersionTemplate{Algorithm: kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65},
+				},
+				fakeCryptoKeyVersions: map[string]*fakeCryptoKeyVersion{
+					"1": {
+						publicKey: publicKey,
+						CryptoKeyVersion: &kmspb.CryptoKeyVersion{
+							Algorithm: kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65,
+							Name:      fmt.Sprintf("%s/cryptoKeyVersions/1", cryptoKeyName1),
+							State:     kmspb.CryptoKeyVersion_ENABLED,
+						},
+					},
+				},
+			},
+		}
+	}
+
 	for _, tt := range []struct {
 		name                   string
 		expectCodeConfigure    codes.Code
@@ -1362,7 +1403,36 @@ func TestGetPublicKey(t *testing.T) {
 		fakeCryptoKeys         []*fakeCryptoKey
 		keyID                  string
 		pemCrc32C              *wrapperspb.Int64Value
+		expectPKIX             []byte
 	}{
+		{
+			name:           "existing ML-DSA key",
+			fakeCryptoKeys: mldsaCryptoKeys(mldsaPubKey),
+			keyID:          spireKeyID1,
+			expectPKIX:     mldsaPKIX,
+		},
+		{
+			name:                "ML-DSA integrity verification error",
+			expectCodeConfigure: codes.Internal,
+			expectMsgConfigure:  "failed to fetch entries: error getting public key: response corrupted in-transit",
+			fakeCryptoKeys:      mldsaCryptoKeys(mldsaPubKey),
+			keyID:               spireKeyID1,
+			pemCrc32C:           &wrapperspb.Int64Value{Value: 1},
+		},
+		{
+			name:                "ML-DSA public key in unexpected format",
+			expectCodeConfigure: codes.Internal,
+			expectMsgConfigure:  "failed to fetch entries: error getting public key: unexpected public key format PUBLIC_KEY_FORMAT_UNSPECIFIED for ML-DSA key",
+			fakeCryptoKeys:      mldsaCryptoKeys(&kmspb.PublicKey{PublicKey: mldsaPubKey.PublicKey}),
+			keyID:               spireKeyID1,
+		},
+		{
+			name:                "malformed ML-DSA public key",
+			expectCodeConfigure: codes.Internal,
+			expectMsgConfigure:  "failed to fetch entries: error getting public key: unable to parse ML-DSA-65 public key",
+			fakeCryptoKeys:      mldsaCryptoKeys(malformedMLDSAPubKey),
+			keyID:               spireKeyID1,
+		},
 		{
 			name: "existing key",
 			fakeCryptoKeys: []*fakeCryptoKey{
@@ -1447,6 +1517,10 @@ func TestGetPublicKey(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.keyID, resp.PublicKey.Id)
 			require.Equal(t, ts.plugin.entries[tt.keyID].publicKey, resp.PublicKey)
+			if tt.expectPKIX != nil {
+				require.Equal(t, tt.expectPKIX, resp.PublicKey.PkixData)
+				require.Equal(t, keymanagerv1.KeyType_ML_DSA_65, resp.PublicKey.Type)
+			}
 		})
 	}
 }
@@ -1483,6 +1557,7 @@ func TestKeyManagerContract(t *testing.T) {
 	keymanagertest.Test(t, keymanagertest.Config{
 		Create:                         create,
 		UnsupportedSignatureAlgorithms: unsupportedSignatureAlgorithms,
+		SupportsMLDSA:                  true,
 	})
 }
 
@@ -1556,6 +1631,8 @@ func TestSetIAMPolicy(t *testing.T) {
 func TestSignData(t *testing.T) {
 	sum256 := sha256.Sum256(nil)
 	sum384 := sha512.Sum384(nil)
+	// Larger than any digest, to make sure ML-DSA signs the full message.
+	largeMessage := make([]byte, 64*1024)
 
 	for _, tt := range []struct {
 		name              string
@@ -1565,6 +1642,9 @@ func TestSignData(t *testing.T) {
 		generateKeyReq    *keymanagerv1.GenerateKeyRequest
 		signDataReq       *keymanagerv1.SignDataRequest
 		signatureCrc32C   *wrapperspb.Int64Value
+		// dataCrc32CNotVerified makes Cloud KMS report that it didn't verify
+		// the data checksum.
+		dataCrc32CNotVerified bool
 	}{
 		{
 			name: "pass EC SHA256",
@@ -1635,6 +1715,88 @@ func TestSignData(t *testing.T) {
 					HashAlgorithm: keymanagerv1.HashAlgorithm_SHA256,
 				},
 			},
+		},
+		{
+			name: "pass ML-DSA-44",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_44,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID1,
+				Data:       largeMessage,
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+		},
+		{
+			name: "pass ML-DSA-65",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID1,
+				Data:       largeMessage,
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+		},
+		{
+			name: "pass ML-DSA-87",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_87,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID1,
+				Data:       largeMessage,
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+		},
+		{
+			name:       "ML-DSA with hash algorithm",
+			expectCode: codes.InvalidArgument,
+			expectMsg:  "hash algorithm must be unspecified for ML-DSA keys",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId: spireKeyID1,
+				Data:  sum256[:],
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{
+					HashAlgorithm: keymanagerv1.HashAlgorithm_SHA256,
+				},
+			},
+		},
+		{
+			name:       "ML-DSA data integrity verification error",
+			expectCode: codes.Internal,
+			expectMsg:  "error signing: request corrupted in-transit",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID1,
+				Data:       []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+			dataCrc32CNotVerified: true,
+		},
+		{
+			name:       "ML-DSA signature integrity verification error",
+			expectCode: codes.Internal,
+			expectMsg:  "error signing: response corrupted in-transit",
+			generateKeyReq: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID1,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			signDataReq: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID1,
+				Data:       []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+			signatureCrc32C: &wrapperspb.Int64Value{Value: 1},
 		},
 		{
 			name:       "missing key id",
@@ -1759,6 +1921,7 @@ func TestSignData(t *testing.T) {
 			ts := setupTest(t)
 			ts.fakeKMSClient.setAsymmetricSignErr(tt.asymmetricSignErr)
 			ts.fakeKMSClient.setSignatureCrc32C(tt.signatureCrc32C)
+			ts.fakeKMSClient.setDataCrc32CNotVerified(tt.dataCrc32CNotVerified)
 			_, err := ts.plugin.Configure(ctx, configureRequestWithDefaults(t))
 			require.NoError(t, err)
 			if tt.generateKeyReq != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -280,6 +281,7 @@ type fakeKMSClient struct {
 	opts                         []option.ClientOption
 	pemCrc32C                    *wrapperspb.Int64Value
 	signatureCrc32C              *wrapperspb.Int64Value
+	dataCrc32CNotVerified        bool
 	store                        fakeStore
 	tokeninfo                    *oauth2.Tokeninfo
 	updateCryptoKeyErr           error
@@ -374,6 +376,15 @@ func (k *fakeKMSClient) setPEMCrc32C(pemCrc32C *wrapperspb.Int64Value) {
 	k.pemCrc32C = pemCrc32C
 }
 
+// setDataCrc32CNotVerified makes AsymmetricSign report that the data CRC32C
+// checksum was not verified, as if it had not been delivered to Cloud KMS.
+func (k *fakeKMSClient) setDataCrc32CNotVerified(notVerified bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.dataCrc32CNotVerified = notVerified
+}
+
 func (k *fakeKMSClient) setSignatureCrc32C(signatureCrc32C *wrapperspb.Int64Value) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -396,13 +407,26 @@ func (k *fakeKMSClient) AsymmetricSign(_ context.Context, signReq *kmspb.Asymmet
 		return nil, k.asymmetricSignErr
 	}
 
-	if signReq.Digest == nil {
-		return nil, status.Error(codes.InvalidArgument, "plugin should be signing over a digest")
-	}
-
 	fakeCryptoKeyVersion, err := k.store.fetchFakeCryptoKeyVersion(signReq.Name)
 	if err != nil {
 		return nil, err
+	}
+
+	// ML-DSA keys sign the full data. Every other key type supported by the
+	// plugin signs a digest.
+	isPQSign := isPQSignAlgorithm(fakeCryptoKeyVersion.Algorithm)
+	switch {
+	case isPQSign && (signReq.Data == nil || signReq.Digest != nil):
+		return nil, status.Error(codes.InvalidArgument, "plugin should be signing over the data for ML-DSA")
+	case !isPQSign && signReq.Digest == nil:
+		return nil, status.Error(codes.InvalidArgument, "plugin should be signing over a digest")
+	}
+	verifiedDataCrc32C := false
+	if signReq.DataCrc32C != nil {
+		if int64(crc32Checksum(signReq.Data)) != signReq.DataCrc32C.Value {
+			return nil, status.Error(codes.InvalidArgument, "data CRC32C checksum mismatch")
+		}
+		verifiedDataCrc32C = !k.dataCrc32CNotVerified
 	}
 
 	signRSA := func(digest []byte, opts crypto.SignerOpts) ([]byte, error) {
@@ -416,6 +440,12 @@ func (k *fakeKMSClient) AsymmetricSign(_ context.Context, signReq *kmspb.Asymmet
 			return nil, status.Errorf(codes.InvalidArgument, "invalid signing algorithm for ECDSA key")
 		}
 		return fakeCryptoKeyVersion.privateKey.Sign(rand.Reader, digest, opts)
+	}
+	signMLDSA := func(data []byte) ([]byte, error) {
+		if _, ok := fakeCryptoKeyVersion.privateKey.(*mldsa.PrivateKey); !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid signing algorithm for ML-DSA key")
+		}
+		return fakeCryptoKeyVersion.privateKey.Sign(rand.Reader, data, crypto.Hash(0))
 	}
 
 	cryptoKeyName := path.Dir(path.Dir(signReq.Name))
@@ -433,6 +463,8 @@ func (k *fakeKMSClient) AsymmetricSign(_ context.Context, signReq *kmspb.Asymmet
 		signature, err = signRSA(signReq.Digest.GetSha256(), crypto.SHA256)
 	case kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_4096_SHA256:
 		signature, err = signRSA(signReq.Digest.GetSha256(), crypto.SHA256)
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_44, kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65, kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_87:
+		signature, err = signMLDSA(signReq.Data)
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported signing algorithm: %s", fck.VersionTemplate.Algorithm)
 	}
@@ -447,9 +479,10 @@ func (k *fakeKMSClient) AsymmetricSign(_ context.Context, signReq *kmspb.Asymmet
 	}
 
 	return &kmspb.AsymmetricSignResponse{
-		Signature:       signature,
-		SignatureCrc32C: signatureCrc32C,
-		Name:            signReq.Name,
+		Signature:          signature,
+		SignatureCrc32C:    signatureCrc32C,
+		VerifiedDataCrc32C: verifiedDataCrc32C,
+		Name:               signReq.Name,
 	}, nil
 }
 
@@ -585,11 +618,25 @@ func (k *fakeKMSClient) GetPublicKey(_ context.Context, req *kmspb.GetPublicKeyR
 		return nil, err
 	}
 
+	// Like Cloud KMS, only return PQC public keys in the NIST_PQC format.
+	isPQSign := isPQSignAlgorithm(fakeCryptoKeyVersion.Algorithm)
+	switch {
+	case isPQSign && req.PublicKeyFormat != kmspb.PublicKey_NIST_PQC:
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported public key format %v for PQC algorithm", req.PublicKeyFormat)
+	case !isPQSign && req.PublicKeyFormat != kmspb.PublicKey_PUBLIC_KEY_FORMAT_UNSPECIFIED:
+		return nil, status.Errorf(codes.InvalidArgument, "unexpected public key format %v", req.PublicKeyFormat)
+	}
+
 	if k.pemCrc32C != nil {
-		// Override pemCrc32C on a clone so the shared fixture public key is
-		// not mutated, which would corrupt it for other tests and reruns.
+		// Override the public key checksum on a clone so the shared fixture
+		// public key is not mutated, which would corrupt it for other tests
+		// and reruns.
 		publicKey := proto.Clone(fakeCryptoKeyVersion.publicKey).(*kmspb.PublicKey)
-		publicKey.PemCrc32C = k.pemCrc32C
+		if isPQSign {
+			publicKey.PublicKey.Crc32CChecksum = k.pemCrc32C
+		} else {
+			publicKey.PemCrc32C = k.pemCrc32C
+		}
 		return publicKey, nil
 	}
 
@@ -724,8 +771,12 @@ func (k *fakeKMSClient) UpdateCryptoKey(_ context.Context, req *kmspb.UpdateCryp
 }
 
 func (k *fakeKMSClient) createFakeCryptoKeyVersion(cryptoKey *kmspb.CryptoKey, version string) (*fakeCryptoKeyVersion, error) {
-	var privateKey crypto.Signer
-	var testKeys testkey.Keys
+	var (
+		privateKey   crypto.Signer
+		testKeys     testkey.Keys
+		keyGenerator testkey.Generator
+		err          error
+	)
 
 	switch cryptoKey.VersionTemplate.Algorithm {
 	case kmspb.CryptoKeyVersion_EC_SIGN_P256_SHA256:
@@ -736,28 +787,27 @@ func (k *fakeKMSClient) createFakeCryptoKeyVersion(cryptoKey *kmspb.CryptoKey, v
 		privateKey = testKeys.NewRSA2048(k.t)
 	case kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_4096_SHA256:
 		privateKey = testKeys.NewRSA4096(k.t)
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_44:
+		privateKey, err = keyGenerator.GenerateMLDSAKey(mldsa.MLDSA44())
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65:
+		privateKey, err = keyGenerator.GenerateMLDSAKey(mldsa.MLDSA65())
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_87:
+		privateKey, err = keyGenerator.GenerateMLDSAKey(mldsa.MLDSA87())
 	default:
 		return nil, fmt.Errorf("unknown algorithm %q", cryptoKey.VersionTemplate.Algorithm)
 	}
-
-	pkixData, err := x509.MarshalPKIXPublicKey(privateKey.Public())
 	if err != nil {
 		return nil, err
 	}
-	pemCert := new(bytes.Buffer)
-	if err = pem.Encode(pemCert, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: pkixData,
-	}); err != nil {
+
+	publicKey, err := fakePublicKey(privateKey.Public())
+	if err != nil {
 		return nil, err
 	}
 
 	return &fakeCryptoKeyVersion{
 		privateKey: privateKey,
-		publicKey: &kmspb.PublicKey{
-			Pem:       pemCert.String(),
-			PemCrc32C: &wrapperspb.Int64Value{Value: int64(crc32Checksum(pemCert.Bytes()))},
-		},
+		publicKey:  publicKey,
 		CryptoKeyVersion: &kmspb.CryptoKeyVersion{
 			Name:      path.Join(cryptoKey.Name, "cryptoKeyVersions", version),
 			State:     k.initialCryptoKeyVersionState,
@@ -804,5 +854,45 @@ func newFakeStore(c *clock.Mock) fakeStore {
 	return fakeStore{
 		fakeCryptoKeys: make(map[string]*fakeCryptoKey),
 		clk:            c,
+	}
+}
+
+// fakePublicKey returns the public key as Cloud KMS would: in the NIST_PQC
+// format for ML-DSA keys, and in PEM format for every other key type.
+func fakePublicKey(publicKey crypto.PublicKey) (*kmspb.PublicKey, error) {
+	if mldsaPublicKey, ok := publicKey.(*mldsa.PublicKey); ok {
+		raw := mldsaPublicKey.Bytes()
+		return &kmspb.PublicKey{
+			PublicKeyFormat: kmspb.PublicKey_NIST_PQC,
+			PublicKey: &kmspb.ChecksummedData{
+				Data:           raw,
+				Crc32CChecksum: &wrapperspb.Int64Value{Value: int64(crc32Checksum(raw))},
+			},
+		}, nil
+	}
+
+	pkixData, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	pemCert := new(bytes.Buffer)
+	if err = pem.Encode(pemCert, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: pkixData,
+	}); err != nil {
+		return nil, err
+	}
+	return &kmspb.PublicKey{
+		Pem:       pemCert.String(),
+		PemCrc32C: &wrapperspb.Int64Value{Value: int64(crc32Checksum(pemCert.Bytes()))},
+	}, nil
+}
+
+func isPQSignAlgorithm(algorithm kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm) bool {
+	switch algorithm {
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_44, kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65, kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_87:
+		return true
+	default:
+		return false
 	}
 }

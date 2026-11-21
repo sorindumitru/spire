@@ -2,8 +2,10 @@ package gcpkms
 
 import (
 	"context"
+	"crypto/mldsa"
 	"crypto/sha1" //nolint: gosec // We use sha1 to hash trust domain names in 128 bytes to avoid label value restrictions
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -33,6 +35,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const (
@@ -368,10 +371,7 @@ func (p *Plugin) SignData(ctx context.Context, req *keymanagerv1.SignDataRequest
 		return nil, status.Errorf(codes.NotFound, "key %q not found", req.KeyId)
 	}
 
-	var (
-		hashAlgo keymanagerv1.HashAlgorithm
-		digest   *kmspb.Digest
-	)
+	var hashAlgo keymanagerv1.HashAlgorithm
 	switch opts := req.SignerOpts.(type) {
 	case *keymanagerv1.SignDataRequest_HashAlgorithm:
 		hashAlgo = opts.HashAlgorithm
@@ -383,30 +383,41 @@ func (p *Plugin) SignData(ctx context.Context, req *keymanagerv1.SignDataRequest
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported signer opts type %T", opts)
 	}
-	switch hashAlgo {
-	case keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM:
+
+	signReq := &kmspb.AsymmetricSignRequest{
+		Name: keyEntry.cryptoKeyVersionName,
+	}
+	isMLDSAKey := isMLDSA(keyEntry.publicKey.Type)
+	switch {
+	case isMLDSAKey && hashAlgo != keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM:
+		return nil, status.Error(codes.InvalidArgument, "hash algorithm must be unspecified for ML-DSA keys")
+	case isMLDSAKey:
+		// ML-DSA signs the full message.
+		signReq.Data = req.Data
+		signReq.DataCrc32C = wrapperspb.Int64(int64(crc32Checksum(req.Data)))
+	case hashAlgo == keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM:
 		return nil, status.Error(codes.InvalidArgument, "hash algorithm is required")
-	case keymanagerv1.HashAlgorithm_SHA256:
-		digest = &kmspb.Digest{
+	case hashAlgo == keymanagerv1.HashAlgorithm_SHA256:
+		signReq.Digest = &kmspb.Digest{
 			Digest: &kmspb.Digest_Sha256{Sha256: req.Data},
 		}
-	case keymanagerv1.HashAlgorithm_SHA384:
-		digest = &kmspb.Digest{
+	case hashAlgo == keymanagerv1.HashAlgorithm_SHA384:
+		signReq.Digest = &kmspb.Digest{
 			Digest: &kmspb.Digest_Sha384{Sha384: req.Data},
 		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "hash algorithm not supported")
 	}
 
-	signResp, err := p.kmsClient.AsymmetricSign(ctx, &kmspb.AsymmetricSignRequest{
-		Name:   keyEntry.cryptoKeyVersionName,
-		Digest: digest,
-	})
+	signResp, err := p.kmsClient.AsymmetricSign(ctx, signReq)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to sign: %v", err)
 	}
 
 	// Perform integrity verification.
+	if isMLDSAKey && !signResp.VerifiedDataCrc32C {
+		return nil, status.Error(codes.Internal, "error signing: request corrupted in-transit")
+	}
 	if int64(crc32Checksum(signResp.Signature)) != signResp.SignatureCrc32C.Value {
 		return nil, status.Error(codes.Internal, "error signing: response corrupted in-transit")
 	}
@@ -481,7 +492,7 @@ func (p *Plugin) createKey(ctx context.Context, spireKeyID string, keyType keyma
 	cryptoKeyVersionName := cryptoKey.Name + "/cryptoKeyVersions/1"
 	log.Debug("CryptoKeyVersion version added", cryptoKeyVersionNameTag, cryptoKeyVersionName)
 
-	pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, p.log, p.kmsClient, cryptoKeyVersionName, p.hooks.clk)
+	pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, p.log, p.kmsClient, cryptoKeyVersionName, keyType, p.hooks.clk)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get public key: %v", err)
 	}
@@ -535,7 +546,7 @@ func (p *Plugin) addCryptoKeyVersionToCachedEntry(ctx context.Context, entry key
 	}
 	log.Debug("CryptoKeyVersion added", cryptoKeyVersionNameTag, cryptoKeyVersion.Name)
 
-	pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, p.log, p.kmsClient, cryptoKeyVersion.Name, p.hooks.clk)
+	pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, p.log, p.kmsClient, cryptoKeyVersion.Name, keyType, p.hooks.clk)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get public key: %w", err)
 	}
@@ -1039,6 +1050,12 @@ func cryptoKeyVersionAlgorithmFromKeyType(keyType keymanagerv1.KeyType) (kmspb.C
 		return kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_2048_SHA256, nil
 	case keymanagerv1.KeyType_RSA_4096:
 		return kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_4096_SHA256, nil
+	case keymanagerv1.KeyType_ML_DSA_44:
+		return kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_44, nil
+	case keymanagerv1.KeyType_ML_DSA_65:
+		return kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65, nil
+	case keymanagerv1.KeyType_ML_DSA_87:
+		return kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_87, nil
 	default:
 		return kmspb.CryptoKeyVersion_CRYPTO_KEY_VERSION_ALGORITHM_UNSPECIFIED, fmt.Errorf("unsupported key type %q", keyType)
 	}
@@ -1096,12 +1113,21 @@ func getOrCreateServerID(idPath string) (string, error) {
 }
 
 // getPublicKeyFromCryptoKeyVersion requests Cloud KMS to get the public key
-// of the specified CryptoKeyVersion.
-func getPublicKeyFromCryptoKeyVersion(ctx context.Context, log hclog.Logger, kmsClient cloudKeyManagementService, cryptoKeyVersionName string, clk clock.Clock) ([]byte, error) {
+// of the specified CryptoKeyVersion, and returns it in PKIX, ASN.1 DER form.
+func getPublicKeyFromCryptoKeyVersion(ctx context.Context, log hclog.Logger, kmsClient cloudKeyManagementService, cryptoKeyVersionName string, keyType keymanagerv1.KeyType, clk clock.Clock) ([]byte, error) {
 	backoffMin := 10 * time.Millisecond
 	backoffMax := time.Second
 	backoff := backoffMin
-	kmsPublicKey, errGetPublicKey := kmsClient.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{Name: cryptoKeyVersionName})
+
+	getPublicKeyReq := &kmspb.GetPublicKeyRequest{Name: cryptoKeyVersionName}
+	mldsaParams, isMLDSAKey := mldsaParametersFromKeyType(keyType)
+	if isMLDSAKey {
+		// Cloud KMS returns an error for PQC keys unless a format is
+		// requested. NIST_PQC returns the raw FIPS 204 public key encoding.
+		getPublicKeyReq.PublicKeyFormat = kmspb.PublicKey_NIST_PQC
+	}
+
+	kmsPublicKey, errGetPublicKey := kmsClient.GetPublicKey(ctx, getPublicKeyReq)
 	attempts := 1
 
 	log = log.With(cryptoKeyVersionNameTag, cryptoKeyVersionName)
@@ -1135,11 +1161,15 @@ func getPublicKeyFromCryptoKeyVersion(ctx context.Context, log hclog.Logger, kms
 
 		log.Warn("Could not get the public key because the CryptoKeyVersion is still being generated. Trying again.")
 		attempts++
-		kmsPublicKey, errGetPublicKey = kmsClient.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{Name: cryptoKeyVersionName})
+		kmsPublicKey, errGetPublicKey = kmsClient.GetPublicKey(ctx, getPublicKeyReq)
 		if errGetPublicKey != nil {
 			backoff = min(backoff*2, backoffMax)
 			clk.Sleep(backoff)
 		}
+	}
+
+	if isMLDSAKey {
+		return mldsaPKIXFromNISTPQC(kmsPublicKey, mldsaParams)
 	}
 
 	// Perform integrity verification.
@@ -1148,7 +1178,46 @@ func getPublicKeyFromCryptoKeyVersion(ctx context.Context, log hclog.Logger, kms
 	}
 
 	pemBlock, _ := pem.Decode([]byte(kmsPublicKey.Pem))
+	if pemBlock == nil {
+		return nil, errors.New("unable to decode PEM public key")
+	}
 	return pemBlock.Bytes, nil
+}
+
+// mldsaPKIXFromNISTPQC verifies the integrity of an ML-DSA public key returned
+// in the NIST_PQC format and converts it to PKIX, ASN.1 DER form.
+func mldsaPKIXFromNISTPQC(kmsPublicKey *kmspb.PublicKey, params mldsa.Parameters) ([]byte, error) {
+	if kmsPublicKey.PublicKeyFormat != kmspb.PublicKey_NIST_PQC {
+		return nil, fmt.Errorf("unexpected public key format %v for ML-DSA key", kmsPublicKey.PublicKeyFormat)
+	}
+	raw := kmsPublicKey.GetPublicKey().GetData()
+	if int64(crc32Checksum(raw)) != kmsPublicKey.GetPublicKey().GetCrc32CChecksum().GetValue() {
+		return nil, errors.New("response corrupted in-transit")
+	}
+
+	publicKey, err := mldsa.NewPublicKey(params, raw)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse %s public key: %w", params, err)
+	}
+	return x509.MarshalPKIXPublicKey(publicKey)
+}
+
+func isMLDSA(keyType keymanagerv1.KeyType) bool {
+	_, ok := mldsaParametersFromKeyType(keyType)
+	return ok
+}
+
+func mldsaParametersFromKeyType(keyType keymanagerv1.KeyType) (mldsa.Parameters, bool) {
+	switch keyType {
+	case keymanagerv1.KeyType_ML_DSA_44:
+		return mldsa.MLDSA44(), true
+	case keymanagerv1.KeyType_ML_DSA_65:
+		return mldsa.MLDSA65(), true
+	case keymanagerv1.KeyType_ML_DSA_87:
+		return mldsa.MLDSA87(), true
+	default:
+		return mldsa.Parameters{}, false
+	}
 }
 
 func makeFingerprint(pkixData []byte) string {

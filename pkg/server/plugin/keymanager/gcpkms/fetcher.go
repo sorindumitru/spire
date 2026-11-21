@@ -106,7 +106,7 @@ func (kf *keyFetcher) getKeyEntriesFromCryptoKey(ctx context.Context, cryptoKey 
 			return nil, status.Errorf(codes.Internal, "unsupported CryptoKeyVersionAlgorithm: %v", cryptoKeyVersion.Algorithm)
 		}
 
-		pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, kf.log, kf.kmsClient, cryptoKeyVersion.Name, kf.clk)
+		pubKey, err := getPublicKeyFromCryptoKeyVersion(ctx, kf.log, kf.kmsClient, cryptoKeyVersion.Name, keyType, kf.clk)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "error getting public key: %v", err)
 		}
@@ -166,6 +166,12 @@ func keyTypeFromCryptoKeyVersionAlgorithm(algorithm kmspb.CryptoKeyVersion_Crypt
 		return keymanagerv1.KeyType_RSA_2048, true
 	case kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_4096_SHA256:
 		return keymanagerv1.KeyType_RSA_4096, true
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_44:
+		return keymanagerv1.KeyType_ML_DSA_44, true
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_65:
+		return keymanagerv1.KeyType_ML_DSA_65, true
+	case kmspb.CryptoKeyVersion_PQ_SIGN_ML_DSA_87:
+		return keymanagerv1.KeyType_ML_DSA_87, true
 	default:
 		return keymanagerv1.KeyType_UNSPECIFIED_KEY_TYPE, false
 	}

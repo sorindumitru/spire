@@ -171,4 +171,7 @@ KeyManager "gcp_kms" {
 ## Supported Key Types
 
 The plugin supports all the key types supported by SPIRE: `rsa-2048`,
-`rsa-4096`, `ec-p256`, and `ec-p384`.
+`rsa-4096`, `ec-p256`, `ec-p384`, `ml-dsa-44`, `ml-dsa-65`, and `ml-dsa-87`.
+
+ML-DSA keys are created with the `PQ_SIGN_ML_DSA_44`, `PQ_SIGN_ML_DSA_65`, and
+`PQ_SIGN_ML_DSA_87` algorithms, and sign the full message rather than a digest.
