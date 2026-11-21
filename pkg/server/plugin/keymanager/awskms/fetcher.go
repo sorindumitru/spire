@@ -14,7 +14,6 @@ import (
 	rgtatypes "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/types"
 	"github.com/aws/smithy-go"
 	"github.com/hashicorp/go-hclog"
-	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/keymanager/v1"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -128,16 +127,11 @@ func (kf *keyFetcher) fetchKeyEntryDetails(ctx context.Context, alias types.Alia
 		return nil, status.Error(codes.Internal, "malformed get public key response")
 	}
 
-	return &keyEntry{
-		Arn:       *describeResp.KeyMetadata.Arn,
-		AliasName: *alias.AliasName,
-		PublicKey: &keymanagerv1.PublicKey{
-			Id:          spireKeyID,
-			Type:        keyType,
-			PkixData:    publicKeyResp.PublicKey,
-			Fingerprint: makeFingerprint(publicKeyResp.PublicKey),
-		},
-	}, nil
+	entry, err := newKeyEntry(*describeResp.KeyMetadata.Arn, *alias.AliasName, spireKeyID, keyType, publicKeyResp.PublicKey)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "invalid public key for key %q: %v", *describeResp.KeyMetadata.Arn, err)
+	}
+	return entry, nil
 }
 
 func (kf *keyFetcher) spireKeyIDFromAlias(aliasName string) (string, bool) {
@@ -277,16 +271,11 @@ func (kf *keyFetcher) fetchKeyEntryDetailsFromArn(ctx context.Context, keyArn st
 	trustDomain := sanitizeTrustDomain(kf.trustDomain)
 	aliasName := path.Join(aliasPrefix, trustDomain, kf.serverID, encodeKeyID(spireKeyID))
 
-	return &keyEntry{
-		Arn:       *describeResp.KeyMetadata.Arn,
-		AliasName: aliasName,
-		PublicKey: &keymanagerv1.PublicKey{
-			Id:          spireKeyID,
-			Type:        keyType,
-			PkixData:    publicKeyResp.PublicKey,
-			Fingerprint: makeFingerprint(publicKeyResp.PublicKey),
-		},
-	}, nil
+	entry, err := newKeyEntry(*describeResp.KeyMetadata.Arn, aliasName, spireKeyID, keyType, publicKeyResp.PublicKey)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "invalid public key for key %q: %v", *describeResp.KeyMetadata.Arn, err)
+	}
+	return entry, nil
 }
 
 // fetchKeyEntriesWithMigration performs tag-based discovery with automatic

@@ -210,4 +210,4 @@ KeyManager "aws_kms" {
 
 ## Supported Key Types and TTL
 
-The plugin supports all the key types supported by SPIRE: `rsa-2048`, `rsa-4096`, `ec-p256`, and `ec-p384`.
+The plugin supports all the key types supported by SPIRE: `rsa-2048`, `rsa-4096`, `ec-p256`, `ec-p384`, `ml-dsa-44`, `ml-dsa-65`, and `ml-dsa-87`.

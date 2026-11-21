@@ -2,7 +2,9 @@ package awskms
 
 import (
 	"context"
+	"crypto/mldsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ import (
 	keymanagerv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/keymanager/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/spiffe/spire/pkg/common/catalog"
+	"github.com/spiffe/spire/pkg/common/cryptoutil"
 	"github.com/spiffe/spire/pkg/common/diskutil"
 	"github.com/spiffe/spire/pkg/common/pluginconf"
 	"google.golang.org/grpc/codes"
@@ -82,6 +85,10 @@ type keyEntry struct {
 	Arn       string
 	AliasName string
 	PublicKey *keymanagerv1.PublicKey
+
+	// mldsaPublicKey is the parsed ML-DSA public key, only set for ML-DSA
+	// keys. It is used to compute the external μ when signing.
+	mldsaPublicKey *mldsa.PublicKey
 }
 
 type pluginHooks struct {
@@ -419,10 +426,20 @@ func (p *Plugin) SignData(ctx context.Context, req *keymanagerv1.SignDataRequest
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	message := req.Data
+	messageType := types.MessageTypeDigest
+	if isMLDSA(keyEntry.PublicKey.Type) {
+		// ML-DSA signs the full message. Rather than sending it as RAW, which
+		// KMS limits to 4096 bytes, compute the message representative
+		// locally so messages of any size can be signed.
+		message = cryptoutil.MLDSAExternalMu(keyEntry.mldsaPublicKey, req.Data)
+		messageType = types.MessageTypeExternalMu
+	}
+
 	signResp, err := p.kmsClient.Sign(ctx, &kms.SignInput{
 		KeyId:            &keyEntry.Arn,
-		Message:          req.Data,
-		MessageType:      types.MessageTypeDigest,
+		Message:          message,
+		MessageType:      messageType,
 		SigningAlgorithm: signingAlgo,
 	})
 	if err != nil {
@@ -532,16 +549,11 @@ func (p *Plugin) createKey(ctx context.Context, spireKeyID string, keyType keyma
 		return nil, status.Error(codes.Internal, "malformed get public key response")
 	}
 
-	return &keyEntry{
-		Arn:       *key.KeyMetadata.Arn,
-		AliasName: p.aliasFromSpireKeyID(spireKeyID),
-		PublicKey: &keymanagerv1.PublicKey{
-			Id:          spireKeyID,
-			Type:        keyType,
-			PkixData:    pub.PublicKey,
-			Fingerprint: makeFingerprint(pub.PublicKey),
-		},
-	}, nil
+	entry, err := newKeyEntry(*key.KeyMetadata.Arn, p.aliasFromSpireKeyID(spireKeyID), spireKeyID, keyType, pub.PublicKey)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "invalid public key for key %q: %v", *key.KeyMetadata.Arn, err)
+	}
+	return entry, nil
 }
 
 func (p *Plugin) assignAlias(ctx context.Context, entry *keyEntry) error {
@@ -1060,6 +1072,10 @@ func signingAlgorithmForKMS(keyType keymanagerv1.KeyType, signerOpts any) (types
 	isRSA := keyType == keymanagerv1.KeyType_RSA_2048 || keyType == keymanagerv1.KeyType_RSA_4096
 
 	switch {
+	case isMLDSA(keyType) && (isPSS || hashAlgo != keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM):
+		return "", errors.New("hash algorithm must be unspecified for ML-DSA keys")
+	case isMLDSA(keyType):
+		return types.SigningAlgorithmSpecMlDsaShake256, nil
 	case hashAlgo == keymanagerv1.HashAlgorithm_UNSPECIFIED_HASH_ALGORITHM:
 		return "", errors.New("hash algorithm is required")
 	case keyType == keymanagerv1.KeyType_EC_P256 && hashAlgo == keymanagerv1.HashAlgorithm_SHA256:
@@ -1093,6 +1109,12 @@ func keyTypeFromKeySpec(keySpec types.KeySpec) (keymanagerv1.KeyType, bool) {
 		return keymanagerv1.KeyType_EC_P256, true
 	case types.KeySpecEccNistP384:
 		return keymanagerv1.KeyType_EC_P384, true
+	case types.KeySpecMlDsa44:
+		return keymanagerv1.KeyType_ML_DSA_44, true
+	case types.KeySpecMlDsa65:
+		return keymanagerv1.KeyType_ML_DSA_65, true
+	case types.KeySpecMlDsa87:
+		return keymanagerv1.KeyType_ML_DSA_87, true
 	default:
 		return keymanagerv1.KeyType_UNSPECIFIED_KEY_TYPE, false
 	}
@@ -1108,8 +1130,32 @@ func keySpecFromKeyType(keyType keymanagerv1.KeyType) (types.KeySpec, bool) {
 		return types.KeySpecEccNistP256, true
 	case keymanagerv1.KeyType_EC_P384:
 		return types.KeySpecEccNistP384, true
+	case keymanagerv1.KeyType_ML_DSA_44:
+		return types.KeySpecMlDsa44, true
+	case keymanagerv1.KeyType_ML_DSA_65:
+		return types.KeySpecMlDsa65, true
+	case keymanagerv1.KeyType_ML_DSA_87:
+		return types.KeySpecMlDsa87, true
 	default:
 		return "", false
+	}
+}
+
+func isMLDSA(keyType keymanagerv1.KeyType) bool {
+	_, ok := mldsaParametersFromKeyType(keyType)
+	return ok
+}
+
+func mldsaParametersFromKeyType(keyType keymanagerv1.KeyType) (mldsa.Parameters, bool) {
+	switch keyType {
+	case keymanagerv1.KeyType_ML_DSA_44:
+		return mldsa.MLDSA44(), true
+	case keymanagerv1.KeyType_ML_DSA_65:
+		return mldsa.MLDSA65(), true
+	case keymanagerv1.KeyType_ML_DSA_87:
+		return mldsa.MLDSA87(), true
+	default:
+		return mldsa.Parameters{}, false
 	}
 }
 
@@ -1145,6 +1191,42 @@ func createServerID(idPath string) (string, error) {
 		return "", status.Errorf(codes.Internal, "failed to persist server id on path: %v", err)
 	}
 	return id, nil
+}
+
+// newKeyEntry builds a keyEntry for the given KMS key. For ML-DSA keys, it
+// also validates and keeps the parsed public key, which is needed to build
+// the external μ message representative when signing.
+func newKeyEntry(arn, aliasName, spireKeyID string, keyType keymanagerv1.KeyType, pkixData []byte) (*keyEntry, error) {
+	entry := &keyEntry{
+		Arn:       arn,
+		AliasName: aliasName,
+		PublicKey: &keymanagerv1.PublicKey{
+			Id:          spireKeyID,
+			Type:        keyType,
+			PkixData:    pkixData,
+			Fingerprint: makeFingerprint(pkixData),
+		},
+	}
+
+	params, ok := mldsaParametersFromKeyType(keyType)
+	if !ok {
+		return entry, nil
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(pkixData)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse ML-DSA public key: %w", err)
+	}
+	mldsaPub, ok := pub.(*mldsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("expected ML-DSA public key for key type %v but got %T", keyType, pub)
+	}
+	if mldsaPub.Parameters() != params {
+		return nil, fmt.Errorf("ML-DSA public key parameters %s do not match key type %v", mldsaPub.Parameters(), keyType)
+	}
+
+	entry.mldsaPublicKey = mldsaPub
+	return entry, nil
 }
 
 func makeFingerprint(pkixData []byte) string {

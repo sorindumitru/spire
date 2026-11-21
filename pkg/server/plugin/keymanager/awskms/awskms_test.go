@@ -2,6 +2,7 @@ package awskms
 
 import (
 	"context"
+	"crypto/mldsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
@@ -32,6 +33,7 @@ import (
 	keymanagertest "github.com/spiffe/spire/pkg/server/plugin/keymanager/test"
 	"github.com/spiffe/spire/test/plugintest"
 	"github.com/spiffe/spire/test/spiretest"
+	"github.com/spiffe/spire/test/testkey"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 )
@@ -122,6 +124,7 @@ func TestKeyManagerContract(t *testing.T) {
 	keymanagertest.Test(t, keymanagertest.Config{
 		Create:                         create,
 		UnsupportedSignatureAlgorithms: unsupportedSignatureAlgorithms,
+		SupportsMLDSA:                  true,
 	})
 }
 
@@ -163,6 +166,11 @@ func setupTest(t *testing.T) *pluginTest {
 }
 
 func TestConfigure(t *testing.T) {
+	mldsaKey, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	require.NoError(t, err)
+	mldsaPKIX, err := x509.MarshalPKIXPublicKey(mldsaKey.Public())
+	require.NoError(t, err)
+
 	for _, tt := range []struct {
 		name             string
 		err              string
@@ -319,6 +327,34 @@ func TestConfigure(t *testing.T) {
 				},
 			},
 			describeKeyErr: "describe key error",
+		},
+		{
+			name:             "pass with ML-DSA key",
+			configureRequest: configureRequestWithDefaults(t),
+			fakeEntries: []fakeKeyEntry{
+				{
+					AliasName: aws.String(aliasName),
+					KeyID:     aws.String(keyID),
+					KeySpec:   types.KeySpecMlDsa65,
+					Enabled:   true,
+					PublicKey: mldsaPKIX,
+				},
+			},
+		},
+		{
+			name:             "malformed ML-DSA public key",
+			configureRequest: configureRequestWithDefaults(t),
+			err:              "invalid public key for key",
+			code:             codes.Internal,
+			fakeEntries: []fakeKeyEntry{
+				{
+					AliasName: aws.String(aliasName),
+					KeyID:     aws.String(keyID),
+					KeySpec:   types.KeySpecMlDsa65,
+					Enabled:   true,
+					PublicKey: []byte("foo"),
+				},
+			},
 		},
 		{
 			name:             "unsupported key error",
@@ -974,6 +1010,74 @@ func TestSignData(t *testing.T) {
 			},
 		},
 		{
+			name: "pass ML-DSA-44",
+			request: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID,
+				Data:       []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+			generateKeyRequest: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID,
+				KeyType: keymanagerv1.KeyType_ML_DSA_44,
+			},
+		},
+		{
+			name: "pass ML-DSA-65",
+			request: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID,
+				Data:       []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+			generateKeyRequest: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+		},
+		{
+			name: "pass ML-DSA-87",
+			request: &keymanagerv1.SignDataRequest{
+				KeyId:      spireKeyID,
+				Data:       []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{},
+			},
+			generateKeyRequest: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID,
+				KeyType: keymanagerv1.KeyType_ML_DSA_87,
+			},
+		},
+		{
+			name: "ML-DSA with hash algorithm",
+			request: &keymanagerv1.SignDataRequest{
+				KeyId: spireKeyID,
+				Data:  sum256[:],
+				SignerOpts: &keymanagerv1.SignDataRequest_HashAlgorithm{
+					HashAlgorithm: keymanagerv1.HashAlgorithm_SHA256,
+				},
+			},
+			generateKeyRequest: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			err:  "hash algorithm must be unspecified for ML-DSA keys",
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "ML-DSA with PSS options",
+			request: &keymanagerv1.SignDataRequest{
+				KeyId: spireKeyID,
+				Data:  []byte("message"),
+				SignerOpts: &keymanagerv1.SignDataRequest_PssOptions{
+					PssOptions: &keymanagerv1.SignDataRequest_PSSOptions{},
+				},
+			},
+			generateKeyRequest: &keymanagerv1.GenerateKeyRequest{
+				KeyId:   spireKeyID,
+				KeyType: keymanagerv1.KeyType_ML_DSA_65,
+			},
+			err:  "hash algorithm must be unspecified for ML-DSA keys",
+			code: codes.InvalidArgument,
+		},
+		{
 			name: "missing key id",
 			request: &keymanagerv1.SignDataRequest{
 				KeyId: "",
@@ -1091,6 +1195,61 @@ func TestSignData(t *testing.T) {
 			}
 			require.NotNil(t, resp)
 		})
+	}
+}
+
+func TestNewKeyEntry(t *testing.T) {
+	mldsaKey, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	require.NoError(t, err)
+	mldsaPKIX, err := x509.MarshalPKIXPublicKey(mldsaKey.Public())
+	require.NoError(t, err)
+
+	var keys testkey.Keys
+	ecPKIX, err := x509.MarshalPKIXPublicKey(keys.NewEC256(t).Public())
+	require.NoError(t, err)
+
+	t.Run("ML-DSA key", func(t *testing.T) {
+		entry, err := newKeyEntry("arn", "alias", "id", keymanagerv1.KeyType_ML_DSA_65, mldsaPKIX)
+		require.NoError(t, err)
+		require.True(t, mldsaKey.PublicKey().Equal(entry.mldsaPublicKey))
+		require.Equal(t, mldsaPKIX, entry.PublicKey.PkixData)
+	})
+
+	t.Run("non ML-DSA key", func(t *testing.T) {
+		entry, err := newKeyEntry("arn", "alias", "id", keymanagerv1.KeyType_EC_P256, ecPKIX)
+		require.NoError(t, err)
+		require.Nil(t, entry.mldsaPublicKey)
+	})
+
+	t.Run("ML-DSA parameters mismatch", func(t *testing.T) {
+		_, err := newKeyEntry("arn", "alias", "id", keymanagerv1.KeyType_ML_DSA_87, mldsaPKIX)
+		require.ErrorContains(t, err, "do not match key type")
+	})
+
+	t.Run("ML-DSA key type with EC public key", func(t *testing.T) {
+		_, err := newKeyEntry("arn", "alias", "id", keymanagerv1.KeyType_ML_DSA_65, ecPKIX)
+		require.ErrorContains(t, err, "expected ML-DSA public key")
+	})
+
+	t.Run("malformed public key", func(t *testing.T) {
+		_, err := newKeyEntry("arn", "alias", "id", keymanagerv1.KeyType_ML_DSA_65, []byte("bad"))
+		require.ErrorContains(t, err, "unable to parse ML-DSA public key")
+	})
+}
+
+func TestMLDSAKeySpecMapping(t *testing.T) {
+	for keyType, keySpec := range map[keymanagerv1.KeyType]types.KeySpec{
+		keymanagerv1.KeyType_ML_DSA_44: types.KeySpecMlDsa44,
+		keymanagerv1.KeyType_ML_DSA_65: types.KeySpecMlDsa65,
+		keymanagerv1.KeyType_ML_DSA_87: types.KeySpecMlDsa87,
+	} {
+		gotSpec, ok := keySpecFromKeyType(keyType)
+		require.True(t, ok)
+		require.Equal(t, keySpec, gotSpec)
+
+		gotType, ok := keyTypeFromKeySpec(keySpec)
+		require.True(t, ok)
+		require.Equal(t, keyType, gotType)
 	}
 }
 

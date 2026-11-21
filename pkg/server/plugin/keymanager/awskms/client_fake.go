@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -34,6 +35,7 @@ type kmsClientFake struct {
 	store                    fakeStore
 	mu                       sync.RWMutex
 	testKeys                 testkey.Keys
+	keyGenerator             testkey.Generator
 	validAliasName           *regexp.Regexp
 	createKeyErr             error
 	describeKeyErr           error
@@ -151,7 +153,10 @@ func (k *kmsClientFake) CreateKey(_ context.Context, input *kms.CreateKeyInput, 
 		require.Equal(k.t, *k.expectedKeyPolicy, *input.Policy)
 	}
 
-	var privateKey crypto.Signer
+	var (
+		privateKey crypto.Signer
+		err        error
+	)
 	switch input.KeySpec {
 	case types.KeySpecEccNistP256:
 		privateKey = k.testKeys.NewEC256(k.t)
@@ -161,8 +166,17 @@ func (k *kmsClientFake) CreateKey(_ context.Context, input *kms.CreateKeyInput, 
 		privateKey = k.testKeys.NewRSA2048(k.t)
 	case types.KeySpecRsa4096:
 		privateKey = k.testKeys.NewRSA4096(k.t)
+	case types.KeySpecMlDsa44:
+		privateKey, err = k.keyGenerator.GenerateMLDSAKey(mldsa.MLDSA44())
+	case types.KeySpecMlDsa65:
+		privateKey, err = k.keyGenerator.GenerateMLDSAKey(mldsa.MLDSA65())
+	case types.KeySpecMlDsa87:
+		privateKey, err = k.keyGenerator.GenerateMLDSAKey(mldsa.MLDSA87())
 	default:
 		return nil, fmt.Errorf("unknown key type %q", input.KeySpec)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	pkixData, err := x509.MarshalPKIXPublicKey(privateKey.Public())
@@ -295,7 +309,12 @@ func (k *kmsClientFake) Sign(_ context.Context, input *kms.SignInput, _ ...func(
 		return nil, k.signErr
 	}
 
-	if input.MessageType != types.MessageTypeDigest {
+	// The plugin is expected to always send a digest, or, for ML-DSA, an
+	// externally computed message representative (μ).
+	switch {
+	case input.SigningAlgorithm == types.SigningAlgorithmSpecMlDsaShake256 && input.MessageType != types.MessageTypeExternalMu:
+		return nil, status.Error(codes.InvalidArgument, "plugin should be signing over an external mu for ML-DSA")
+	case input.SigningAlgorithm != types.SigningAlgorithmSpecMlDsaShake256 && input.MessageType != types.MessageTypeDigest:
 		return nil, status.Error(codes.InvalidArgument, "plugin should be signing over a digest")
 	}
 
@@ -317,8 +336,20 @@ func (k *kmsClientFake) Sign(_ context.Context, input *kms.SignInput, _ ...func(
 		return entry.privateKey.Sign(rand.Reader, input.Message, opts)
 	}
 
+	signMLDSA := func() ([]byte, error) {
+		if _, ok := entry.privateKey.(*mldsa.PrivateKey); !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid signing algorithm %q for ML-DSA key", input.SigningAlgorithm)
+		}
+		if len(input.Message) != crypto.MLDSAMu.Size() {
+			return nil, status.Errorf(codes.InvalidArgument, "external mu must be %d bytes, got %d", crypto.MLDSAMu.Size(), len(input.Message))
+		}
+		return entry.privateKey.Sign(rand.Reader, input.Message, crypto.MLDSAMu)
+	}
+
 	var signature []byte
 	switch input.SigningAlgorithm {
+	case types.SigningAlgorithmSpecMlDsaShake256:
+		signature, err = signMLDSA()
 	case types.SigningAlgorithmSpecRsassaPssSha256:
 		signature, err = signRSA(&rsa.PSSOptions{Hash: crypto.SHA256, SaltLength: rsa.PSSSaltLengthEqualsHash})
 	case types.SigningAlgorithmSpecRsassaPssSha384:
